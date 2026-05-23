@@ -316,7 +316,7 @@ def find_position(dq, n):
             return i
     return -1
 
-def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 0):
+def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 0, assembly_mode = 'reference'):
     """
     通过将contigs与reads进行map，来检测contig的可靠性
     :param contigs: 拼接过程获取的contigs
@@ -325,17 +325,19 @@ def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 
     :param reads_dict: reads的高质量切片的词典
     :return: 按照map上的reads的数量倒序排序过后的contigs
     """ 
-    # 基于soft_boundary和四分位点切割序列两端
-    for i, contig in enumerate(contigs):
-        if len(contig[0]) > 2:
-            cut_value = Quartile(contig[0])[0]
-            cut_pos = find_position(contig[0], cut_value)
-            if cut_pos != -1 and cut_pos + soft_boundary + 1 < len(contig[0]):
-                while len(contig[0]) > cut_pos + soft_boundary + 1:
-                    contig[0].pop()
-                    contig[1].pop()
+    if assembly_mode == 'reference':
+        # 基于soft_boundary和四分位点切割序列两端
+        for i, contig in enumerate(contigs):
+            if len(contig[0]) > 2:
+                cut_value = Quartile(contig[0])[0]
+                cut_pos = find_position(contig[0], cut_value)
+                if cut_pos != -1 and cut_pos + soft_boundary + 1 < len(contig[0]):
+                    while len(contig[0]) > cut_pos + soft_boundary + 1:
+                        contig[0].pop()
+                        contig[1].pop()
 
-    processed_contigs = sorted([[''.join(ACGT_DICT[k] for k in x[1]), sum(x[0]), 0] for x in contigs if sum(x[0]) > max_weight >> 1], key=itemgetter(1), reverse=True)
+    min_weight = max_weight >> (2 if assembly_mode == 'uce' else 1)
+    processed_contigs = sorted([[''.join(ACGT_DICT[k] for k in x[1]), sum(x[0]), 0] for x in contigs if sum(x[0]) > min_weight], key=itemgetter(1), reverse=True)
     for x in processed_contigs:
         contig_len = len(x[0])
         for j in range(contig_len - slice_len):
@@ -343,11 +345,14 @@ def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 
                 slice_str = x[0][contig_len - slice_len - j:contig_len - j]
                 if slice_str in reads_dict:
                     x[2] += reads_dict[slice_str]
-    processed_contigs.sort(key=itemgetter(2), reverse=True)
+    if assembly_mode == 'uce':
+        processed_contigs.sort(key=lambda x: (len(x[0]), x[2], x[1]), reverse=True)
+    else:
+        processed_contigs.sort(key=itemgetter(2), reverse=True)
     return processed_contigs
 
 
-def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0):
+def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference'):
     """
     获取最优的contig
     :param _reads_dict: reads的高质量切片的词典
@@ -366,17 +371,20 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
     # 获取位置中位数
     contig_pos = int(Quartile(pos_list)[1] if len(pos_list)>1 else -1)
     # 获取最可能的两侧的contig
-    contigs_1_16 = Process_Contigs(contigs_1, weight_1, slice_len, _reads_dict, soft_boundary)
-    contigs_2_16 = Process_Contigs(contigs_2, weight_2, slice_len, _reads_dict, soft_boundary)
+    contigs_1_16 = Process_Contigs(contigs_1, weight_1, slice_len, _reads_dict, soft_boundary, assembly_mode)
+    contigs_2_16 = Process_Contigs(contigs_2, weight_2, slice_len, _reads_dict, soft_boundary, assembly_mode)
     processed_contigs = []
     if not contigs_1_16: contigs_1_16.append(['',0,0])
     if not contigs_2_16: contigs_2_16.append(['',0,0])
+    candidate_limit = 5 if assembly_mode == 'uce' else 3
     # 对最多前9种组合计算数量
-    for l in contigs_2_16[:3]:
-        for r in contigs_1_16[:3]:
+    for l in contigs_2_16[:candidate_limit]:
+        for r in contigs_1_16[:candidate_limit]:
             c = Reverse_Complement_ACGT(l[0]) + Int_To_Seq(seed, kmer_size) + r[0]
             c_weight = l[1] + r[1]
             contig_len = len(c)
+            left_len = len(l[0])
+            right_len = len(r[0])
             r_count = 0
             left_coord = contig_len
             right_coord = 0
@@ -396,8 +404,13 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
                     continue
                 if cov_dep / contig_len < cov_min:
                     c = c[left_coord:right_coord]
+                    contig_len = len(c)
+                    left_len = 0
+                    right_len = 0
+                    cov_len = contig_len
+            flank_balance = min(left_len, right_len) / max(left_len, right_len, 1)
             # 序列，序列的拼接权重，切片数
-            processed_contigs.append([c, c_weight, r_count])
+            processed_contigs.append([c, c_weight, r_count, cov_len, flank_balance])
     return processed_contigs, kmer_set_1 | kmer_set_2, contig_pos
 
 def Calculate_Kmer_Size(ref_path, reads, slice_len, k_min, k_max, error_limit):
@@ -597,14 +610,20 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
 
     while len(seed_list) > seed_list_len * 0.5: # 已经耗费了大于一半的seed就没必要再做了 
         # org_contigs: 0序列 1序列的拼接权重 2切片数
-        org_contigs, kmer_set, contig_pos = Get_Contig_v6(reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min, iteration=iteration, soft_boundary=soft_boundary)
+        org_contigs, kmer_set, contig_pos = Get_Contig_v6(reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min, iteration=iteration, soft_boundary=soft_boundary, assembly_mode=args.assembly_mode)
         seed_list = [item for item in seed_list if (item[0] not in kmer_set) and (Reverse_Int(item[0], current_ka) not in kmer_set)]
         for contig in org_contigs:
-            if contig[2] * slice_len > len(contig[0]): # 起码要有reads高质量切片能够覆盖contig，否则就是错误的拼接
-                # contigs_all: 0序列 1使用的种子数量 2序列位置 3序列的拼接权重 4切片数
-                contigs_all.append([contig[0], len(seed_set & kmer_set), contig_pos, contig[1], contig[2]])
+            # contigs_all: 0序列 1使用的种子数量 2序列位置 3序列的拼接权重 4切片数 5覆盖跨度 6两侧平衡
+            contig_record = [contig[0], len(seed_set & kmer_set), contig_pos, contig[1], contig[2], contig[3], contig[4]]
+            if args.assembly_mode == 'uce':
+                if contig[2] > 0 and contig[3] > 0:
+                    contigs_all.append(contig_record)
+                else:
+                    contigs_all_low.append(contig_record)
+            elif contig[2] * slice_len > len(contig[0]): # 起码要有reads高质量切片能够覆盖contig，否则就是错误的拼接
+                contigs_all.append(contig_record)
             else:
-                contigs_all_low.append([contig[0], len(seed_set & kmer_set), contig_pos, contig[1], contig[2]])
+                contigs_all_low.append(contig_record)
 
     low_qual = not contigs_all
     if low_qual:
@@ -613,7 +632,10 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     # 设计规则重新排序，此处使用切片数排序
     # 排序第一位作为 best contig
     if contigs_all:
-        contigs_all.sort(key=lambda x: (x[4], x[3]), reverse=True)
+        if args.assembly_mode == 'uce':
+            contigs_all.sort(key=lambda x: (x[5], len(x[0]), x[6], x[4], x[3]), reverse=True)
+        else:
+            contigs_all.sort(key=lambda x: (x[4], x[3]), reverse=True)
         contigs_best.append(contigs_all[0])
     else:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
@@ -649,6 +671,7 @@ if __name__ == '__main__':
     pars.add_argument('-cov_min', metavar='<int>', type=int, help='''min coverage''', required=False, default=0)
     pars.add_argument('-sb', '--soft_boundary', metavar='<int>', type=int, help='''soft boundary，default = [0], -1时为切片长度的一半''', required=False, default=0)
     pars.add_argument('-p', '--processes', metavar='<int>', type=int, help='Number of processes for multiprocessing', default= 1)#max(multiprocessing.cpu_count()-1,2))
+    pars.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode')
     args = pars.parse_args()
 
     try:

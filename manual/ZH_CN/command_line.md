@@ -83,6 +83,7 @@ cli/geneminer2 -f /home/user/GeneMiner2/DEMO/DEMO3/samples.tsv -r /home/user/Ang
 - `-e`: 错误阈值
 - `-sb`: 软边界，支持`0`、`auto`和`unlimited`三个选项
 - `-i`: 搜索深度
+- `--assembly-mode`: 组装模式，可选`reference`或`uce`。`reference`为默认模式，保持原有基于参考序列的组装和边界控制；`uce`模式会放宽参考边界裁剪，并优先保留更长且有reads支持的UCE侧翼序列。
 - `-c`: 一致性阈值（介于0-1的小数形式）
 - `-ts`: 基于参考切齐的来源序列，可以是`assembly`或`consensus`
 - `-tm`: 基于参考切齐的模式，可以是`all`、`longest`、`terminal`或`isoform`
