@@ -1,10 +1,10 @@
 # 命令行版本
 
-对于大多数Linux用户而言，可以直接下载Sourceforge上提供的二进制软件包。命令行版本的使用方法请参见[用法](#用法)。
+对于原版GeneMiner2的大多数Linux用户而言，可以直接下载Sourceforge上提供的二进制软件包。本文档中新增的UCE、AliFilter和combine阶段性能参数属于本分支的命令行功能；如需使用这些功能，请直接运行本仓库中的脚本，或从本仓库源码构建CLI。命令行版本的使用方法请参见[用法](#用法)。
 
 ## 从源码构建
 
-注意，从头构建GeneMiner2较为复杂。一般用户可以先尝试使用Sourceforge上提供的`.tar.gz`压缩包。如果预编译包与系统环境存在不兼容，才有从源码构建GeneMiner2的必要。本节剩余内容提供给高级用户参考，GeneMiner2的使用方法请跳转到文档后半部分的[用法](#用法)章节。
+注意，从头构建GeneMiner2较为复杂。原版GeneMiner2用户可以先尝试使用Sourceforge上提供的`.tar.gz`压缩包。本分支新增的UCE、AliFilter和combine阶段性能参数需要直接运行本仓库中的脚本，或从本仓库源码构建CLI。本节剩余内容提供给高级用户参考，GeneMiner2的使用方法请跳转到文档后半部分的[用法](#用法)章节。
 
 第一步，安装系统的默认C++编译器和[zlib](https://zlib.net/)。在Ubuntu 24.04 或更新版本上，可以运行下面的命令：
 
@@ -29,10 +29,10 @@ conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cytho
 conda activate geneminer
 ```
 
-最后，将GeneMiner2的源代码下载到GeneMiner2文件夹中，构建可执行文件。
+最后，将本分支的源代码下载到GeneMiner2文件夹中，构建可执行文件。
 
 ```
-git clone --depth 1 https://gitee.com/sculab/GeneMiner2.git
+git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2.git
 cd GeneMiner2
 make
 ```

@@ -1,20 +1,28 @@
-# GeneMiner2: A Comprehensive Toolkit for Phylogenomic Genomics
+# GeneMiner2 UCE fork: UCE-focused extensions for GeneMiner2
 **[查看中文版的使用说明](README_zh_cn.md)**
 
 # Introduction
 
-GeneMiner2 is a comprehensive toolkit designed for phylogenomic genomics. Its main functionalities include:
+This repository is a command-line focused fork of GeneMiner2 for target-enrichment and UCE workflows. It keeps the original GeneMiner2 reference-guided marker recovery workflow, while adding options intended to recover longer read-supported UCE flanking contigs and to make downstream alignment filtering more flexible.
+
+The main additions in this fork are:
+- `--assembly-mode uce`, which relaxes reference-boundary trimming and prioritizes longer read-supported UCE flanking sequences.
+- phyluce-compatible UCE contig exports under `uce_contigs/`.
+- optional AliFilter-based alignment filtering through `--alignment-filter alifilter`.
+- safer combine-stage parallelism through `--msa-threads` and `--filter-processes`.
+
+The original GeneMiner2 toolkit is designed for phylogenomic genomics. Its main functionalities include:
 - Mining single-copy nuclear genes, plastid genes/genomes, and other molecular markers from next-generation sequencing data.
 - Aligning and trimming multiple molecular markers, constructing concatenated and coalescent-based phylogenetic trees, and calibrating tree time.
 - Identifying paralogs/multicopy genes.
 
-Users can complete all tasks from obtaining NGS data to establishing phylogenetic trees within GeneMiner2.
+Users can complete all tasks from obtaining NGS data to establishing phylogenetic trees within GeneMiner2. The UCE-specific changes in this fork currently target the command-line workflow; the graphical interface is not modified.
 
 ![](images/fig1.png)
 
 ![](images/fig2.jpg)
 
-For the **complete user manual**, please refer to [manual](manual/manual_geneminer.pdf)
+For the **complete upstream user manual**, please refer to [manual](manual/manual_geneminer.pdf). Fork-specific command-line options are documented in [command-line usage](manual/EN_US/command_line.md).
 
 # Citations
 
@@ -30,9 +38,15 @@ Zhang Z, Xie PL, Guo YL, Zhou WB, Liu EY, Yu Y. 2022. **Easy353**: A tool to get
 
 Xie PL, Guo YL, Teng Y, Zhou WB, Yu Y. 2024. **GeneMiner**: A tool for extracting phylogenetic markers from next-generation sequencing data. *Molecular Ecology Resources* 24(3): e13924.https://doi.org/10.1111/1755-0998.13924
 
+If `--alignment-filter alifilter` is used, please also cite:
+
+Bianchini G, Zhu R, Cicconardi F, Moody ERR. 2026. **AliFilter: a machine learning approach to alignment filtering.** *Molecular Biology and Evolution* 43(4): msag097. https://doi.org/10.1093/molbev/msag097
+
 # Installation
 
-**[Download GeneMiner2 from SourceForge](https://sourceforge.net/projects/geneminer/files/)**
+**[Original GeneMiner2 releases on SourceForge](https://sourceforge.net/projects/geneminer/files/)**
+
+The SourceForge packages are upstream GeneMiner2 releases and may not include the UCE, AliFilter, and combine-stage performance options in this fork. To use the fork-specific command-line features, clone this repository and run the scripts or build the CLI from source.
 
 ## Windows
 
@@ -58,7 +72,7 @@ On desktop Linux systems, consider running GeneMiner2 with compatibility tools:
 
 **[Running Windows GUI version on Linux](manual/EN_US/linux_desktop.md)**
 
-On server Linux systems, please download the latest Linux binaries (**GeneMiner_cli_linux_XXXXXXXX.tar.gz**) from Sourceforge. Debian 11 or higher, Ubuntu 20.04 or higher, and AlmaLinux 9 or higher are supported. Please also make sure to install dependencies including libbz2, libgomp and zlib. On Ubuntu, it can be done with the following command.
+For upstream GeneMiner2, server Linux users can download the latest Linux binaries (**GeneMiner_cli_linux_XXXXXXXX.tar.gz**) from Sourceforge. Debian 11 or higher, Ubuntu 20.04 or higher, and AlmaLinux 9 or higher are supported. Please also make sure to install dependencies including libbz2, libgomp and zlib. On Ubuntu, it can be done with the following command.
 
 ```bash
 sudo apt-get install libbz2 libgomp1 zlib1g
@@ -66,7 +80,7 @@ sudo apt-get install libbz2 libgomp1 zlib1g
 
 **[Usage of the command-line version](manual/EN_US/command_line.md#usage)**
 
-If the precompiled package fails to run, you can compile GeneMiner2 from scratch. You can also use the Python scripts in the `scripts` folder. These scripts offer all the core functionalities of GeneMiner2 and can be deployed on any operating systems.
+To use this fork's UCE, AliFilter, and combine-stage performance options, compile this repository from scratch or run the Python scripts in the `scripts` folder. These scripts offer the core command-line functionalities of GeneMiner2 and can be deployed on any operating system.
 
 **[Building the command-line version from scratch](manual/EN_US/command_line.md)**
 
@@ -87,7 +101,7 @@ If the precompiled package fails to run, you can compile GeneMiner2 from scratch
 # Details
 
 
-For the complete user manual, please refer to [manual](manual/manual_geneminer.pdf)
+For the complete upstream user manual, please refer to [manual](manual/manual_geneminer.pdf)
 
 For more information about functions and interface，[please see here](manual/EN_US/readme_detailed.md).
 
@@ -100,7 +114,5 @@ For a further explanation of the output directory,  [please see here](manual/EN_
 
 # Contact
 If you have any questions, suggestions, or comments about GeneMiner, feel free to contact Xinyi_Yu2021@163.com.
-
-
 
 

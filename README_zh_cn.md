@@ -1,13 +1,21 @@
-# GeneMiner2: 系统发育基因组学工具包
+# GeneMiner2 UCE fork: 面向UCE流程的GeneMiner2扩展分支
 **[View README in English](README.md)**
 
 # 介绍
-GeneMiner2是一款为系统发育基因组学设计的全功能工具包，软件主要功能包括：
+本仓库是面向target-enrichment和UCE数据流程的GeneMiner2命令行扩展分支。该分支保留原版GeneMiner2基于参考序列的分子标记恢复流程，同时增加了更适合UCE侧翼序列延伸、phyluce衔接和比对过滤的命令行选项。
+
+本分支的主要新增内容包括：
+- `--assembly-mode uce`：放宽参考边界裁剪，并优先保留更长且有reads支持的UCE侧翼序列。
+- 在`uce_contigs/`下导出phyluce兼容的UCE contig文件。
+- 通过`--alignment-filter alifilter`支持可选的AliFilter比对列过滤。
+- 通过`--msa-threads`和`--filter-processes`改进combine阶段的并行控制。
+
+原版GeneMiner2是一款为系统发育基因组学设计的全功能工具包，软件主要功能包括：
 - 从二代测序数据中挖掘单拷贝核基因、质体基因等分子标记
 - 将多个分子标记切齐、排序、建立串联和溯祖系统发育树
 - 拼接注释动植物质体基因组
 
-用户能够在GeneMiner2中完成从NGS数据获取到系统发育树建立的所有工作。
+用户能够在GeneMiner2中完成从NGS数据获取到系统发育树建立的所有工作。本分支的UCE相关改动目前只针对命令行流程，图形界面未修改。
 
 ![](images/fig1.png)
 
@@ -28,14 +36,18 @@ Zhang Z, Xie PL, Guo YL, Zhou WB, Liu EY, Yu Y. 2022. **Easy353**: A tool to get
 
 Xie PL, Guo YL, Teng Y, Zhou WB, Yu Y. 2024. **GeneMiner**: A tool for extracting phylogenetic markers from next-generation sequencing data. *Molecular Ecology Resources* 24(3): e13924.https://doi.org/10.1111/1755-0998.13924
 
+如果使用`--alignment-filter alifilter`，也请引用：
+
+Bianchini G, Zhu R, Cicconardi F, Moody ERR. 2026. **AliFilter: a machine learning approach to alignment filtering.** *Molecular Biology and Evolution* 43(4): msag097. https://doi.org/10.1093/molbev/msag097
+
 
 # 安装和需求
 
-请从下面的地址获取最新的安装包:
+原版GeneMiner2安装包可从下面的地址获取:
 
 **[SourceForge](https://sourceforge.net/projects/geneminer/files/)**
 
-GeneMiner2的源代码在Github和Gitee上均可获取。
+SourceForge上的安装包属于原版GeneMiner2发布版本，不一定包含本分支新增的UCE、AliFilter和combine阶段性能参数。如需使用本分支的命令行功能，请克隆本仓库并直接运行脚本或从源码构建CLI。
 
 ## Windows用户
 
@@ -61,7 +73,7 @@ GeneMiner2的源代码在Github和Gitee上均可获取。
 
 **[在Linux上运行Windows版本](manual/ZH_CN/linux_desktop.md)**
 
-在服务器Linux环境下，请从上面的Sourceforge地址下载Linux命令行版本（**GeneMiner_cli_linux_XXXXXXXX.tar.gz**）并解压。这一版本支持Debian 11或以上、Ubuntu 20.04或以上、AlmaLinux 9或以上。此外，请确保你安装了libbz2、libgomp和zlib依赖库。在Ubuntu上，可以用这行命令安装这些依赖：
+原版GeneMiner2的服务器Linux用户可以从上面的Sourceforge地址下载Linux命令行版本（**GeneMiner_cli_linux_XXXXXXXX.tar.gz**）并解压。这一版本支持Debian 11或以上、Ubuntu 20.04或以上、AlmaLinux 9或以上。此外，请确保你安装了libbz2、libgomp和zlib依赖库。在Ubuntu上，可以用这行命令安装这些依赖：
 
 ```bash
 sudo apt-get install libbz2 libgomp1 zlib1g
@@ -69,7 +81,7 @@ sudo apt-get install libbz2 libgomp1 zlib1g
 
 **[命令行版本的使用说明](manual/ZH_CN/command_line.md#用法)**
 
-如果预编译的二进制软件包无法运行，您还可以手动编译命令行版本。您也可以直接使用`scripts`文件夹中的脚本，这些脚本提供了GeneMiner2的所有核心功能，可以在任何操作系统上部署。
+如需使用本分支的UCE、AliFilter和combine阶段性能参数，请从本仓库手动编译命令行版本，或直接使用`scripts`文件夹中的Python脚本。这些脚本提供了GeneMiner2的核心命令行功能，可以在任何操作系统上部署。
 
 **[从头编译命令行版本](manual/ZH_CN/command_line.md)**
 
@@ -92,7 +104,7 @@ sudo apt-get install libbz2 libgomp1 zlib1g
 # 详细说明
 
 
-详细说明请移步 [manual](manual/manual_geneminer.pdf)
+原版完整使用手册请移步 [manual](manual/manual_geneminer.pdf)。本分支新增的命令行选项以[命令行版本的使用说明](manual/ZH_CN/command_line.md)为准。
 
 有关软件图形界面和功能的详细说明[请见此处](manual/ZH_CN/readme_detailed.md)
 

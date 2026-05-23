@@ -1,10 +1,10 @@
 # Command Line Interface
 
-For most Linux users, downloading prebuilt binaries from Sourceforge is sufficient. Refer to [Usage](#usage) to see the documentation.
+For most users of upstream GeneMiner2, downloading prebuilt binaries from Sourceforge is sufficient. The UCE, AliFilter, and combine-stage performance options documented here are fork-specific command-line features; use this repository's scripts or build the CLI from this repository to access them. Refer to [Usage](#usage) to see the documentation.
 
 ## Building from Source
 
-Building GeneMiner2 from source is not trivial. Most users can try the prebuilt `.tar.gz` package from Sourceforge. Generally, it is only necessary to build from source when incompatibility arises from the prebuilt package. The rest of this section is for advanced users. Please refer to [Usage](#usage) for command-line parameters.
+Building GeneMiner2 from source is not trivial. Most users of upstream GeneMiner2 can try the prebuilt `.tar.gz` package from Sourceforge. The fork-specific UCE, AliFilter, and combine-stage performance options require running this repository's scripts or building the CLI from this repository. The rest of this section is for advanced users. Please refer to [Usage](#usage) for command-line parameters.
 
 First, install the default C++ compiler and [zlib](https://zlib.net/) for the platform. On Ubuntu 20.04 and later, this can be done as follows:
 
@@ -29,10 +29,10 @@ conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cytho
 conda activate geneminer
 ```
 
-Finally, download the source code of GeneMiner2 and build the binaries themselves:
+Finally, download the source code of this fork and build the binaries:
 
 ```
-git clone --depth 1 https://github.com/sculab/GeneMiner2.git
+git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2.git
 cd GeneMiner2
 make
 ```
