@@ -341,7 +341,7 @@ def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 
     processed_contigs = sorted([[''.join(ACGT_DICT[k] for k in x[1]), sum(x[0]), 0] for x in contigs if sum(x[0]) > min_weight], key=itemgetter(1), reverse=True)
     for x in processed_contigs:
         contig_len = len(x[0])
-        for j in range(contig_len - slice_len):
+        for j in range(max(contig_len - slice_len + 1, 0)):
             if contig_len - slice_len - j >= 0:
                 slice_str = x[0][contig_len - slice_len - j:contig_len - j]
                 if slice_str in reads_dict:
@@ -353,7 +353,54 @@ def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 
     return processed_contigs
 
 
-def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference'):
+def Calculate_Read_Support(seq, slice_len, reads_dict):
+    """
+    Measure direct read-slice support for a candidate contig.
+    """
+    contig_len = len(seq)
+    read_count = 0
+    left_coord = contig_len
+    right_coord = 0
+
+    for j in range(max(contig_len - slice_len + 1, 0)):
+        if contig_len - slice_len - j >= 0:
+            slice_str = seq[contig_len - slice_len - j:contig_len - j]
+            if slice_str in reads_dict:
+                if contig_len - slice_len - j < left_coord:
+                    left_coord = contig_len - slice_len - j
+                if contig_len - j > right_coord:
+                    right_coord = contig_len - j
+                read_count += reads_dict[slice_str]
+
+    supported_span = max(right_coord - left_coord, 0)
+    if supported_span:
+        left_extension = left_coord
+        right_extension = contig_len - right_coord
+        flank_balance = min(left_extension, right_extension) / max(left_extension, right_extension, 1)
+    else:
+        flank_balance = 0
+
+    return read_count, supported_span, flank_balance, left_coord, right_coord
+
+
+def Score_Contig(contig, assembly_mode):
+    """
+    Reference mode keeps the historical conservative ranking.
+    UCE mode prefers candidates that extend farther while retaining read support.
+    """
+    seq_len = len(contig[0])
+    weight = contig[3]
+    read_count = contig[4]
+    supported_span = contig[5]
+    flank_balance = contig[6]
+
+    if assembly_mode == 'uce':
+        return (supported_span, seq_len, read_count, flank_balance, weight)
+
+    return (read_count, weight)
+
+
+def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference', uce_side_candidates = 8):
     """
     获取最优的contig
     :param _reads_dict: reads的高质量切片的词典
@@ -377,39 +424,20 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
     processed_contigs = []
     if not contigs_1_16: contigs_1_16.append(['',0,0])
     if not contigs_2_16: contigs_2_16.append(['',0,0])
-    candidate_limit = 5 if assembly_mode == 'uce' else 3
-    # 对最多前9种组合计算数量
+    candidate_limit = uce_side_candidates if assembly_mode == 'uce' else 3
     for l in contigs_2_16[:candidate_limit]:
         for r in contigs_1_16[:candidate_limit]:
             c = Reverse_Complement_ACGT(l[0]) + Int_To_Seq(seed, kmer_size) + r[0]
             c_weight = l[1] + r[1]
             contig_len = len(c)
-            left_len = len(l[0])
-            right_len = len(r[0])
-            r_count = 0
-            left_coord = contig_len
-            right_coord = 0
-            for j in range(contig_len - slice_len):
-                if contig_len - slice_len - j >= 0:
-                    slice_str = c[contig_len - slice_len - j:contig_len - j]
-                    if slice_str in _reads_dict:
-                        if contig_len - slice_len - j < left_coord:
-                            left_coord = contig_len - slice_len - j
-                        if contig_len - j > right_coord:
-                            right_coord = contig_len - j
-                        r_count += _reads_dict[slice_str]
-            cov_len = max(right_coord - left_coord, 0)
+            r_count, cov_len, flank_balance, left_coord, right_coord = Calculate_Read_Support(c, slice_len, _reads_dict)
             cov_dep = r_count * slice_len / 0.9
             if cov_min > 0:
                 if cov_len == 0 or cov_dep / cov_len < cov_min:
                     continue
                 if cov_dep / contig_len < cov_min:
                     c = c[left_coord:right_coord]
-                    contig_len = len(c)
-                    left_len = 0
-                    right_len = 0
-                    cov_len = contig_len
-            flank_balance = min(left_len, right_len) / max(left_len, right_len, 1)
+                    r_count, cov_len, flank_balance, left_coord, right_coord = Calculate_Read_Support(c, slice_len, _reads_dict)
             # 序列，序列的拼接权重，切片数
             processed_contigs.append([c, c_weight, r_count, cov_len, flank_balance])
     return processed_contigs, kmer_set_1 | kmer_set_2, contig_pos
@@ -535,6 +563,7 @@ def Write_Uce_Summary(rows, file_name):
 def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, loop_count, total_count):
     contig_best_path = os.path.join(args.o, "results", key + ".fasta")
     contig_all_path = os.path.join(args.o, "contigs_all", key + ".fasta")
+    contig_low_path = os.path.join(args.o, "contigs_all_low", key + ".fasta")
     current_ka = args.ka
     limit = args.limit_count
 
@@ -558,6 +587,7 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if not os.path.isfile(os.path.join(args.o, 'filtered', key + Filted_File_Ext)):
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
+        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         return False, key, {"status": "no filtered file", "value": 0}
 
     # 获取种子列表
@@ -569,6 +599,7 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if not reads_dict:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
+        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o,  "log.txt"), "No reads were obtained for gene", key)
         return False, key, {"status": "no reads", "value": 0}
 
@@ -594,6 +625,7 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if len(filtered_dict) < 3:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
+        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o,  "log.txt"), 'Could not get enough reads from filter.')
         return False, key, {"status": "insufficient genomic kmers", "value": 0}
 
@@ -615,6 +647,7 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if not seed_list:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
+        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o,  "log.txt"), 'Could not get enough seeds.')
         return False, key, {"status": "no seed", "value": 0}
 
@@ -629,7 +662,10 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
 
     while len(seed_list) > seed_list_len * 0.5: # 已经耗费了大于一半的seed就没必要再做了 
         # org_contigs: 0序列 1序列的拼接权重 2切片数
-        org_contigs, kmer_set, contig_pos = Get_Contig_v6(reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min, iteration=iteration, soft_boundary=soft_boundary, assembly_mode=args.assembly_mode)
+        org_contigs, kmer_set, contig_pos = Get_Contig_v6(
+            reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min,
+            iteration=iteration, soft_boundary=soft_boundary, assembly_mode=args.assembly_mode,
+            uce_side_candidates=args.uce_side_candidates)
         seed_list = [item for item in seed_list if (item[0] not in kmer_set) and (Reverse_Int(item[0], current_ka) not in kmer_set)]
         for contig in org_contigs:
             # contigs_all: 0序列 1使用的种子数量 2序列位置 3序列的拼接权重 4切片数 5覆盖跨度 6两侧平衡
@@ -648,28 +684,33 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if low_qual:
         contigs_all = contigs_all_low
 
-    # 设计规则重新排序，此处使用切片数排序
-    # 排序第一位作为 best contig
+    # Reference模式保留旧的保守排序；UCE模式优先选择read-supported span更长的候选。
     if contigs_all:
-        if args.assembly_mode == 'uce':
-            contigs_all.sort(key=lambda x: (x[5], len(x[0]), x[6], x[4], x[3]), reverse=True)
-        else:
-            contigs_all.sort(key=lambda x: (x[4], x[3]), reverse=True)
+        contigs_all.sort(key=lambda x: Score_Contig(x, args.assembly_mode), reverse=True)
         contigs_best.append(contigs_all[0])
     else:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
+        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o, "log.txt"), "Insufficient reads coverage, unable to build contigs.")
         return False, key, {"status": "no contigs", "value": 0}
 
     with open(contig_best_path, 'w') as out:
         for x in contigs_best:
-            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}\n')
+            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}_span_{x[5]}_balance_{x[6]:.3f}\n')
             out.write(x[0] + '\n')
     with open(contig_all_path, 'w') as out:
         for x in contigs_all:
-            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}\n')
+            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}_span_{x[5]}_balance_{x[6]:.3f}\n')
             out.write(x[0] + '\n')
+    if args.assembly_mode == 'uce' and contigs_all_low:
+        contigs_all_low.sort(key=lambda x: Score_Contig(x, args.assembly_mode), reverse=True)
+        with open(contig_low_path, 'w') as out:
+            for x in contigs_all_low:
+                out.write(f'>low_support_contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}_span_{x[5]}_balance_{x[6]:.3f}\n')
+                out.write(x[0] + '\n')
+    elif os.path.isfile(contig_low_path):
+        os.remove(contig_low_path)
 
     best_contig = contigs_best[0]
     ref_dict, filtered_dict = None, None
@@ -701,7 +742,9 @@ if __name__ == '__main__':
     pars.add_argument('-sb', '--soft_boundary', metavar='<int>', type=int, help='''soft boundary，default = [0], -1时为切片长度的一半''', required=False, default=0)
     pars.add_argument('-p', '--processes', metavar='<int>', type=int, help='Number of processes for multiprocessing', default= 1)#max(multiprocessing.cpu_count()-1,2))
     pars.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode')
+    pars.add_argument('--uce-side-candidates', dest='uce_side_candidates', metavar='<int>', type=int, default=8, help='''number of one-sided branch candidates to combine in UCE mode''')
     args = pars.parse_args()
+    args.uce_side_candidates = max(args.uce_side_candidates, 3)
 
     try:
         # 初始化文件夹
@@ -709,6 +752,8 @@ if __name__ == '__main__':
             os.mkdir(os.path.join(args.o, 'results'))
         if not os.path.isdir(os.path.join(args.o, 'contigs_all')):
             os.mkdir(os.path.join(args.o, 'contigs_all'))
+        if not os.path.isdir(os.path.join(args.o, 'contigs_all_low')):
+            os.mkdir(os.path.join(args.o, 'contigs_all_low'))
         print("Do not close this window manually, please!")
         # 载入参考序列信息
         Get_Ref_Info(args.r, ref_path_dict, ref_count_dict)

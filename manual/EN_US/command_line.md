@@ -88,6 +88,7 @@ Command line parameters:
 - `-sb`: Soft boundary (`0`, `auto` or `unlimited`)
 - `-i`: Search depth
 - `--assembly-mode`: Assembly mode (`reference` or `uce`). `reference` is the default and preserves the existing reference-guided assembly and boundary control; `uce` relaxes reference-boundary trimming and prioritizes longer read-supported UCE flanking sequences.
+- `--uce-side-candidates`: Number of one-sided branch candidates combined during UCE assembly. Larger values can expose longer low-support flanks but increase runtime and the number of candidate paths.
 - `-c`: Consensus threshold (as a decimal, between 0.0 and 1.0)
 - `-ts`: Trim source (`assembly` or `consensus`)
 - `-tm`: Trim method (`all`, `longest`, `terminal` or `isoform`)

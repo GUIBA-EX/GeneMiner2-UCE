@@ -64,6 +64,8 @@
 
 **uce_contigs**：仅在命令行使用`--assembly-mode uce`并执行组装时生成。该文件夹包含按样本合并的`*.contigs.fasta`文件，文件名和序列名采用phyluce兼容格式，可用于后续`phyluce_assembly_match_contigs_to_probes`等流程。`sample_name_map.tsv`记录GeneMiner2样本名与phyluce安全样本名的对应关系。
 
+**contigs_all_low**：组装阶段在每个样本目录下生成。UCE模式会在这里保留带`low_support_contig`标题的低支持延伸候选，便于检查可能有用的侧翼序列，但不会直接提升为主结果。
+
 **uce_assembly_summary.csv**：仅在命令行使用`--assembly-mode uce`并执行组装时生成。该表汇总每个样本和每个locus的组装状态、最佳contig长度、reads支持跨度、reads切片数、侧翼平衡度、候选contig数量和低质量标记。
 
 **summary.csv**: 统计汇总结果，内包含：

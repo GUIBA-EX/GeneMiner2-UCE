@@ -69,6 +69,8 @@
 
 **uce_contigs**: Generated only when the command-line workflow runs assembly with `--assembly-mode uce`. This folder contains one phyluce-compatible `*.contigs.fasta` file per sample for downstream tools such as `phyluce_assembly_match_contigs_to_probes`. `sample_name_map.tsv` records the mapping between GeneMiner2 sample names and phyluce-safe sample names.
 
+**contigs_all_low**: Per-sample folder generated during assembly. In UCE mode it preserves low-support extended candidate contigs with `low_support_contig` headers so potentially useful flanking sequence can be inspected without promoting it to the primary result.
+
 **uce_assembly_summary.csv**: Generated only when the command-line workflow runs assembly with `--assembly-mode uce`. This table summarizes assembly status, selected contig length, read-supported span, read slice count, flank balance, candidate contig count, and low-quality flags for each sample and locus.
 
 ####  :

@@ -263,7 +263,8 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             params = [assembler_bin, '-r', args.r, '-o', os.path.join(out_loc, name), '-ka', str(args.ka),
                       '-k_min', str(args.min_ka), '-k_max', str(args.max_ka), '-limit_count', str(args.error_threshold),
                       '-iteration', str(args.search_depth), '-sb', soft_boundary, '-cov_min', str(args.min_coverage),
-                      '-p', str(thr), '--assembly-mode', args.assembly_mode]
+                      '-p', str(thr), '--assembly-mode', args.assembly_mode,
+                      '--uce-side-candidates', str(args.uce_side_candidates)]
 
             subprocess.run(params)
 
@@ -1141,6 +1142,7 @@ if __name__ == '__main__':
     group_assembly.add_argument('-i', '--search-depth', default=4096, help='Search depth', metavar='INT', type=int)
     group_assembly.add_argument('--min-coverage', default=0, help='Minimum read depth required for contig generation', metavar='INT', type=int)
     group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode: reference keeps the default reference-guided behavior; uce preserves read-supported flanks around conserved cores')
+    group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
 
     group_consensus = parser.add_argument_group('argument for consensus generation')
     group_consensus.add_argument('-c', '--consensus-threshold', default='0.75', help='Consensus threshold (default = 0.75)', metavar='FLOAT', type=float)
@@ -1172,6 +1174,7 @@ if __name__ == '__main__':
     parser.add_argument('--max-depth', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+    args.uce_side_candidates = max(args.uce_side_candidates, 3)
 
     if args.no_trimal and args.alignment_filter not in (None, 'none'):
         parser.error('--no-trimal cannot be combined with --alignment-filter trimal or --alignment-filter alifilter')
