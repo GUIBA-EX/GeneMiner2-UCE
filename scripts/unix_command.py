@@ -382,6 +382,9 @@ def make_phyluce_sample_name(sample):
 def get_contig_read_count(header):
     parts = header.split('_')
 
+    if len(parts) >= 6 and parts[0] == 'contig' and parts[5].isdigit():
+        return parts[5]
+
     if parts and parts[-1].isdigit():
         return parts[-1]
 
