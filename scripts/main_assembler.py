@@ -731,8 +731,8 @@ if __name__ == '__main__':
         multiprocessing.freeze_support()
 
     pars = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description='''Assembler by YY 20230314''')
-    pars.add_argument('-r', metavar='<str>', type=str, help='''input ref file or dir''')
-    pars.add_argument('-o', metavar='<str>', type=str, help='''out dir''')
+    pars.add_argument('-r', metavar='<str>', type=str, help='''input ref file or dir''', required=True)
+    pars.add_argument('-o', metavar='<str>', type=str, help='''out dir''', required=True)
     pars.add_argument('-ka', metavar='<int>', type=int, help='''kmer of assemble''',  default=39)
     pars.add_argument('-k_max', metavar='<int>', type=int, help='''max kmer of assemble''',  default=39)
     pars.add_argument('-k_min', metavar='<int>', type=int, help='''max kmer of assemble''',  default=21)
@@ -760,6 +760,7 @@ if __name__ == '__main__':
         t0 = time.time()
     except Exception as e:
         Write_Print(os.path.join(args.o,  "log.txt"), "error:" , e)
+        sys.exit(1)
 
     try:
         Write_Print(os.path.join(args.o,  "log.txt"), '======================== Assemble =========================')
@@ -791,3 +792,4 @@ if __name__ == '__main__':
         Write_Print(os.path.join(args.o,  "log.txt"), '\nTime cost:', t1 - t0, '\n') # 拼接所用的时间
     except Exception as e:
         Write_Print(os.path.join(args.o,  "log.txt"), "error:" , e)
+        sys.exit(1)

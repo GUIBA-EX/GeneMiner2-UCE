@@ -15,7 +15,7 @@ This repository is a command-line focused fork of GeneMiner2 for target-enrichme
 
 ## Build
 
-Install build dependencies, then run:
+Install the full build dependencies, then run:
 
 ```bash
 make

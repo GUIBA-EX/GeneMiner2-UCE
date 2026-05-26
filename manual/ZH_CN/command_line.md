@@ -4,7 +4,7 @@
 
 ## 从源码构建
 
-从源码构建完整 CLI 包需要 Haxe、C++ 编译器、Python 和 PyInstaller。如果只是检查或修改流程，也可以在安装依赖后直接运行 `scripts/` 中的 Python 脚本。GeneMiner2 的使用方法请跳转到文档后半部分的[用法](#用法)章节。
+从源码构建独立 CLI 包需要 Haxe、C++ 编译器、Python 和 PyInstaller。如果只需要检查解析器和帮助信息，可以用 `python -m pip install -e . --no-build-isolation --no-deps` 安装开发辅助入口，并运行 `geneminer2-dev -h`。真实分析应先运行 `make`，再使用打包生成的 `cli/geneminer2`。GeneMiner2 的使用方法请跳转到文档后半部分的[用法](#用法)章节。
 
 第一步，安装系统的默认C++编译器和[zlib](https://zlib.net/)。在Ubuntu 24.04 或更新版本上，可以运行下面的命令：
 
@@ -25,7 +25,7 @@ haxelib install hxcpp
 第三步，安装Python和依赖项。如果可以使用conda，执行下面的命令即可；否则，需要用系统的软件包管理器手动安装这些包。
 
 ```
-conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cython matplotlib pyinstaller scipy
+conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cython matplotlib pyinstaller scipy setuptools wheel
 conda activate geneminer
 ```
 
