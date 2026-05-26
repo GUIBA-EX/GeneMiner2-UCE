@@ -4,7 +4,7 @@
 
 ## 从源码构建
 
-从源码构建独立 CLI 包需要 Haxe、C++ 编译器、Python 和 PyInstaller。如果只需要检查解析器和帮助信息，可以用 `python -m pip install -e . --no-build-isolation --no-deps` 安装开发辅助入口，并运行 `geneminer2-dev -h`。真实分析应先运行 `make`，再使用打包生成的 `cli/geneminer2`。GeneMiner2 的使用方法请跳转到文档后半部分的[用法](#用法)章节。
+从源码构建独立 CLI 包需要 Haxe、C++ 编译器、Python 和 PyInstaller。真实分析应先运行 `make`，再使用打包生成的 `cli/geneminer2`。GeneMiner2 的使用方法请跳转到文档后半部分的[用法](#用法)章节。
 
 第一步，安装系统的默认C++编译器和[zlib](https://zlib.net/)。在Ubuntu 24.04 或更新版本上，可以运行下面的命令：
 

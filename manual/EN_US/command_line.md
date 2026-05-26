@@ -4,7 +4,7 @@ This repository contains only the command-line GeneMiner2 workflow. GUI project 
 
 ## Building from Source
 
-Building the standalone CLI bundle requires Haxe, a C++ compiler, Python, and PyInstaller. If you only need a development helper for parser and help-message checks, install the Python package in editable mode with `python -m pip install -e . --no-build-isolation --no-deps` and run `geneminer2-dev -h`. Real analyses should use the bundled `cli/geneminer2` entry point after `make`. Please refer to [Usage](#usage) for command-line parameters.
+Building the standalone CLI bundle requires Haxe, a C++ compiler, Python, and PyInstaller. Real analyses should use the bundled `cli/geneminer2` entry point after `make`. Please refer to [Usage](#usage) for command-line parameters.
 
 First, install the default C++ compiler and [zlib](https://zlib.net/) for the platform. On Ubuntu 20.04 and later, this can be done as follows:
 
