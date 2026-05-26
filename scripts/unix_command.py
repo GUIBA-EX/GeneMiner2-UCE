@@ -1,5 +1,5 @@
 from Bio.SeqIO.FastaIO import SimpleFastaParser
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 import argparse
 import csv
 import math
@@ -339,11 +339,17 @@ def write_failed_samples(out_loc, failures):
         writer.writerow(['sample', 'stage', 'error'])
         writer.writerows(failures)
 
+def get_uce_rescue_parallelism(total_threads, sample_count):
+    rescue_threads = max(1, min(4, total_threads))
+    rescue_workers = max(1, min(4, sample_count, total_threads // rescue_threads))
+    return rescue_workers, rescue_threads
+
 def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignore_hook=lambda *_, **__: None):
     out_loc = args.o.strip()
     kmer_dict_path = os.path.join(out_loc, f'kmer_dict_k{args.kf}.dict')
     rescue_enabled = args.uce_rescue_reads
     failed_samples = []
+    rescue_workers, rescue_threads = get_uce_rescue_parallelism(args.p, len(samples))
 
     if rescue_enabled and (args.assembly_mode != 'uce' or not do_filter or not do_refilter or not do_assemble):
         raise RuntimeError('--uce-rescue-reads requires --assembly-mode uce and the filter, refilter and assemble steps')
@@ -668,13 +674,31 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 continue
 
     if rescue_enabled:
-        for name in samples.keys():
-            try:
-                run_uce_rescue(name, thr=max(args.p, 1))
-            except Exception as e:
-                print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
-                failed_samples.append((name, 'uce_rescue', str(e)))
-                continue
+        print(f'Running UCE raw-read rescue with up to {rescue_workers} sample(s) in parallel and {rescue_threads} thread(s) per sample.')
+
+        if rescue_workers > 1:
+            with ThreadPoolExecutor(max_workers=rescue_workers) as executor:
+                running_rescues = {
+                    executor.submit(run_uce_rescue, name, thr=rescue_threads): name
+                    for name in samples.keys()
+                }
+
+                for task in as_completed(running_rescues):
+                    name = running_rescues[task]
+
+                    try:
+                        task.result()
+                    except Exception as e:
+                        print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
+                        failed_samples.append((name, 'uce_rescue', str(e)))
+        else:
+            for name in samples.keys():
+                try:
+                    run_uce_rescue(name, thr=rescue_threads)
+                except Exception as e:
+                    print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
+                    failed_samples.append((name, 'uce_rescue', str(e)))
+                    continue
 
     write_failed_samples(out_loc, failed_samples)
 

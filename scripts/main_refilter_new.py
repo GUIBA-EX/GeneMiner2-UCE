@@ -5,6 +5,7 @@ import argparse
 import collections
 import contextlib
 import math
+import multiprocessing
 import os
 import shutil
 import struct
@@ -486,9 +487,17 @@ def run(args):
                           args.copy_only, args.keep_temporaries, args.keep_linked_mates,
                           args.kmer_size))
 
-    if args.processes > 1:
-        with multiprocessing.Pool(args.processes) as pool:
-            for _ in pool.imap_unordered(filter_gene, tasks):
+    if not tasks:
+        print_log(args.log_file, 'No genes with matching reads and references.')
+        return
+
+    processes = min(args.processes, len(tasks))
+
+    if processes > 1:
+        chunksize = max(1, len(tasks) // (processes * 4))
+
+        with multiprocessing.Pool(processes) as pool:
+            for _ in pool.imap_unordered(filter_gene, tasks, chunksize=chunksize):
                 pass
     else:
         for task in tasks:
@@ -501,8 +510,6 @@ def run(args):
             pass
 
 if __name__ == '__main__':
-    import multiprocessing
-
     if os.name == 'nt':
         multiprocessing.freeze_support()
 
@@ -528,6 +535,21 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--processes', default=1, help='Number of parallel processes', type=int)
 
     args = parser.parse_args()
+
+    if args.kmer_size < 1:
+        parser.error('--kmer-size must be positive')
+
+    if args.min_depth < 0:
+        parser.error('--min-depth must be zero or positive')
+
+    if args.max_depth <= 0:
+        parser.error('--max-depth must be positive')
+
+    if args.max_size <= 0:
+        parser.error('--max-size must be positive')
+
+    if args.processes < 1:
+        parser.error('--processes must be positive')
 
     try:
         read_dict = get_read_dict(args.se_dir, args.pe_dir, args.use_gm2_format)
