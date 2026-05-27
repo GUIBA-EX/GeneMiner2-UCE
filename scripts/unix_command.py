@@ -454,6 +454,18 @@ def get_uce_rescue_parallelism(total_threads, sample_count):
     rescue_workers = max(1, min(4, sample_count, total_threads // rescue_threads))
     return rescue_workers, rescue_threads
 
+def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1, q2, args, rescue_kmer_dict_path, threads):
+    dict_cmd = [filter_bin, '-r', rescue_ref_dir, '-o', sample_dir, '-kf', str(args.kf),
+                '-s', str(args.step_size), '-gr', '-lkd', rescue_kmer_dict_path, '-m', str(threads)]
+    reads_cmd = [filter_bin, '-r', rescue_ref_dir, '-q1', q1, '-q2', q2, '-o', sample_dir,
+                 '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
+                 '-m', str(threads), '-lb', '-lkd', rescue_kmer_dict_path]
+
+    if args.max_reads > 0:
+        reads_cmd.extend(['-m_reads', str(args.max_reads)])
+
+    return dict_cmd, reads_cmd
+
 def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr):
     return [assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
             '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
@@ -649,11 +661,19 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 if os.path.isfile(rescue_kmer_dict_path):
                     os.remove(rescue_kmer_dict_path)
 
-                subprocess.run([filter_bin, '-r', rescue_ref_dir, '-o', sample_dir, '-kf', str(args.kf),
-                                '-s', str(args.step_size), '-gr', '-lkd', rescue_kmer_dict_path, '-m', '2'],
-                               check=True)
-
                 q1, q2 = samples[name]
+                dict_cmd, reads_cmd = build_uce_rescue_filter_commands(
+                    filter_bin,
+                    rescue_ref_dir,
+                    sample_dir,
+                    q1,
+                    q2,
+                    args,
+                    rescue_kmer_dict_path,
+                    thr,
+                )
+
+                subprocess.run(dict_cmd, check=True)
 
                 if os.path.isfile(read_count_path):
                     os.remove(read_count_path)
@@ -664,14 +684,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 if os.path.isdir(filtered_dir):
                     shutil.rmtree(filtered_dir, ignore_errors=True)
 
-                params = [filter_bin, '-r', rescue_ref_dir, '-q1', q1, '-q2', q2, '-o', sample_dir,
-                          '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                          '-m', '5', '-lb', '-lkd', rescue_kmer_dict_path]
-
-                if args.max_reads > 0:
-                    params.extend(['-m_reads', str(args.max_reads)])
-
-                subprocess.run(params, check=True)
+                subprocess.run(reads_cmd, check=True)
 
                 if not os.path.isfile(read_count_path):
                     raise RuntimeError('UCE rescue filter failed')
@@ -682,7 +695,8 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             except Exception as e:
                 restore_sample_state(sample_dir, backup_dir)
                 write_sample_uce_rescue_summary(sample_dir, name, before_rows, before_rows, 'failed_rolled_back', str(e))
-                raise
+                print(f'Warning: UCE raw-read rescue failed for {name}; first-round assembly was restored: {e}')
+                return
 
             else:
                 after_rows = read_uce_summary(summary_path)
