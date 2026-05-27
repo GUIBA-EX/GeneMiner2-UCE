@@ -428,6 +428,14 @@ def get_uce_rescue_parallelism(total_threads, sample_count):
     rescue_workers = max(1, min(4, sample_count, total_threads // rescue_threads))
     return rescue_workers, rescue_threads
 
+def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr):
+    return [assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
+            '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
+            '-limit_count', str(args.error_threshold), '-iteration', str(args.search_depth),
+            '-sb', soft_boundary, '-cov_min', str(args.min_coverage), '-p', str(thr),
+            '--assembly-mode', args.assembly_mode,
+            '--uce-side-candidates', str(args.uce_side_candidates)]
+
 def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignore_hook=lambda *_, **__: None):
     out_loc = args.o.strip()
     kmer_dict_path = os.path.join(out_loc, f'kmer_dict_k{args.kf}.dict')
@@ -561,10 +569,12 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
     if do_assemble:
         assembler_bin = find_executable('main_assembler', internal=True)
 
-        def run_assembler(name, thr=1):
-            in_dir = os.path.join(out_loc, name, 'filtered')
-            out_dir = os.path.join(out_loc, name, 'results')
-            result_path = os.path.join(out_loc, name, 'result_dict.txt')
+        def run_assembler(name, thr=1, ref_dir=None):
+            sample_dir = os.path.join(out_loc, name)
+            in_dir = os.path.join(sample_dir, 'filtered')
+            out_dir = os.path.join(sample_dir, 'results')
+            result_path = os.path.join(sample_dir, 'result_dict.txt')
+            ref_dir = args.r if ref_dir is None else ref_dir
 
             if not os.path.isdir(in_dir):
                 raise RuntimeError('No successful filter run, cannot assemble')
@@ -575,18 +585,12 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             if os.path.isfile(result_path):
                 os.remove(result_path)
 
-            uce_summary_path = os.path.join(out_loc, name, 'uce_assembly_summary.csv')
+            uce_summary_path = os.path.join(sample_dir, 'uce_assembly_summary.csv')
 
             if os.path.isfile(uce_summary_path):
                 os.remove(uce_summary_path)
 
-            params = [assembler_bin, '-r', args.r, '-o', os.path.join(out_loc, name), '-ka', str(args.ka),
-                      '-k_min', str(args.min_ka), '-k_max', str(args.max_ka), '-limit_count', str(args.error_threshold),
-                      '-iteration', str(args.search_depth), '-sb', soft_boundary, '-cov_min', str(args.min_coverage),
-                      '-p', str(thr), '--assembly-mode', args.assembly_mode,
-                      '--uce-side-candidates', str(args.uce_side_candidates)]
-
-            subprocess.run(params, check=True)
+            subprocess.run(build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr), check=True)
 
             if not os.path.isfile(result_path):
                 raise RuntimeError('Assembly failed')
@@ -647,7 +651,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                     raise RuntimeError('UCE rescue filter failed')
 
                 run_refilter(name, thr=thr, ref_dir=rescue_ref_dir)
-                run_assembler(name, thr=thr)
+                run_assembler(name, thr=thr, ref_dir=rescue_ref_dir)
 
             except Exception as e:
                 restore_sample_state(sample_dir, backup_dir)
