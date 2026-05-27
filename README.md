@@ -15,6 +15,8 @@ This fork is not distributed as an installable Python package. Build the standal
 - Optional AliFilter alignment filtering through `--alignment-filter alifilter`.
 - Controlled combine-stage parallelism through `--msa-threads` and `--filter-processes`.
 
+![GeneMiner2 UCE CLI workflow](docs/images/summary_EN.png)
+
 ## Changes in This Fork
 
 This fork keeps the original GeneMiner2 reference-guided recovery model, but adjusts the command-line workflow for UCE loci, where the bait/probe sequence can be short and the useful phylogenetic signal often comes from flanking sequence.

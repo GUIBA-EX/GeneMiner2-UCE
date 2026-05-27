@@ -15,6 +15,8 @@
 - 通过 `--alignment-filter alifilter` 支持可选 AliFilter 比对列过滤。
 - 通过 `--msa-threads` 和 `--filter-processes` 控制 combine 阶段并行。
 
+![GeneMiner2 UCE CLI 流程](docs/images/summary_ZH.png)
+
 ## 本分支改动说明
 
 本分支保留 GeneMiner2 原有的参考引导 reads 捕获和组装框架，但针对 UCE 数据做了命令行流程调整。UCE 探针或 bait 通常较短，而系统发育分析中有用的信息往往来自探针两侧的 flanking region，因此本分支的目标是尽量保留有 reads 支持的侧翼延伸，同时避免接受明显异常的过长 contig。
