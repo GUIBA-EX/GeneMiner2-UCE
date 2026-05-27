@@ -23,7 +23,7 @@ class UceRescueParallelismTests(unittest.TestCase):
     def test_scales_down_for_small_sample_counts(self):
         self.assertEqual(get_uce_rescue_parallelism(32, 2), (2, 4))
 
-    def test_rescue_filter_commands_use_assigned_threads(self):
+    def test_rescue_filter_commands_preserve_mainfilter_modes(self):
         args = SimpleNamespace(kf=21, step_size=4, max_reads=0)
         dict_cmd, reads_cmd = build_uce_rescue_filter_commands(
             "MainFilterNew",
@@ -36,9 +36,8 @@ class UceRescueParallelismTests(unittest.TestCase):
             4,
         )
 
-        self.assertEqual(dict_cmd[dict_cmd.index("-m") + 1], "4")
-        self.assertEqual(reads_cmd[reads_cmd.index("-m") + 1], "4")
-        self.assertNotIn("5", reads_cmd)
+        self.assertEqual(dict_cmd[dict_cmd.index("-m") + 1], "2")
+        self.assertEqual(reads_cmd[reads_cmd.index("-m") + 1], "5")
 
     def test_rescue_filter_commands_preserve_max_reads(self):
         args = SimpleNamespace(kf=21, step_size=4, max_reads=1000)

@@ -456,10 +456,10 @@ def get_uce_rescue_parallelism(total_threads, sample_count):
 
 def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1, q2, args, rescue_kmer_dict_path, threads):
     dict_cmd = [filter_bin, '-r', rescue_ref_dir, '-o', sample_dir, '-kf', str(args.kf),
-                '-s', str(args.step_size), '-gr', '-lkd', rescue_kmer_dict_path, '-m', str(threads)]
+                '-s', str(args.step_size), '-gr', '-lkd', rescue_kmer_dict_path, '-m', '2']
     reads_cmd = [filter_bin, '-r', rescue_ref_dir, '-q1', q1, '-q2', q2, '-o', sample_dir,
                  '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                 '-m', str(threads), '-lb', '-lkd', rescue_kmer_dict_path]
+                 '-m', '5', '-lb', '-lkd', rescue_kmer_dict_path]
 
     if args.max_reads > 0:
         reads_cmd.extend(['-m_reads', str(args.max_reads)])
