@@ -12,6 +12,7 @@ This fork is not distributed as an installable Python package. Build the standal
 - UCE-oriented assembly mode through `--assembly-mode uce`, designed to retain longer read-supported flanking contigs.
 - Optional one-round UCE raw-read rescue through `--uce-rescue-reads`.
 - phyluce-compatible UCE contig export under `uce_contigs/`.
+- HybPiper-style UCE statistics through the `stats` subcommand.
 - Optional AliFilter alignment filtering through `--alignment-filter alifilter`.
 - Controlled combine-stage parallelism through `--msa-threads` and `--filter-processes`.
 
@@ -95,6 +96,18 @@ When `--assembly-mode uce` is used, the workflow writes:
 - `uce_rescue_summary.csv`: rescue before/after comparison, density ratio, rollback status, and errors.
 - `uce_contigs/`: phyluce-compatible per-sample contig FASTA files.
 - `contigs_all_low/`: low-support extended candidates retained for inspection but not promoted to primary results.
+
+After a UCE run, the `stats` subcommand summarizes recovery across samples and loci:
+
+```bash
+cli/geneminer2 stats \
+  -f samples.tsv \
+  -r references \
+  -o output \
+  --stats-no-heatmap
+```
+
+It writes `uce_stats.tsv`, `uce_locus_stats.tsv`, `uce_seq_lengths.tsv`, `uce_read_counts.tsv`, and `uce_filtered_read_counts.tsv`. If `pandas`, `seaborn`, and `matplotlib` are available and `--stats-no-heatmap` is not supplied, it also writes `uce_recovery_heatmap.png` and `uce_read_counts_heatmap.png`.
 
 ### AliFilter integration
 

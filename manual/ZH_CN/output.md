@@ -70,6 +70,18 @@
 
 **uce_rescue_summary.csv**：使用`--assembly-mode uce --uce-rescue-reads`时生成。该表比较一轮raw-read rescue前后每个locus的contig长度、reads数量、read density、rescue/第一轮 density 比值、reads支持跨度和rescue状态；如果rescue失败或因density ratio阈值被回退，也会记录错误信息。
 
+**uce_stats.tsv**：由`stats`子命令生成。该样本级统计表汇总过滤reads数量、成功loci数量、低质量loci数量、主要失败类型、按参考长度比例统计的恢复数量、rescue回退数量、总恢复碱基数、contig长度、reads支持跨度和read density。
+
+**uce_locus_stats.tsv**：由`stats`子命令生成。该locus级统计表汇总参考长度、样本占有率、平均和中位恢复长度、reads支持、侧翼平衡度和候选contig数量。
+
+**uce_seq_lengths.tsv**：由`stats`子命令生成。该表是类似HybPiper的sample-by-locus长度矩阵，包含根据参考目录计算的`MeanLength`行。
+
+**uce_read_counts.tsv**：由`stats`子命令生成。该sample-by-locus矩阵记录最佳contig的read count。
+
+**uce_filtered_read_counts.tsv**：由`stats`子命令生成。该sample-by-locus矩阵根据`ref_reads_count_dict.txt`记录第一轮过滤阶段分配到各locus的reads数量。
+
+**uce_recovery_heatmap.png**和**uce_read_counts_heatmap.png**：由`stats`子命令生成；如果环境中没有`pandas`、`seaborn`或`matplotlib`，或使用了`--stats-no-heatmap`，则不会生成。
+
 **failed_samples.tsv**：当任一样本在filter、refilter、assemble或UCE rescue阶段失败时生成。命令行流程会在写出该文件后返回错误，避免后续combine/tree在样本结果不完整时静默继续。
 
 **summary.csv**: 统计汇总结果，内包含：

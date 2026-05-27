@@ -12,6 +12,7 @@
 - 通过 `--assembly-mode uce` 启用 UCE 组装模式，优先保留更长且有 reads 支持的侧翼 contig。
 - 通过 `--uce-rescue-reads` 启用一轮 UCE raw-read rescue。
 - 在 `uce_contigs/` 下导出 phyluce 兼容的 UCE contig 文件。
+- 通过 `stats` 子命令生成类似 HybPiper 的 UCE 统计表。
 - 通过 `--alignment-filter alifilter` 支持可选 AliFilter 比对列过滤。
 - 通过 `--msa-threads` 和 `--filter-processes` 控制 combine 阶段并行。
 
@@ -95,6 +96,18 @@ density_ratio < 0.5
 - `uce_rescue_summary.csv`：记录 rescue 前后对比、density ratio、回退状态和错误信息。
 - `uce_contigs/`：按样本导出的 phyluce 兼容 contig FASTA。
 - `contigs_all_low/`：保留低支持延伸候选，便于人工检查，但不会直接提升为主结果。
+
+UCE 流程结束后，可以用 `stats` 子命令汇总样本和 locus 层面的恢复情况：
+
+```bash
+cli/geneminer2 stats \
+  -f samples.tsv \
+  -r references \
+  -o output \
+  --stats-no-heatmap
+```
+
+该命令会输出 `uce_stats.tsv`、`uce_locus_stats.tsv`、`uce_seq_lengths.tsv`、`uce_read_counts.tsv` 和 `uce_filtered_read_counts.tsv`。如果环境中安装了 `pandas`、`seaborn` 和 `matplotlib`，且没有使用 `--stats-no-heatmap`，还会生成 `uce_recovery_heatmap.png` 和 `uce_read_counts_heatmap.png`。
 
 ### AliFilter 整合
 

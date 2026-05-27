@@ -103,6 +103,9 @@ Command line parameters:
 - `--alifilter-model`: Optional AliFilter `model.json` path when `--alignment-filter alifilter` is used. Omit this option, or set it to `default`, to use AliFilter's built-in default model.
 - `--strict-combine-errors`: Stop `combine` if any locus fails during multiple-sequence alignment, alignment cleanup, or alignment filtering. By default, failed loci are skipped with a warning.
 - `--no-trimal`: Deprecated alias for `--alignment-filter none`
+- `stats`: Optional subcommand that summarizes UCE recovery after a run. It writes sample-level, locus-level, length-matrix, read-count, and filtered-read-count tables.
+- `--stats-no-heatmap`: Do not create statistics heatmaps.
+- `--stats-count-input-reads`: Count input FASTQ reads for `InputReads` and `PctFiltered`; this can be slow for large datasets.
 - `-cd`: Maximum difference after clean-up
 - `-cn`: Minimum number of sequences after clean-up
 - `-m`: `coalescent` or `concatenation`

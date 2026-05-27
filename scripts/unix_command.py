@@ -12,6 +12,7 @@ import threading
 
 import build_trimed
 import fix_alignment
+import gm2_stats
 import muscle_wrapper
 
 COMMAND_HELP = '''
@@ -22,6 +23,7 @@ consensus Consensus generation on heterozygous sites
 trim      Flank sequence removal
 combine   Gene alignment, concatenation and cleanup
 tree      Phylogenetic tree reconstruction
+stats     UCE recovery statistics and heatmaps
 '''
 
 DEPTH_DEPRECATION_EXPLAINER = '''
@@ -1660,6 +1662,7 @@ def execute_tasks(args, samples):
     do_trim = 'trim' in commands
     do_combine = 'combine' in commands
     do_tree = 'tree' in commands
+    do_stats = 'stats' in commands
 
     try:
         if do_filter or do_refilter or do_assemble:
@@ -1694,6 +1697,9 @@ def execute_tasks(args, samples):
             else:
                 build_concatenation_tree(args)
 
+        if do_stats:
+            gm2_stats.run(args, samples)
+
     except (RuntimeError, subprocess.SubprocessError) as e:
         print(f'Error: {e}')
         return 1
@@ -1705,7 +1711,7 @@ if __name__ == '__main__':
                                      description='GeneMiner2 is a tool for extracting phylogenetic marker genes.',
                                      epilog=HELP_EPILOG)
     parser.add_argument('command',
-                        choices=('filter', 'refilter', 'assemble', 'consensus', 'trim', 'combine', 'tree', []),
+                        choices=('filter', 'refilter', 'assemble', 'consensus', 'trim', 'combine', 'tree', 'stats', []),
                         help='One or several of the following actions, separated by space:' + COMMAND_HELP,
                         metavar='command',
                         nargs='*')
@@ -1765,6 +1771,10 @@ if __name__ == '__main__':
     group_tree.add_argument('-m', '--tree-method', choices=('coalescent', 'concatenation'), default='coalescent', help='Multi-gene tree reconstruction method (default = coalescent)')
     group_tree.add_argument('-b', '--bootstrap', default=1000, help='Number of bootstrap replicates', metavar='INT', type=int)
     group_tree.add_argument('--phylo-program', choices=('raxmlng', 'iqtree', 'fasttree', 'veryfasttree'), default='fasttree', help='Program for phylogenetic tree reconstruction', type=str)
+
+    group_stats = parser.add_argument_group('arguments for UCE statistics')
+    group_stats.add_argument('--stats-no-heatmap', action='store_true', default=False, help='Do not create UCE statistics heatmaps')
+    group_stats.add_argument('--stats-count-input-reads', action='store_true', default=False, help='Count input FASTQ reads for InputReads and PctFiltered statistics; can be slow for large datasets')
 
     parser.add_argument('--min-depth', help=argparse.SUPPRESS)
     parser.add_argument('--max-depth', help=argparse.SUPPRESS)

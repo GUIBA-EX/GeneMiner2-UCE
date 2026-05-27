@@ -103,6 +103,9 @@ cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/reference
 - `--alifilter-model`: 使用`--alignment-filter alifilter`时可选指定AliFilter的`model.json`路径；省略该参数或设为`default`时使用AliFilter内置默认模型
 - `--strict-combine-errors`: 如果任一locus在多序列比对、alignment清理或比对列过滤阶段失败，则立即停止`combine`。默认行为是输出警告并跳过失败的locus
 - `--no-trimal`: 已弃用，等同于`--alignment-filter none`
+- `stats`: 可选子命令，用于在UCE流程结束后汇总恢复结果。该命令会输出样本级统计、locus级统计、长度矩阵、read-count矩阵和过滤read-count矩阵。
+- `--stats-no-heatmap`: 不生成统计热图。
+- `--stats-count-input-reads`: 统计输入FASTQ reads数量，用于填写`InputReads`和`PctFiltered`；大数据集上可能较慢。
 - `-cd`: 清理序列的最大差异
 - `-cn`: 清理序列的最小序列数量
 - `-m`: 建树的方法，支持`coalescent`和`concatenation`
