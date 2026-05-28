@@ -37,6 +37,8 @@ $(REFILTER_BIN): scripts/main_refilter_new.py rust/main_refilter_new/Cargo.toml 
 		cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/main_refilter_new/_internal; \
 	fi
 
+cli/bin/unix_command: scripts/gm2_stats.py
+
 $(PY_BIN): cli/bin/%: scripts/%.py | cython
 	cd scripts && pyinstaller -D -y --optimize 2 $(notdir $<)
 	install -D -t cli/bin scripts/dist/$(notdir $@)/$(notdir $@)

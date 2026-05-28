@@ -25,7 +25,7 @@ haxelib install hxcpp
 Third, install Python dependencies. If conda is available, run the following commands. Otherwise, it would be necessary to install them manually using the system package manager.
 
 ```
-conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cython matplotlib pyinstaller scipy setuptools wheel
+conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cython matplotlib pandas seaborn pyinstaller scipy setuptools wheel
 conda activate geneminer
 ```
 
