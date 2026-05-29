@@ -34,7 +34,7 @@ The Python implementation is still kept in `scripts/main_refilter_new.py` as a r
 
 ### UCE assembly mode
 
-`--assembly-mode uce` changes the assembly behavior so GeneMiner2 is less likely to trim contigs back to the short reference/probe interval. In UCE mode, the assembler prefers longer candidates that still have read support, and the default command set skips the reference-based `trim` step unless `trim` is requested explicitly.
+`--assembly-mode uce` changes the assembly behavior so GeneMiner2 is less likely to trim contigs back to the short reference/probe interval. In UCE mode, the assembler prefers longer candidates that still have read support, penalizes weakly supported over-extension using read-density and k-mer-depth continuity, and the default command set skips the reference-based `trim` step unless `trim` is requested explicitly.
 
 Recommended UCE-oriented assembly options are:
 
@@ -48,6 +48,33 @@ Recommended UCE-oriented assembly options are:
 ```
 
 These settings keep boundary trimming permissive, allow automatic assembly k-mer selection over a lower range, and reduce the k-mer count threshold. They are designed for short UCE baits and divergent samples, but they can also admit noisier candidates, so the rescue summary and downstream alignments should still be inspected.
+
+### Reference/index cache
+
+Repeated runs against the same reference directory can reuse reference k-mer indexes:
+
+```bash
+--reuse-reference-cache
+```
+
+The cache is fingerprinted by reference file names, sizes, modification times, `-kf`, and `-s`. By default it is written under `output/.gm2_reference_cache`; use `--reference-cache-dir` to place it in a shared project or scratch directory. This speeds up repeated filter and assembly runs, but it does not change contig selection or improve assembly quality. UCE rescue references are rebuilt per sample because they include sample-specific preliminary contigs.
+
+UCE mode also applies conservative contig guardrails before candidate selection. By default, contigs longer than 5000 bp are rejected, and contigs at least 1000 bp long must have `read_count / contig_length >= 0.003`. These defaults are intended to suppress very long, weakly supported rescue artifacts while leaving short low-coverage loci available for inspection. They can be adjusted with:
+
+```bash
+--uce-max-contig-length 5000 \
+--uce-min-read-density 0.003 \
+--uce-density-check-min-length 1000
+```
+
+Two optional advanced guardrails are available but disabled by default:
+
+```bash
+--uce-max-depth-cv 0 \
+--uce-max-depth-ratio 0
+```
+
+Set these to positive values only when you want to reject candidates with highly uneven k-mer depth or strong repeat-like depth spikes.
 
 ### Paired-end mate retention
 
@@ -92,7 +119,7 @@ The rescue summary records `before_read_density`, `after_read_density`, and `den
 
 When `--assembly-mode uce` is used, the workflow writes:
 
-- `uce_assembly_summary.csv`: per-sample and per-locus assembly status, selected contig length, read-supported span, read count, flank balance, candidate count, and low-quality flag.
+- `uce_assembly_summary.csv`: per-sample and per-locus assembly status, selected contig length, read-supported span, read count, read density, support fraction, flank balance, k-mer depth metrics, candidate count, and low-quality flag.
 - `uce_rescue_summary.csv`: rescue before/after comparison, density ratio, rollback status, and errors.
 - `uce_contigs/`: phyluce-compatible per-sample contig FASTA files.
 - `contigs_all_low/`: low-support extended candidates retained for inspection but not promoted to primary results.

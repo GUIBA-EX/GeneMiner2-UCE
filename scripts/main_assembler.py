@@ -5,8 +5,11 @@ from operator import itemgetter
 import argparse
 import csv
 import gc
+import hashlib
+import math
 import multiprocessing
 import os
+import pickle
 import sys
 import time
 
@@ -21,6 +24,30 @@ ref_path_dict = {}  # 序列路径字典
 ref_count_dict = {} # 参考序列条数字典
 kmer_dict = {}  # kmer字典
 ref_reads_count_dict = {}  # reads计数的字典
+
+RAW_SEQ = 0
+RAW_WEIGHT = 1
+RAW_READ_COUNT = 2
+RAW_SUPPORTED_SPAN = 3
+RAW_FLANK_BALANCE = 4
+RAW_READ_DENSITY = 5
+RAW_SUPPORT_FRACTION = 6
+RAW_KMER_MEDIAN_DEPTH = 7
+RAW_KMER_DEPTH_CV = 8
+RAW_KMER_MAX_DEPTH_RATIO = 9
+
+CONTIG_SEQ = 0
+CONTIG_SEED_COUNT = 1
+CONTIG_POS = 2
+CONTIG_WEIGHT = 3
+CONTIG_READ_COUNT = 4
+CONTIG_SUPPORTED_SPAN = 5
+CONTIG_FLANK_BALANCE = 6
+CONTIG_READ_DENSITY = 7
+CONTIG_SUPPORT_FRACTION = 8
+CONTIG_KMER_MEDIAN_DEPTH = 9
+CONTIG_KMER_DEPTH_CV = 10
+CONTIG_KMER_MAX_DEPTH_RATIO = 11
 
 def Write_Print(log_path, *log_str, sep = " "):
     """
@@ -115,6 +142,40 @@ def Make_Kmer_Dict(_kmer_dict, file_path, kmer_size):
                         temp_int += int((j + 1) / ref_kmer_count * 1000)
 
                     _kmer_dict[kmer_int] = temp_int
+
+def Reference_File_Cache_Key(file_path, kmer_size):
+    stat = os.stat(file_path)
+    digest = hashlib.sha256()
+    digest.update(os.path.abspath(file_path).encode())
+    digest.update(b'\0')
+    digest.update(str(stat.st_size).encode())
+    digest.update(b'\0')
+    digest.update(str(stat.st_mtime_ns).encode())
+    return f'{os.path.basename(file_path)}.k{kmer_size}.{digest.hexdigest()[:16]}.pkl'
+
+def Load_Or_Make_Kmer_Dict(_kmer_dict, file_path, kmer_size, cache_dir=None):
+    if not cache_dir:
+        Make_Kmer_Dict(_kmer_dict, file_path, kmer_size)
+        return False
+
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, Reference_File_Cache_Key(file_path, kmer_size))
+
+    if os.path.isfile(cache_path):
+        try:
+            with open(cache_path, 'rb') as handle:
+                _kmer_dict.update(pickle.load(handle))
+            return True
+        except (OSError, EOFError, pickle.PickleError, AttributeError, ValueError):
+            _kmer_dict.clear()
+
+    Make_Kmer_Dict(_kmer_dict, file_path, kmer_size)
+
+    temp_path = f'{cache_path}.{os.getpid()}.tmp'
+    with open(temp_path, 'wb') as handle:
+        pickle.dump(_kmer_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(temp_path, cache_path)
+    return False
 
 def Get_Ref_Info(ref_path, _ref_path_dict, _ref_count_dict):
     """
@@ -254,6 +315,12 @@ def Quartile(x):
     lHalf, rHalf, q2 = Median(x)
     return Median(lHalf)[2], q2, Median(rHalf)[2], max(x) + 1
 
+def Median_Value(x):
+    if not x:
+        return 0
+
+    return Median(x)[2]
+
 def Get_Weight(_pos, new_pos, weight = 4):
     """
     距离和权重的关系模型，默认权重值为16，最高权重值为256，最低为0
@@ -383,24 +450,110 @@ def Calculate_Read_Support(seq, slice_len, reads_dict):
     return read_count, supported_span, flank_balance, left_coord, right_coord
 
 
+def Calculate_Kmer_Depth_Stats(seq, kmer_size, assemble_dict):
+    seq_str = seq.translate(FWD_TRANS)
+
+    if len(seq_str) < kmer_size:
+        return 0, 0, 0
+
+    mask_bin = (1 << (kmer_size << 1)) - 1
+    seq_int = int(seq_str, 4)
+    counts = []
+
+    for _ in range(0, len(seq_str) - kmer_size + 1):
+        kmer = seq_int & mask_bin
+        value = assemble_dict.get(kmer)
+        counts.append(value[0] if value else 0)
+        seq_int >>= 2
+
+    median_depth = Median_Value(counts)
+
+    if not counts or median_depth <= 0:
+        return median_depth, 0, 0
+
+    mean_depth = sum(counts) / len(counts)
+    if mean_depth <= 0:
+        depth_cv = 0
+    else:
+        variance = sum((x - mean_depth) ** 2 for x in counts) / len(counts)
+        depth_cv = math.sqrt(variance) / mean_depth
+
+    max_depth_ratio = max(counts) / median_depth
+    return median_depth, depth_cv, max_depth_ratio
+
+
 def Score_Contig(contig, assembly_mode):
     """
     Reference mode keeps the historical conservative ranking.
     UCE mode prefers candidates that extend farther while retaining read support.
     """
-    seq_len = len(contig[0])
-    weight = contig[3]
-    read_count = contig[4]
-    supported_span = contig[5]
-    flank_balance = contig[6]
+    seq_len = len(contig[CONTIG_SEQ])
+    weight = contig[CONTIG_WEIGHT]
+    read_count = contig[CONTIG_READ_COUNT]
+    supported_span = contig[CONTIG_SUPPORTED_SPAN]
+    flank_balance = contig[CONTIG_FLANK_BALANCE]
 
     if assembly_mode == 'uce':
-        return (supported_span, seq_len, read_count, flank_balance, weight)
+        read_density = contig[CONTIG_READ_DENSITY]
+        support_fraction = contig[CONTIG_SUPPORT_FRACTION]
+        depth_cv = contig[CONTIG_KMER_DEPTH_CV]
+        max_depth_ratio = contig[CONTIG_KMER_MAX_DEPTH_RATIO]
+        density_factor = min(read_density / 0.01, 1.0)
+        continuity_factor = 1 / (1 + depth_cv)
+        repeat_factor = min(10 / max(max_depth_ratio, 1), 1.0)
+        adjusted_span = supported_span * density_factor * continuity_factor * repeat_factor
+        return (adjusted_span, support_fraction, read_density, seq_len, read_count, flank_balance, weight)
 
     return (read_count, weight)
 
 
-def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference', uce_side_candidates = 8):
+def Build_Uce_Guardrails(args):
+    return {
+        'max_contig_length': args.uce_max_contig_length,
+        'min_read_density': args.uce_min_read_density,
+        'density_check_min_length': args.uce_density_check_min_length,
+        'max_depth_cv': args.uce_max_depth_cv,
+        'max_depth_ratio': args.uce_max_depth_ratio,
+    }
+
+
+def Pass_Uce_Guardrails(contig_len, read_density, depth_cv, max_depth_ratio, guardrails):
+    if not guardrails:
+        return True
+
+    if guardrails['max_contig_length'] > 0 and contig_len > guardrails['max_contig_length']:
+        return False
+
+    if contig_len >= guardrails['density_check_min_length'] and read_density < guardrails['min_read_density']:
+        return False
+
+    if guardrails['max_depth_cv'] > 0 and depth_cv > guardrails['max_depth_cv']:
+        return False
+
+    if guardrails['max_depth_ratio'] > 0 and max_depth_ratio > guardrails['max_depth_ratio']:
+        return False
+
+    return True
+
+
+def Build_Contig_Record(raw_contig, seed_count, contig_pos):
+    return [
+        raw_contig[RAW_SEQ],
+        seed_count,
+        contig_pos,
+        raw_contig[RAW_WEIGHT],
+        raw_contig[RAW_READ_COUNT],
+        raw_contig[RAW_SUPPORTED_SPAN],
+        raw_contig[RAW_FLANK_BALANCE],
+        raw_contig[RAW_READ_DENSITY],
+        raw_contig[RAW_SUPPORT_FRACTION],
+        raw_contig[RAW_KMER_MEDIAN_DEPTH],
+        raw_contig[RAW_KMER_DEPTH_CV],
+        raw_contig[RAW_KMER_MAX_DEPTH_RATIO],
+    ]
+
+
+def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference', uce_side_candidates = 8, uce_guardrails = None):
     """
     获取最优的contig
     :param _reads_dict: reads的高质量切片的词典
@@ -431,15 +584,28 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
             c_weight = l[1] + r[1]
             contig_len = len(c)
             r_count, cov_len, flank_balance, left_coord, right_coord = Calculate_Read_Support(c, slice_len, _reads_dict)
+            read_density = r_count / contig_len if contig_len else 0
+            support_fraction = cov_len / contig_len if contig_len else 0
+            median_depth, depth_cv, max_depth_ratio = (0, 0, 0)
+            if assembly_mode == 'uce':
+                median_depth, depth_cv, max_depth_ratio = Calculate_Kmer_Depth_Stats(c, kmer_size, _dict)
             cov_dep = r_count * slice_len / 0.9
             if cov_min > 0:
                 if cov_len == 0 or cov_dep / cov_len < cov_min:
                     continue
                 if cov_dep / contig_len < cov_min:
                     c = c[left_coord:right_coord]
+                    contig_len = len(c)
                     r_count, cov_len, flank_balance, left_coord, right_coord = Calculate_Read_Support(c, slice_len, _reads_dict)
+                    read_density = r_count / contig_len if contig_len else 0
+                    support_fraction = cov_len / contig_len if contig_len else 0
+                    if assembly_mode == 'uce':
+                        median_depth, depth_cv, max_depth_ratio = Calculate_Kmer_Depth_Stats(c, kmer_size, _dict)
+            if assembly_mode == 'uce':
+                if not Pass_Uce_Guardrails(contig_len, read_density, depth_cv, max_depth_ratio, uce_guardrails):
+                    continue
             # 序列，序列的拼接权重，切片数
-            processed_contigs.append([c, c_weight, r_count, cov_len, flank_balance])
+            processed_contigs.append([c, c_weight, r_count, cov_len, flank_balance, read_density, support_fraction, median_depth, depth_cv, max_depth_ratio])
     return processed_contigs, kmer_set_1 | kmer_set_2, contig_pos
 
 def Calculate_Kmer_Size(ref_path, reads, slice_len, k_min, k_max, error_limit):
@@ -549,7 +715,12 @@ def Write_Uce_Summary(rows, file_name):
         'selected_contig_length',
         'read_supported_span',
         'read_count',
+        'read_density',
+        'support_fraction',
         'flank_balance',
+        'kmer_median_depth',
+        'kmer_depth_cv',
+        'kmer_max_depth_ratio',
         'candidate_count',
         'low_quality',
     ]
@@ -615,7 +786,7 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     Write_Print(os.path.join(args.o,  "log.txt"), 'Assembling', key, loop_count, '/', total_count)
 
     # 制作参考序列的kmer字典
-    Make_Kmer_Dict(ref_dict, ref_path, current_ka)
+    Load_Or_Make_Kmer_Dict(ref_dict, ref_path, current_ka, args.assembler_reference_cache_dir)
     # 制作用于拼接的kmer字典
     Make_Assemble_Dict([filtered_file_path], current_ka, filtered_dict, ref_dict)
     # 缩减filtered_dict，保留大于limit和有深度信息的
@@ -659,23 +830,23 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     contigs_all = []
     contigs_all_low = []
     contigs_best = []
+    uce_guardrails = Build_Uce_Guardrails(args) if args.assembly_mode == 'uce' else None
 
     while len(seed_list) > seed_list_len * 0.5: # 已经耗费了大于一半的seed就没必要再做了 
         # org_contigs: 0序列 1序列的拼接权重 2切片数
         org_contigs, kmer_set, contig_pos = Get_Contig_v6(
             reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min,
             iteration=iteration, soft_boundary=soft_boundary, assembly_mode=args.assembly_mode,
-            uce_side_candidates=args.uce_side_candidates)
+            uce_side_candidates=args.uce_side_candidates, uce_guardrails=uce_guardrails)
         seed_list = [item for item in seed_list if (item[0] not in kmer_set) and (Reverse_Int(item[0], current_ka) not in kmer_set)]
         for contig in org_contigs:
-            # contigs_all: 0序列 1使用的种子数量 2序列位置 3序列的拼接权重 4切片数 5覆盖跨度 6两侧平衡
-            contig_record = [contig[0], len(seed_set & kmer_set), contig_pos, contig[1], contig[2], contig[3], contig[4]]
+            contig_record = Build_Contig_Record(contig, len(seed_set & kmer_set), contig_pos)
             if args.assembly_mode == 'uce':
-                if contig[2] > 0 and contig[3] > 0:
+                if contig[RAW_READ_COUNT] > 0 and contig[RAW_SUPPORTED_SPAN] > 0:
                     contigs_all.append(contig_record)
                 else:
                     contigs_all_low.append(contig_record)
-            elif contig[2] * slice_len > len(contig[0]): # 起码要有reads高质量切片能够覆盖contig，否则就是错误的拼接
+            elif contig[RAW_READ_COUNT] * slice_len > len(contig[RAW_SEQ]): # 起码要有reads高质量切片能够覆盖contig，否则就是错误的拼接
                 contigs_all.append(contig_record)
             else:
                 contigs_all_low.append(contig_record)
@@ -697,18 +868,18 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
 
     with open(contig_best_path, 'w') as out:
         for x in contigs_best:
-            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}_span_{x[5]}_balance_{x[6]:.3f}\n')
-            out.write(x[0] + '\n')
+            out.write(f'>contig_{len(x[CONTIG_SEQ])}_{x[CONTIG_SEED_COUNT]}_{x[CONTIG_POS]}_{x[CONTIG_WEIGHT]}_{x[CONTIG_READ_COUNT]}_span_{x[CONTIG_SUPPORTED_SPAN]}_balance_{x[CONTIG_FLANK_BALANCE]:.3f}\n')
+            out.write(x[CONTIG_SEQ] + '\n')
     with open(contig_all_path, 'w') as out:
         for x in contigs_all:
-            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}_span_{x[5]}_balance_{x[6]:.3f}\n')
-            out.write(x[0] + '\n')
+            out.write(f'>contig_{len(x[CONTIG_SEQ])}_{x[CONTIG_SEED_COUNT]}_{x[CONTIG_POS]}_{x[CONTIG_WEIGHT]}_{x[CONTIG_READ_COUNT]}_span_{x[CONTIG_SUPPORTED_SPAN]}_balance_{x[CONTIG_FLANK_BALANCE]:.3f}\n')
+            out.write(x[CONTIG_SEQ] + '\n')
     if args.assembly_mode == 'uce' and contigs_all_low:
         contigs_all_low.sort(key=lambda x: Score_Contig(x, args.assembly_mode), reverse=True)
         with open(contig_low_path, 'w') as out:
             for x in contigs_all_low:
-                out.write(f'>low_support_contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}_span_{x[5]}_balance_{x[6]:.3f}\n')
-                out.write(x[0] + '\n')
+                out.write(f'>low_support_contig_{len(x[CONTIG_SEQ])}_{x[CONTIG_SEED_COUNT]}_{x[CONTIG_POS]}_{x[CONTIG_WEIGHT]}_{x[CONTIG_READ_COUNT]}_span_{x[CONTIG_SUPPORTED_SPAN]}_balance_{x[CONTIG_FLANK_BALANCE]:.3f}\n')
+                out.write(x[CONTIG_SEQ] + '\n')
     elif os.path.isfile(contig_low_path):
         os.remove(contig_low_path)
 
@@ -717,11 +888,16 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     gc.collect()
     return True, key, {
         "status": "low quality" if low_qual else "success",
-        "value": best_contig[4],
-        "selected_contig_length": len(best_contig[0]),
-        "read_supported_span": best_contig[5],
-        "read_count": best_contig[4],
-        "flank_balance": round(best_contig[6], 3),
+        "value": best_contig[CONTIG_READ_COUNT],
+        "selected_contig_length": len(best_contig[CONTIG_SEQ]),
+        "read_supported_span": best_contig[CONTIG_SUPPORTED_SPAN],
+        "read_count": best_contig[CONTIG_READ_COUNT],
+        "read_density": round(best_contig[CONTIG_READ_DENSITY], 6),
+        "support_fraction": round(best_contig[CONTIG_SUPPORT_FRACTION], 3),
+        "flank_balance": round(best_contig[CONTIG_FLANK_BALANCE], 3),
+        "kmer_median_depth": round(best_contig[CONTIG_KMER_MEDIAN_DEPTH], 3),
+        "kmer_depth_cv": round(best_contig[CONTIG_KMER_DEPTH_CV], 3),
+        "kmer_max_depth_ratio": round(best_contig[CONTIG_KMER_MAX_DEPTH_RATIO], 3),
         "candidate_count": len(contigs_all),
         "low_quality": int(low_qual),
     }
@@ -743,8 +919,23 @@ if __name__ == '__main__':
     pars.add_argument('-p', '--processes', metavar='<int>', type=int, help='Number of processes for multiprocessing', default= 1)#max(multiprocessing.cpu_count()-1,2))
     pars.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode')
     pars.add_argument('--uce-side-candidates', dest='uce_side_candidates', metavar='<int>', type=int, default=8, help='''number of one-sided branch candidates to combine in UCE mode''')
+    pars.add_argument('--uce-max-contig-length', dest='uce_max_contig_length', metavar='<int>', type=int, default=5000, help='''maximum UCE contig length kept before scoring; 0 disables''')
+    pars.add_argument('--uce-min-read-density', dest='uce_min_read_density', metavar='<float>', type=float, default=0.003, help='''minimum read_count/length for long UCE contigs''')
+    pars.add_argument('--uce-density-check-min-length', dest='uce_density_check_min_length', metavar='<int>', type=int, default=1000, help='''minimum UCE contig length where read-density guardrail applies''')
+    pars.add_argument('--uce-max-depth-cv', dest='uce_max_depth_cv', metavar='<float>', type=float, default=0, help='''optional maximum kmer depth coefficient of variation for UCE contigs; 0 disables''')
+    pars.add_argument('--uce-max-depth-ratio', dest='uce_max_depth_ratio', metavar='<float>', type=float, default=0, help='''optional maximum kmer max/median depth ratio for UCE contigs; 0 disables''')
+    pars.add_argument('--assembler-reference-cache-dir', dest='assembler_reference_cache_dir', metavar='<str>', default=None, help='''optional directory for cached assembler reference k-mer dictionaries''')
     args = pars.parse_args()
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
+    args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
+    args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
+
+    if args.uce_min_read_density < 0:
+        pars.error('--uce-min-read-density must be greater than or equal to 0')
+    if args.uce_max_depth_cv < 0:
+        pars.error('--uce-max-depth-cv must be greater than or equal to 0')
+    if args.uce_max_depth_ratio < 0:
+        pars.error('--uce-max-depth-ratio must be greater than or equal to 0')
 
     try:
         # 初始化文件夹

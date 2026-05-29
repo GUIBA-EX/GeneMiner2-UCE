@@ -78,6 +78,8 @@ cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/reference
 - `--max-reads`: 每文件限制的最大读长数量（单位为百万），默认禁用
 - `-kf`: 过滤kmer大小
 - `-s`: 过滤步长
+- `--reuse-reference-cache`: 跨运行复用带指纹的 reference k-mer index，避免每次重新构建。
+- `--reference-cache-dir`: `--reuse-reference-cache` 使用的缓存目录。默认位于 `output/.gm2_reference_cache`。
 - `-ka`: 组装kmer大小，默认为自动
 - `--min-ka`: 自动估算k值的下限
 - `--max-ka`: 自动估算k值的上限
@@ -87,6 +89,11 @@ cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/reference
 - `--assembly-mode`: 组装模式，可选`reference`或`uce`。`reference`为默认模式，保持原有基于参考序列的组装和边界控制；`uce`模式会放宽参考边界裁剪，并优先保留更长且有reads支持的UCE侧翼序列。
 - UCE组装模式下，refilter阶段会在任一端通过locus过滤时保留整对paired-end reads。这有助于保留与短UCE探针配对的侧翼reads。
 - `--uce-side-candidates`: UCE组装中每侧参与组合的分支候选数。数值越大，越可能保留较长的低支持侧翼候选，但会增加运行时间和候选路径数量。
+- `--uce-max-contig-length`: UCE候选contig进入评分前允许保留的最大长度。默认值为`5000`；设为`0`可关闭该限制。
+- `--uce-min-read-density`: 长UCE候选contig进入评分前所需的最低`read_count / contig_length`。默认值为`0.003`。
+- `--uce-density-check-min-length`: 启用UCE read-density保护阈值的最短contig长度。默认值为`1000`。
+- `--uce-max-depth-cv`: 可选的UCE候选contig k-mer深度变异系数上限。默认值为`0`，表示关闭该保护阈值。
+- `--uce-max-depth-ratio`: 可选的UCE候选contig最大/中位k-mer深度比值上限。默认值为`0`，表示关闭该保护阈值。
 - `--uce-rescue-reads`: 仅用于UCE模式。初次组装后，用初步contig和原始参考序列再招募一次raw reads，然后重新进一步过滤并重新组装。
 - UCE raw-read rescue 使用受控的样本级并行：最多同时 rescue 4 个样本，每个样本最多 4 个线程；当 `-p` 较小时会自动降低并行度。
 - `--uce-rescue-min-contig-length`: 参与UCE raw-read rescue的初步contig最短长度。

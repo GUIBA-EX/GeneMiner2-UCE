@@ -28,7 +28,7 @@
 
 **ref_reads_count_dict.txt**：第一轮过滤阶段每个 locus 分配到的 reads 数量。
 
-**uce_assembly_summary.csv**：UCE 模式下的单样本逐 locus 组装摘要，包含状态、最佳 contig 长度、reads 支持跨度、read count、侧翼平衡度、候选数和低质量标记。
+**uce_assembly_summary.csv**：UCE 模式下的单样本逐 locus 组装摘要，包含状态、最佳 contig 长度、reads 支持跨度、read count、read density、支持比例、侧翼平衡度、k-mer 深度指标、候选数和低质量标记。
 
 **uce_rescue_summary.csv**：使用 `--assembly-mode uce --uce-rescue-reads` 时生成的单样本 raw-read rescue 摘要。
 

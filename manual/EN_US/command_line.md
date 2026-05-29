@@ -78,6 +78,8 @@ Command line parameters:
 - `--max-reads`: Max million reads per file, disabled by default
 - `-kf`: Filter k-mer size
 - `-s`: Filter step size
+- `--reuse-reference-cache`: Reuse fingerprinted reference k-mer indexes across runs instead of rebuilding them.
+- `--reference-cache-dir`: Directory used by `--reuse-reference-cache`. The default is `output/.gm2_reference_cache`.
 - `-ka`: Assembly k-mer size, automatic by default
 - `--min-ka`: Minimum auto-estimated assembly k-mer size
 - `--max-ka`: Maximum auto-estimated assembly k-mer size
@@ -87,6 +89,11 @@ Command line parameters:
 - `--assembly-mode`: Assembly mode (`reference` or `uce`). `reference` is the default and preserves the existing reference-guided assembly and boundary control; `uce` relaxes reference-boundary trimming and prioritizes longer read-supported UCE flanking sequences.
 - In UCE assembly mode, re-filtering keeps paired-end mates together when either mate passes the locus filter. This helps retain flanking reads paired with short UCE probes.
 - `--uce-side-candidates`: Number of one-sided branch candidates combined during UCE assembly. Larger values can expose longer low-support flanks but increase runtime and the number of candidate paths.
+- `--uce-max-contig-length`: Maximum UCE contig length kept before scoring. The default is `5000`; use `0` to disable.
+- `--uce-min-read-density`: Minimum `read_count / contig_length` for long UCE contigs before scoring. The default is `0.003`.
+- `--uce-density-check-min-length`: Minimum contig length where the UCE read-density guardrail applies. The default is `1000`.
+- `--uce-max-depth-cv`: Optional maximum k-mer depth coefficient of variation for UCE contigs. The default is `0`, which disables this guardrail.
+- `--uce-max-depth-ratio`: Optional maximum max/median k-mer depth ratio for UCE contigs. The default is `0`, which disables this guardrail.
 - `--uce-rescue-reads`: UCE mode only. Run one additional raw-read recruitment round using preliminary contigs plus the original references, then re-filter and re-assemble.
 - UCE raw-read rescue uses controlled sample-level parallelism: up to four samples are rescued concurrently, with up to four threads per sample, and it scales down automatically when `-p` is lower.
 - `--uce-rescue-min-contig-length`: Minimum preliminary contig length used for UCE raw-read rescue.

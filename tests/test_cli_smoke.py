@@ -25,6 +25,8 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("--assembly-mode", proc.stdout)
         self.assertIn("--uce-rescue-reads", proc.stdout)
         self.assertIn("--uce-rescue-min-density-ratio", proc.stdout)
+        self.assertIn("--uce-max-contig-length", proc.stdout)
+        self.assertIn("--reuse-reference-cache", proc.stdout)
 
     def test_default_alifilter_model_uses_builtin_model(self):
         for value in (None, "", "default", " DEFAULT "):

@@ -28,7 +28,7 @@ Each sample listed in the input table gets a folder under the output directory.
 
 **ref_reads_count_dict.txt**: Per-locus read counts from the first filtering stage.
 
-**uce_assembly_summary.csv**: UCE-mode per-locus assembly summary. It records status, selected contig length, read-supported span, read count, flank balance, candidate count, and low-quality flag.
+**uce_assembly_summary.csv**: UCE-mode per-locus assembly summary. It records status, selected contig length, read-supported span, read count, read density, support fraction, flank balance, k-mer depth metrics, candidate count, and low-quality flag.
 
 **uce_rescue_summary.csv**: Per-sample raw-read rescue summary generated when `--assembly-mode uce --uce-rescue-reads` is used.
 

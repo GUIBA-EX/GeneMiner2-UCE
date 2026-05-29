@@ -2,6 +2,7 @@ from Bio.SeqIO.FastaIO import SimpleFastaParser
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 import argparse
 import csv
+import hashlib
 import math
 import os
 import shutil
@@ -45,6 +46,10 @@ DEPTH_DEPRECATION_EXPLAINER = '''
 HELP_EPILOG = 'quality control of assembled genes:' + DEPTH_DEPRECATION_EXPLAINER
 
 SCRIPT_ROOT = os.path.join(sys._MEIPASS, os.pardir) if hasattr(sys, '_MEIPASS') else os.path.dirname(__file__)
+REFERENCE_EXTENSIONS = ('.fa', '.fas', '.fasta')
+
+def is_reference_file_name(name):
+    return os.path.splitext(name)[1].lower() in REFERENCE_EXTENSIONS
 
 def find_executable(prog, internal=False):
     bin_path = os.path.join(SCRIPT_ROOT, prog)
@@ -63,15 +68,8 @@ def find_executable(prog, internal=False):
 def get_ref_genes(ref_dir):
     genes = set()
 
-    with os.scandir(ref_dir) as it:
-        for entry in it:
-            if not entry.is_file():
-                continue
-
-            name_tup = os.path.splitext(entry.name)
-
-            if name_tup[1] in ('.fa', '.fas', '.fasta'):
-                genes.add(name_tup)
+    for entry in iter_reference_files(ref_dir):
+        genes.add(os.path.splitext(entry.name))
 
     return genes
 
@@ -85,6 +83,48 @@ def get_sample_ext(data_path):
         return '.fq'
     else:
         return '.fasta'
+
+def iter_reference_files(ref_dir):
+    with os.scandir(ref_dir) as entries:
+        for entry in sorted(entries, key=lambda x: x.name):
+            if not entry.is_file():
+                continue
+
+            if is_reference_file_name(entry.name):
+                yield entry
+
+def reference_cache_key(ref_dir, kmer_size, step_size):
+    digest = hashlib.sha256()
+    digest.update(os.path.abspath(ref_dir).encode())
+    digest.update(b'\0')
+    digest.update(str(kmer_size).encode())
+    digest.update(b'\0')
+    digest.update(str(step_size).encode())
+
+    for entry in iter_reference_files(ref_dir):
+        stat = entry.stat()
+        digest.update(b'\0')
+        digest.update(entry.name.encode())
+        digest.update(b'\0')
+        digest.update(str(stat.st_size).encode())
+        digest.update(b'\0')
+        digest.update(str(stat.st_mtime_ns).encode())
+
+    return digest.hexdigest()[:16]
+
+def get_reference_kmer_dict_path(args, out_loc):
+    if not args.reuse_reference_cache:
+        return os.path.join(out_loc, f'kmer_dict_k{args.kf}.dict')
+
+    cache_dir = args.reference_cache_dir or os.path.join(out_loc, '.gm2_reference_cache')
+    cache_name = f'reference_kmer_k{args.kf}_s{args.step_size}_{reference_cache_key(args.r, args.kf, args.step_size)}.dict'
+    return os.path.join(cache_dir, cache_name)
+
+def get_assembler_reference_cache_dir(args, out_loc):
+    if not args.reuse_reference_cache:
+        return None
+
+    return os.path.join(args.reference_cache_dir or os.path.join(out_loc, '.gm2_reference_cache'), 'assembler')
 
 def prepare_workdir(args):
     samples = {}
@@ -167,11 +207,10 @@ def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
             if not entry.is_file():
                 continue
 
-            gene, ext = os.path.splitext(entry.name)
-
-            if ext not in ('.fa', '.fas', '.fasta'):
+            if not is_reference_file_name(entry.name):
                 continue
 
+            gene = os.path.splitext(entry.name)[0]
             contig_path = os.path.join(results_dir, f'{gene}.fasta')
             rescue_path = os.path.join(rescue_ref_dir, f'{gene}.fasta')
             contig_index = 0
@@ -469,16 +508,34 @@ def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1,
     return dict_cmd, reads_cmd
 
 def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr):
-    return [assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
-            '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
-            '-limit_count', str(args.error_threshold), '-iteration', str(args.search_depth),
-            '-sb', soft_boundary, '-cov_min', str(args.min_coverage), '-p', str(thr),
-            '--assembly-mode', args.assembly_mode,
-            '--uce-side-candidates', str(args.uce_side_candidates)]
+    command = [
+        assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
+        '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
+        '-limit_count', str(args.error_threshold), '-iteration', str(args.search_depth),
+        '-sb', soft_boundary, '-cov_min', str(args.min_coverage), '-p', str(thr),
+        '--assembly-mode', args.assembly_mode,
+        '--uce-side-candidates', str(args.uce_side_candidates),
+        '--uce-max-contig-length', str(args.uce_max_contig_length),
+        '--uce-min-read-density', str(args.uce_min_read_density),
+        '--uce-density-check-min-length', str(args.uce_density_check_min_length),
+        '--uce-max-depth-cv', str(args.uce_max_depth_cv),
+        '--uce-max-depth-ratio', str(args.uce_max_depth_ratio),
+    ]
+
+    assembler_cache_dir = getattr(args, 'assembler_reference_cache_dir', None)
+    original_ref_dir = getattr(args, 'r', None)
+    if assembler_cache_dir and original_ref_dir and os.path.abspath(ref_dir) != os.path.abspath(original_ref_dir):
+        assembler_cache_dir = None
+
+    if assembler_cache_dir:
+        command.extend(['--assembler-reference-cache-dir', assembler_cache_dir])
+
+    return command
 
 def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignore_hook=lambda *_, **__: None):
     out_loc = args.o.strip()
-    kmer_dict_path = os.path.join(out_loc, f'kmer_dict_k{args.kf}.dict')
+    kmer_dict_path = get_reference_kmer_dict_path(args, out_loc)
+    args.assembler_reference_cache_dir = get_assembler_reference_cache_dir(args, out_loc)
     rescue_enabled = args.uce_rescue_reads
     failed_samples = []
     rescue_workers, rescue_threads = get_uce_rescue_parallelism(args.p, len(samples))
@@ -504,14 +561,19 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
     if do_filter:
         filter_bin = find_executable('MainFilterNew', internal=True)
 
-        if os.path.isfile(kmer_dict_path):
+        os.makedirs(os.path.dirname(kmer_dict_path), exist_ok=True)
+
+        if os.path.isfile(kmer_dict_path) and args.reuse_reference_cache:
+            print(f'Reusing reference k-mer cache: {kmer_dict_path}')
+        elif os.path.isfile(kmer_dict_path):
             os.remove(kmer_dict_path)
 
-        try:
-            subprocess.run([filter_bin, '-r', args.r, '-o', out_loc, '-kf', str(args.kf), '-s', str(args.step_size),
-                            '-gr', '-lkd', kmer_dict_path, '-m', '2'], check=True)
-        except subprocess.SubprocessError as e:
-            raise RuntimeError(f"Unable to build k-mer dictionary: {e}")
+        if not os.path.isfile(kmer_dict_path):
+            try:
+                subprocess.run([filter_bin, '-r', args.r, '-o', out_loc, '-kf', str(args.kf), '-s', str(args.step_size),
+                                '-gr', '-lkd', kmer_dict_path, '-m', '2'], check=True)
+            except subprocess.SubprocessError as e:
+                raise RuntimeError(f"Unable to build k-mer dictionary: {e}")
 
         def run_filter(name):
             q1, q2 = samples[name]
@@ -904,7 +966,7 @@ def write_uce_contigs_for_phyluce(args, samples):
             with open(out_path, 'w') as out:
                 if os.path.isdir(results_dir):
                     for entry in sorted(os.scandir(results_dir), key=lambda e: e.name):
-                        if not entry.is_file() or not entry.name.endswith(('.fa', '.fas', '.fasta')):
+                        if not entry.is_file() or not is_reference_file_name(entry.name):
                             continue
 
                         locus = os.path.splitext(entry.name)[0]
@@ -1543,7 +1605,7 @@ def build_coalescent_tree(args):
     def find_genes(path):
         try:
             with os.scandir(path) as it:
-                return {os.path.splitext(entry.name)[0] for entry in it if entry.is_file() and entry.name.endswith('.fasta')}
+                return {os.path.splitext(entry.name)[0] for entry in it if entry.is_file() and is_reference_file_name(entry.name)}
         except OSError:
             return set()
 
@@ -1726,6 +1788,8 @@ if __name__ == '__main__':
     group_filter.add_argument('-kf', default=31, help='Filter k-mer size', metavar='INT', type=int)
     group_filter.add_argument('-s', '--step-size', default=4, help='Filter step size', metavar='INT', type=int)
     group_filter.add_argument('--max-reads', default=0, help='Million reads to process per file', metavar='INT', type=int)
+    group_filter.add_argument('--reuse-reference-cache', action='store_true', default=False, help='Reuse a fingerprinted reference k-mer cache instead of rebuilding it every run')
+    group_filter.add_argument('--reference-cache-dir', default=None, help='Directory for --reuse-reference-cache files (default = output/.gm2_reference_cache)', metavar='DIR')
 
     group_refilter = parser.add_argument_group('arguments for futher filtering')
     group_refilter.add_argument('--depth-low-water-mark', default=50, help='If depth is lower than this value, try to find more reads with relaxed criteria', metavar='INT', type=int)
@@ -1742,6 +1806,11 @@ if __name__ == '__main__':
     group_assembly.add_argument('--min-coverage', default=0, help='Minimum read depth required for contig generation', metavar='INT', type=int)
     group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode: reference keeps the default reference-guided behavior; uce preserves read-supported flanks around conserved cores')
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
+    group_assembly.add_argument('--uce-max-contig-length', default=5000, help='Maximum UCE contig length kept before scoring; use 0 to disable (default = 5000)', metavar='INT', type=int)
+    group_assembly.add_argument('--uce-min-read-density', default=0.003, help='Minimum read_count/length for long UCE contigs before scoring (default = 0.003)', metavar='FLOAT', type=float)
+    group_assembly.add_argument('--uce-density-check-min-length', default=1000, help='Minimum contig length where the UCE read-density guardrail applies (default = 1000)', metavar='INT', type=int)
+    group_assembly.add_argument('--uce-max-depth-cv', default=0, help='Optional maximum k-mer depth coefficient of variation for UCE contigs; 0 disables (default = 0)', metavar='FLOAT', type=float)
+    group_assembly.add_argument('--uce-max-depth-ratio', default=0, help='Optional maximum max/median k-mer depth ratio for UCE contigs; 0 disables (default = 0)', metavar='FLOAT', type=float)
     group_assembly.add_argument('--uce-rescue-reads', action='store_true', default=False, help='UCE mode only: after the first assembly, recruit raw reads once using preliminary contigs plus original references, then re-filter and re-assemble')
     group_assembly.add_argument('--uce-rescue-min-contig-length', default=60, help='Minimum preliminary contig length used as a UCE raw-read rescue reference (default = 60)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-rescue-min-density-ratio', default=0.5, help='Minimum rescue/before read-density ratio kept after UCE raw-read rescue (default = 0.5)', metavar='FLOAT', type=float)
@@ -1780,8 +1849,23 @@ if __name__ == '__main__':
     parser.add_argument('--max-depth', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+    if args.reference_cache_dir and not args.reuse_reference_cache:
+        parser.error('--reference-cache-dir requires --reuse-reference-cache')
+
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
+    args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
+    args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
     args.uce_rescue_min_contig_length = max(args.uce_rescue_min_contig_length, args.kf)
+
+    if args.uce_min_read_density < 0:
+        parser.error('--uce-min-read-density must be greater than or equal to 0')
+
+    if args.uce_max_depth_cv < 0:
+        parser.error('--uce-max-depth-cv must be greater than or equal to 0')
+
+    if args.uce_max_depth_ratio < 0:
+        parser.error('--uce-max-depth-ratio must be greater than or equal to 0')
 
     if args.uce_rescue_min_density_ratio <= 0:
         parser.error('--uce-rescue-min-density-ratio must be greater than 0')
