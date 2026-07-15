@@ -301,7 +301,12 @@ UCE_ASSEMBLY_SUMMARY_FIELDS = [
     'selected_contig_length',
     'read_supported_span',
     'read_count',
+    'read_density',
+    'support_fraction',
     'flank_balance',
+    'kmer_median_depth',
+    'kmer_depth_cv',
+    'kmer_max_depth_ratio',
     'candidate_count',
     'low_quality',
 ]
@@ -369,6 +374,57 @@ def restore_locus_file(sample_dir, backup_dir, subdir, locus):
     elif os.path.isfile(dest):
         os.remove(dest)
 
+def locus_file_name_matches(name, locus, paired=False):
+    stem = os.path.splitext(name)[0]
+    if paired:
+        return stem in (f'{locus}_1', f'{locus}_2')
+    return stem == locus
+
+def restore_locus_directory_files(sample_dir, backup_dir, subdir, locus):
+    """Restore only one locus's read files while keeping accepted rescue loci."""
+    source_dir = os.path.join(backup_dir, subdir)
+    destination_dir = os.path.join(sample_dir, subdir)
+    names = set()
+
+    for directory in (source_dir, destination_dir):
+        if os.path.isdir(directory):
+            names.update(entry.name for entry in os.scandir(directory) if entry.is_file())
+
+    for name in names:
+        if not locus_file_name_matches(name, locus, paired=subdir == 'filtered_pe'):
+            continue
+
+        source = os.path.join(source_dir, name)
+        destination = os.path.join(destination_dir, name)
+        if os.path.isfile(source):
+            os.makedirs(destination_dir, exist_ok=True)
+            shutil.copy2(source, destination)
+        elif os.path.isfile(destination):
+            os.remove(destination)
+
+def restore_locus_read_count(sample_dir, backup_dir, locus):
+    filename = 'ref_reads_count_dict.txt'
+    source = os.path.join(backup_dir, filename)
+    destination = os.path.join(sample_dir, filename)
+
+    def read_rows(path):
+        if not os.path.isfile(path):
+            return []
+        with open(path) as handle:
+            return [line for line in handle if line.strip()]
+
+    backup_rows = read_rows(source)
+    current_rows = read_rows(destination)
+    backup_locus_rows = [line for line in backup_rows if line.split(',', 1)[0] == locus]
+    merged_rows = [line for line in current_rows if line.split(',', 1)[0] != locus]
+    merged_rows.extend(backup_locus_rows)
+
+    if merged_rows:
+        with open(destination, 'w') as handle:
+            handle.writelines(merged_rows)
+    elif os.path.isfile(destination):
+        os.remove(destination)
+
 def format_float_or_blank(value, digits=6):
     if value == '':
         return ''
@@ -387,6 +443,9 @@ def revert_low_density_rescue_loci(sample_dir, backup_dir, before_rows, rescue_r
 
         for subdir in ('results', 'contigs_all', 'contigs_all_low'):
             restore_locus_file(sample_dir, backup_dir, subdir, locus)
+        for subdir in ('filtered', 'filtered_pe'):
+            restore_locus_directory_files(sample_dir, backup_dir, subdir, locus)
+        restore_locus_read_count(sample_dir, backup_dir, locus)
 
         final_rows[locus] = before.copy()
         reverted.add(locus)
@@ -775,7 +834,8 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                     locus: f'rescue read density ratio below {args.uce_rescue_min_density_ratio:g}; first-round contig restored'
                     for locus in reverted_loci
                 }
-                write_sample_uce_rescue_summary(sample_dir, name, before_rows, after_rows, 'success', status_by_locus=status_by_locus, error_by_locus=error_by_locus)
+                final_rows = read_uce_summary(summary_path)
+                write_sample_uce_rescue_summary(sample_dir, name, before_rows, final_rows, 'success', status_by_locus=status_by_locus, error_by_locus=error_by_locus)
                 discard_sample_state_backup(backup_dir)
     else:
         run_uce_rescue = ignore_hook
@@ -983,17 +1043,7 @@ def write_uce_contigs_for_phyluce(args, samples):
 def write_uce_assembly_summary(args, samples):
     out_loc = args.o.strip()
     out_path = os.path.join(out_loc, 'uce_assembly_summary.csv')
-    fieldnames = [
-        'sample',
-        'locus',
-        'status',
-        'selected_contig_length',
-        'read_supported_span',
-        'read_count',
-        'flank_balance',
-        'candidate_count',
-        'low_quality',
-    ]
+    fieldnames = ['sample', *UCE_ASSEMBLY_SUMMARY_FIELDS]
 
     with open(out_path, 'w', newline='') as out:
         writer = csv.DictWriter(out, fieldnames=fieldnames)
@@ -1077,7 +1127,7 @@ def generate_consensus(args, samples):
     def process_gene(task):
         gene, asm_path, read_path, sam_path = task
 
-        subprocess.run([minimap2_bin, '-ax', 'sr', '-t', '1', '--sam-hit-only',
+        subprocess.run([minimap2_bin, '-ax', 'sr', '-t', '1', '--sam-hit-only', '--secondary=no',
                         '-o', sam_path, asm_path, read_path],
                        check=True)
 

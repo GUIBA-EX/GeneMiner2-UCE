@@ -27,17 +27,33 @@ amb = {"-": "-", "A": "A", "C": "C", "G": "G", "N": "N", "T": "T",
         "-ACGN": "v", "-ACGT": "N", "-ACNT": "h", "-AGNT": "d", "-CGNT": "b",
         "-ACGNT": "N"}
 
+EXCLUDED_ALIGNMENT_FLAGS = 0x4 | 0x100 | 0x800
+
 def parse_cigar(cigarstring, seq, pos_ref):
+    if not re.fullmatch(r"(?:\d+[MIDNSHPX=])+", cigarstring):
+        raise ValueError(f'Malformed CIGAR string: {cigarstring!r}')
+
     cigar = [{"type": m[1], "length": int(m[0])} for m in re.findall(r"(\d+)([MIDNSHPX=])", cigarstring)]
     start, start_ref, seqout, insert = 0, pos_ref, "", []
+    max_deletion = 0
     for c in cigar:
         l, t = c["length"], c["type"]
         if t in ["=", "X", "M"]: seqout += seq[start:start + l]; start_ref += l
-        elif t in ["D", "N", "P"]: seqout += "-" * l; start_ref += l
-        elif t == "I": insert.append((start_ref, seq[start:start + l]))
+        elif t in ["D", "N"]:
+            seqout += "-" * l
+            start_ref += l
+            max_deletion = max(max_deletion, l)
+        elif t == "I": insert.append((start_ref - 1, seq[start:start + l]))
+        elif t == "P":
+            # SAM padding consumes neither the query nor the reference.
+            continue
         start += l if t in ["=", "X", "M", "I", "S"] else 0
         if t not in ["H", "=", "X", "M", "D", "N", "P", "I", "S"]: print("SAM file probably contains unmapped reads")
-    return seqout, insert
+
+    if start != len(seq):
+        raise ValueError(f'CIGAR {cigarstring!r} consumes {start} query bases, but SEQ has length {len(seq)}')
+
+    return seqout, insert, max_deletion
 
 def parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description='''Constructing Consensus Sequences Based on SAM Files''')
@@ -55,7 +71,7 @@ def parse_args():
                         help="Minimum read depth at each site to report the nucleotide in the consensus, default=1")
     parser.add_argument("-f", "--fill", action="store", dest="fill", default="-",
                         help="Character for padding regions not covered in the reference, default= - (gap)")
-    parser.add_argument("-d", "--maxdel", action="store", dest="maxdel", default=150,
+    parser.add_argument("-d", "--maxdel", action="store", dest="maxdel", type=int, default=150,
                         help="Ignore deletions longer than this value, default=150")
     parser.add_argument("-s", "--save_mutations", action="store", type=int, dest="save_mutations", default=1,
                         help="Save the Base Composition for Each Locus")
@@ -89,21 +105,26 @@ def parse_sam_file(mapfile, sequences, coverages, insertions, refname, maxdel):
             break
 
         for line in mapfile_chunk:
+            if not line:
+                continue
             reads_total += 1
             if line[0] != "\t":
-                if line[0] != "@" and line.split("\t")[5] != "*":
-                    reads_mapped += 1
+                if line[0] != "@":
                     sam_record = line.split("\t")
+                    flag = int(sam_record[1])
+                    if flag & EXCLUDED_ALIGNMENT_FLAGS or sam_record[5] == "*":
+                        continue
+                    reads_mapped += 1
                     refname = sam_record[2].split()[0]
                     pos_ref = int(sam_record[3]) - 1
-                    seqout, insert = parse_cigar(sam_record[5], sam_record[9], pos_ref)
-                    if seqout.count("-") <= maxdel:
+                    seqout, insert, max_deletion = parse_cigar(sam_record[5], sam_record[9], pos_ref)
+                    insertions[refname].extend(insert)
+                    if max_deletion <= maxdel:
                         for nuc in seqout:
-                            try:
-                                sequences[refname][pos_ref][nuc] += 1
-                                pos_ref += 1
-                            except:
-                                print(refname, pos_ref, nuc, sam_record)
+                            if nuc not in sequences[refname][pos_ref]:
+                                raise ValueError(f'Unexpected base {nuc!r} in SAM record {sam_record[0]!r}')
+                            sequences[refname][pos_ref][nuc] += 1
+                            pos_ref += 1
                     else:
                         for nuc in seqout:
                             if nuc != "-" and nuc != "*":
@@ -138,13 +159,14 @@ def calculate_proportions(data):
     for key, value in data.items():
         nuc_counts = dict(value)
         total_count = sum(nuc_counts.get(nuc, 0) for nuc in ['A', 'G', 'C', 'T'])
+        proportions = []
         if total_count > 0:
             proportions = [(nuc, round(nuc_counts.get(nuc, 0) / total_count,4)) for nuc in ['A', 'G', 'C', 'T']]
         proportions_dict[key] = proportions
     return proportions_dict
 
 def filter_by_max_proportion(proportions_dict, threshold=0.9):
-    filtered_dict = {key: value for key, value in proportions_dict.items() if max([x[1] for x in value]) < threshold}
+    filtered_dict = {key: value for key, value in proportions_dict.items() if value and max([x[1] for x in value]) < threshold}
     return filtered_dict
 
 def reformat_sequences(sequences, coverages, insertions):
@@ -171,7 +193,8 @@ def reformat_sequences(sequences, coverages, insertions):
 
             for pos in sorted(ins_tmp2):
                 for col in range(len(ins_tmp2[pos])):
-                    ins_tmp2[pos][col]["-"] = coverages[refname][pos] - sum(ins_tmp2[pos][col].values())
+                    coverage_pos = min(max(pos, 0), len(coverages[refname]) - 1)
+                    ins_tmp2[pos][col]["-"] = coverages[refname][coverage_pos] - sum(ins_tmp2[pos][col].values())
                     ins_tmp2[pos][col] = reformat_nucleotide_counts(ins_tmp2[pos][col])
 
             insertions[refname] = ins_tmp2
@@ -210,7 +233,7 @@ def save_fastas(sequences, fill, coverages, outfolder, prefix, min_depth, insert
     fastas = {}
     for refname in sequences:
         for t in thresholds:
-            fasta_seqout = ""
+            fasta_seqout = add_insertions("", coverages, refname, -1, t, insertions) if coverages[refname][0] >= min_depth else ""
             fasta_header = ""
             sumcov = 0
             for pos, cov in enumerate(coverages[refname]):
@@ -242,17 +265,17 @@ def save_fastas(sequences, fill, coverages, outfolder, prefix, min_depth, insert
                 else:
                     fastas[refname].append([fasta_header, fasta_seqout])
 
-    for reference in fastas:
-        outfile = open(os.path.join(outfolder, prefix+".fasta"), "w")
-        if nchar == 0:
-            outfile.write("\n".join([i[0] + "\n" + i[1] for i in fastas[reference]]) + "\n")
-        else:
-            outfile.write("\n".join([i[0] + "\n" + "\n".join([i[1][s:s+nchar] for s in range(0, len(i[1]), nchar)]) for i in fastas[reference]]) + "\n")
-        outfile.close()
-        if len(thresholds) == 1:
-            print(f"Consensus sequence at {int(thresholds[0]*100)}% saved for {reference} in: {outfolder+prefix}.fasta")
-        else:
-            print(f"Consensus sequences at {','.join([str(int(i*100))+'%' for i in thresholds])} saved for {reference} in: {outfolder+prefix}.fasta")
+    output_path = os.path.join(outfolder, prefix+".fasta")
+    with open(output_path, "w") as outfile:
+        for reference in fastas:
+            if nchar == 0:
+                outfile.write("\n".join([i[0] + "\n" + i[1] for i in fastas[reference]]) + "\n")
+            else:
+                outfile.write("\n".join([i[0] + "\n" + "\n".join([i[1][s:s+nchar] for s in range(0, len(i[1]), nchar)]) for i in fastas[reference]]) + "\n")
+            if len(thresholds) == 1:
+                print(f"Consensus sequence at {int(thresholds[0]*100)}% saved for {reference} in: {outfolder+prefix}.fasta")
+            else:
+                print(f"Consensus sequences at {','.join([str(int(i*100))+'%' for i in thresholds])} saved for {reference} in: {outfolder+prefix}.fasta")
     print("Done.\n")
 
 def save_mutations_table(sequences, coverages, outfolder, prefix, min_depth):
@@ -292,6 +315,8 @@ def main():
     filename = args.filename
     opener = gzip.open if filename.endswith(".gz") else open
     thresholds = [float(i) for i in args.thresholds.split(",")]
+    if any(threshold <= 0 or threshold > 1 for threshold in thresholds):
+        raise ValueError('Consensus thresholds must be between 0 and 1')
     prefix = args.prefix or os.path.splitext(os.path.basename(args.filename))[0]
     outfolder = args.outfolder
     os.makedirs(outfolder, exist_ok=True)
@@ -309,6 +334,7 @@ def main():
         save_fastas(sequences, fill, coverages, outfolder, prefix, min_depth, insertions, nchar, thresholds)
     except Exception as e:
         Write_Print(os.path.join(args.outfolder, os.pardir, "log.txt"), "error:" , e)
+        raise
 
 def Write_Print(log_path, *log_str, sep = " "):
     """

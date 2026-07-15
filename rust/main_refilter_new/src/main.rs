@@ -756,28 +756,54 @@ fn load_reference(ref_path: &Path, kmer_size: usize) -> Result<(HashSet<String>,
     Ok((ref_set, effective_len))
 }
 
-fn translate_fwd(seq: &str) -> Vec<u8> {
-    seq.bytes()
-        .filter_map(|base| match base {
-            b'A' | b'a' => Some(b'0'),
-            b'C' | b'c' => Some(b'1'),
-            b'G' | b'g' => Some(b'2'),
-            b'T' | b't' | b'U' | b'u' => Some(b'3'),
-            _ => None,
-        })
-        .collect()
+fn encode_base(base: u8) -> Option<u8> {
+    match base {
+        b'A' | b'a' => Some(b'0'),
+        b'C' | b'c' => Some(b'1'),
+        b'G' | b'g' => Some(b'2'),
+        b'T' | b't' | b'U' | b'u' => Some(b'3'),
+        _ => None,
+    }
 }
 
-fn translate_rev(seq: &str) -> Vec<u8> {
-    seq.bytes()
-        .filter_map(|base| match base {
-            b'A' | b'a' => Some(b'3'),
-            b'C' | b'c' => Some(b'2'),
-            b'G' | b'g' => Some(b'1'),
-            b'T' | b't' | b'U' | b'u' => Some(b'0'),
-            _ => None,
-        })
+fn translate_fwd(seq: &str) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(seq.len());
+
+    for base in seq.bytes() {
+        let Some(base) = encode_base(base) else {
+            // Never join the flanks around an ambiguity into a fake k-mer.
+            return Vec::new();
+        };
+        encoded.push(base);
+    }
+
+    encoded
+}
+
+fn reference_runs(seq: &str) -> Vec<Vec<u8>> {
+    let mut runs = Vec::new();
+    let mut run = Vec::new();
+
+    for base in seq.bytes() {
+        if let Some(base) = encode_base(base) {
+            run.push(base);
+        } else if !run.is_empty() {
+            runs.push(std::mem::take(&mut run));
+        }
+    }
+
+    if !run.is_empty() {
+        runs.push(run);
+    }
+
+    runs
+}
+
+fn reverse_complement(encoded: &[u8]) -> Vec<u8> {
+    encoded
+        .iter()
         .rev()
+        .map(|base| b'3' - (*base - b'0'))
         .collect()
 }
 
@@ -785,11 +811,11 @@ fn build_kmer_dict(ref_set: &HashSet<String>, kmer_size: usize) -> HashMap<Vec<u
     let mut kmer_dict = HashMap::new();
 
     for seq in ref_set {
-        let fwd = translate_fwd(seq);
-        let rev = translate_rev(seq);
-
-        add_kmers(&mut kmer_dict, &fwd, kmer_size, 1);
-        add_kmers(&mut kmer_dict, &rev, kmer_size, 2);
+        for fwd in reference_runs(seq) {
+            let rev = reverse_complement(&fwd);
+            add_kmers(&mut kmer_dict, &fwd, kmer_size, 1);
+            add_kmers(&mut kmer_dict, &rev, kmer_size, 2);
+        }
     }
 
     kmer_dict
@@ -942,15 +968,22 @@ fn make_readers(paths: &[PathBuf], file_type: FileType) -> Result<Vec<RecordRead
 
 fn next_linked_read(readers: &mut [RecordReader]) -> Result<Option<Vec<Record>>, String> {
     let mut linked = Vec::with_capacity(readers.len());
+    let mut ended = 0;
 
-    for reader in readers {
+    for reader in readers.iter_mut() {
         match reader.next_record().map_err(|e| e.to_string())? {
             Some(record) => linked.push(record),
-            None => return Ok(None),
+            None => ended += 1,
         }
     }
 
-    Ok(Some(linked))
+    if ended == 0 {
+        Ok(Some(linked))
+    } else if ended == readers.len() {
+        Ok(None)
+    } else {
+        Err("paired input files contain different numbers of records".to_string())
+    }
 }
 
 fn write_record<W: Write>(out: &mut W, record: &Record, file_type: FileType) -> Result<(), String> {
@@ -1017,50 +1050,49 @@ fn run_length_filter(
     Ok(output_path)
 }
 
-fn read_all_records(path: &Path, file_type: FileType) -> Result<Vec<Record>, String> {
-    let mut reader = RecordReader::from_path(path, file_type, false, String::new()).map_err(|e| e.to_string())?;
-    let mut records = Vec::new();
+fn next_temp_group(
+    reader: &mut RecordReader,
+    keep_linked_mates: bool,
+) -> Result<Option<Vec<Record>>, String> {
+    let Some(first) = reader.next_record().map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
 
-    while let Some(record) = reader.next_record().map_err(|e| e.to_string())? {
-        records.push(record);
+    if !keep_linked_mates {
+        return Ok(Some(vec![first]));
     }
 
-    Ok(records)
+    let second = reader
+        .next_record()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "interleaved paired-read temporary file has an odd number of records".to_string())?;
+    Ok(Some(vec![first, second]))
 }
 
-fn count_total_length(
-    records: &[Record],
+fn count_total_length_from_path(
+    path: &Path,
+    file_type: FileType,
     keep_linked_mates: bool,
     kmer_dict: Option<&HashMap<Vec<u8>, u8>>,
     kmer_size: usize,
-) -> usize {
-    if keep_linked_mates {
-        records
-            .chunks(2)
-            .filter(|linked| {
-                if let Some(kmer_dict) = kmer_dict {
-                    linked
-                        .iter()
-                        .any(|record| filter_read(&translate_fwd(&record.seq), kmer_dict, kmer_size))
-                } else {
-                    true
-                }
-            })
-            .map(|linked| linked.iter().map(|record| record.seq.len()).sum::<usize>())
-            .sum()
-    } else {
-        records
-            .iter()
-            .filter(|record| {
-                if let Some(kmer_dict) = kmer_dict {
-                    filter_read(&translate_fwd(&record.seq), kmer_dict, kmer_size)
-                } else {
-                    true
-                }
-            })
-            .map(|record| record.seq.len())
-            .sum()
+) -> Result<usize, String> {
+    let mut reader = RecordReader::from_path(path, file_type, false, String::new()).map_err(|e| e.to_string())?;
+    let mut total = 0;
+
+    while let Some(group) = next_temp_group(&mut reader, keep_linked_mates)? {
+        let keep = match kmer_dict {
+            Some(kmer_dict) => group.iter().any(|record| {
+                filter_read(&translate_fwd(&record.seq), kmer_dict, kmer_size)
+            }),
+            None => true,
+        };
+
+        if keep {
+            total += group.iter().map(|record| record.seq.len()).sum::<usize>();
+        }
     }
+
+    Ok(total)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1079,8 +1111,7 @@ fn kmer_filter(
     keep_linked_mates: bool,
 ) -> Result<(), String> {
     let output_path = out_dir.join(format!("{}{}", name, file_type.output_ext()));
-    let records = read_all_records(temp_path, file_type)?;
-    let mut total_length = count_total_length(&records, keep_linked_mates, None, kmer_size);
+    let mut total_length = count_total_length_from_path(temp_path, file_type, keep_linked_mates, None, kmer_size)?;
     let mut coverage = total_length as f64 / ref_length;
     let mut too_deep = coverage > max_depth as f64;
     let mut too_large = total_length / 1_000_000 > max_size as usize;
@@ -1105,7 +1136,7 @@ fn kmer_filter(
 
         print_log(log_path, &format!("K-mer size for {name}: {kmer_size}"))?;
         let kmer_dict = build_kmer_dict(ref_set, kmer_size);
-        total_length = count_total_length(&records, keep_linked_mates, Some(&kmer_dict), kmer_size);
+        total_length = count_total_length_from_path(temp_path, file_type, keep_linked_mates, Some(&kmer_dict), kmer_size)?;
         coverage = total_length as f64 / ref_length;
         too_deep = coverage > max_depth as f64;
         too_large = total_length / 1_000_000 > max_size as usize;
@@ -1128,8 +1159,9 @@ fn kmer_filter(
     let mut i = 0_usize;
     let mut out = BufWriter::new(File::create(output_path).map_err(|e| e.to_string())?);
 
-    if keep_linked_mates {
-        for linked_reads in records.chunks(2) {
+    let mut reader = RecordReader::from_path(temp_path, file_type, false, String::new()).map_err(|e| e.to_string())?;
+    while let Some(linked_reads) = next_temp_group(&mut reader, keep_linked_mates)? {
+        if keep_linked_mates {
             if linked_reads
                 .iter()
                 .any(|record| filter_read(&translate_fwd(&record.seq), &kmer_dict, kmer_size))
@@ -1140,13 +1172,12 @@ fn kmer_filter(
                     continue;
                 }
 
-                for record in linked_reads {
+                for record in &linked_reads {
                     write_record(&mut out, record, file_type)?;
                 }
             }
         }
-    } else {
-        for record in &records {
+        else if let Some(record) = linked_reads.first() {
             if filter_read(&translate_fwd(&record.seq), &kmer_dict, kmer_size) {
                 i += 1;
 

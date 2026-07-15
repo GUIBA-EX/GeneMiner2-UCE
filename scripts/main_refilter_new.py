@@ -4,6 +4,7 @@ from main_refilter_ext import collect_runs_stats, filter_read, parse_record
 import argparse
 import collections
 import contextlib
+import itertools
 import math
 import multiprocessing
 import os
@@ -34,8 +35,38 @@ READ_ITERATORS = {
    'fastq': FastqGeneralIterator
 }
 
-FWD_TRANS = collections.defaultdict(lambda: None, str.maketrans("ACGTUacgtu", "0123301233"))
-REV_TRANS = collections.defaultdict(lambda: None, str.maketrans("ACGTUacgtu", "3210032100"))
+BASE_TO_INT = {
+    'A': '0', 'C': '1', 'G': '2', 'T': '3', 'U': '3',
+    'a': '0', 'c': '1', 'g': '2', 't': '3', 'u': '3',
+}
+
+def encode_sequence(seq):
+    """Encode a read only when every base is unambiguous.
+
+    Removing ambiguous bases would join its flanks and create artificial
+    k-mers, so ambiguous reads are conservatively excluded from matching.
+    """
+    encoded = []
+    for base in seq:
+        value = BASE_TO_INT.get(base)
+        if value is None:
+            return None
+        encoded.append(value)
+    return ''.join(encoded)
+
+def encode_reference_runs(seq):
+    """Yield independent A/C/G/T/U runs without k-mers crossing ambiguity."""
+    run = []
+    for base in seq:
+        value = BASE_TO_INT.get(base)
+        if value is None:
+            if run:
+                yield ''.join(run)
+                run = []
+            continue
+        run.append(value)
+    if run:
+        yield ''.join(run)
 
 def print_log(log_path, *args, **kwargs):
     if log_path:
@@ -172,28 +203,36 @@ def linked_iterator(iterator, link_size):
         if not linked_reads:
             break
 
+        if len(linked_reads) != link_size:
+            raise ValueError('Interleaved paired-read file has an odd number of records.')
+
         yield tuple(linked_reads)
 
-def build_kmer_dict(ref_set, kmer_size, trans=FWD_TRANS, rtrans=REV_TRANS):
+def linked_read_iterators(read_iters):
+    for linked_reads in itertools.zip_longest(*read_iters, fillvalue=None):
+        if any(read is None for read in linked_reads):
+            raise ValueError('Paired input files contain different numbers of records.')
+        yield linked_reads
+
+def build_kmer_dict(ref_set, kmer_size):
     # Values: 0=unused; 1=forward; 2=reverse; 3=both
     kmer_dict = collections.defaultdict(lambda: 0)
     mask_bin  = (1 << (kmer_size << 1)) - 1
 
     for seq in ref_set:
-        seq_str   = seq.translate(trans)
-        seq_str_r = seq.translate(rtrans)[::-1]
+        for seq_str in encode_reference_runs(seq):
+            if len(seq_str) < kmer_size:
+                continue
 
-        if not seq_str:
-            continue
+            seq_str_r = ''.join(str(3 - int(base)) for base in reversed(seq_str))
+            seq_int   = int(seq_str, 4)
+            seq_int_r = int(seq_str_r, 4)
 
-        seq_int   = int(seq_str, 4)
-        seq_int_r = int(seq_str_r, 4)
-
-        for _ in range(0, len(seq_str) - kmer_size + 1):
-            kmer_dict[seq_int   & mask_bin] |= 1
-            kmer_dict[seq_int_r & mask_bin] |= 2
-            seq_int   >>= 2
-            seq_int_r >>= 2
+            for _ in range(0, len(seq_str) - kmer_size + 1):
+                kmer_dict[seq_int   & mask_bin] |= 1
+                kmer_dict[seq_int_r & mask_bin] |= 2
+                seq_int   >>= 2
+                seq_int_r >>= 2
 
     return kmer_dict
 
@@ -210,7 +249,7 @@ def copy_reads(name, out_dir, read_info, file_type):
             read_iters = [READ_ITERATORS[file_type](stack.enter_context(open(path, 'r'))) for path in read_info]
 
         output_file = stack.enter_context(open(output_path, 'w'))
-        output_file.writelines(format_func(tp) for linked_reads in zip(*read_iters) for tp in linked_reads)
+        output_file.writelines(format_func(tp) for linked_reads in linked_read_iterators(read_iters) for tp in linked_reads)
 
 def run_length_filter(name, out_dir, ref_set, ref_length, read_info, file_type, kmer_size, keep_temporaries, keep_linked_mates):
     RUN_LEN_CONST = 0.5772156649 / math.log(2) - 1.5
@@ -223,8 +262,6 @@ def run_length_filter(name, out_dir, ref_set, ref_length, read_info, file_type, 
     output_path = os.path.join(out_dir, 'large_files', name + output_ext)
     format_func = FORMAT_FUNCTIONS[file_type]
     open_flags  = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    trans_table = FWD_TRANS
-
     if os.name == 'nt' and not keep_temporaries:
         open_flags |= os.O_SHORT_LIVED
 
@@ -238,9 +275,12 @@ def run_length_filter(name, out_dir, ref_set, ref_length, read_info, file_type, 
 
         output_file = stack.enter_context(os.fdopen(os.open(output_path, open_flags), 'w'))
 
-        for linked_reads in zip(*read_iters):
+        for linked_reads in linked_read_iterators(read_iters):
             orient = [0] * len(linked_reads)
-            group_iter = (collect_runs_stats(tp[1].translate(trans_table), kmer_dict, kmer_size) for tp in linked_reads)
+            group_iter = (
+                collect_runs_stats(encoded, kmer_dict, kmer_size) if (encoded := encode_sequence(tp[1])) is not None else [0] * 13
+                for tp in linked_reads
+            )
 
             for i, (_, fwd_l, rev_l, _,
                     _, fwd_r, rev_r, _,
@@ -347,10 +387,9 @@ def kmer_filter(name, out_dir, log_path, ref_set, ref_length, temp_path, file_ty
     output_path = os.path.join(out_dir, name + output_ext)
     format_func = FORMAT_FUNCTIONS[file_type]
     read_iter   = READ_ITERATORS[file_type]
-    trans_table = FWD_TRANS
-
     def read_matches(tp, kmer_dict):
-        return filter_read(tp[1].translate(trans_table), kmer_dict, kmer_size)
+        encoded = encode_sequence(tp[1])
+        return encoded is not None and filter_read(encoded, kmer_dict, kmer_size)
 
     with open(temp_path, 'r') as f:
         if keep_linked_mates:

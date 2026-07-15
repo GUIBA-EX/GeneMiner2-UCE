@@ -527,7 +527,10 @@ class FastaHelper {
 
             switch (c) {
                 case "A".code | "C".code | "G".code | "T".code: setChar(buf, len, c);
-                default: continue;
+                // Keep ambiguous bases as explicit separators.  Removing them
+                // would join the two flanks and create k-mers absent from the
+                // source sequence.
+                default: setChar(buf, len, "N".code);
             }
 
             len++;
@@ -543,8 +546,17 @@ class FastaHelper {
 #end
 
         for (i in 0...seqEnd) {
-            setChar(dest, seqEnd - i - 1, nuclChars[3 - nuclToInt(Bytes.fastGet(src.getData(), i))]);
+            var base = Bytes.fastGet(src.getData(), i);
+            setChar(dest, seqEnd - i - 1, base == "N".code ? "N".code : nuclChars[3 - nuclToInt(base)]);
         }
+    }
+
+    public static inline function hasAmbiguous(seq: Bytes, pos: Int, len: Int) {
+        for (i in pos...(pos + len)) {
+            if (Bytes.fastGet(seq.getData(), i) == "N".code) return true;
+        }
+
+        return false;
     }
 
     public static inline function nuclToInt(charCode: Int) {
@@ -641,6 +653,7 @@ class KmerMap {
 
     var skipLength: Int;
     var expectedSkipLength: Float;
+    var allowPatternOptimization = false;
 
     private inline function new(kmer, refNum) {
         kmerLength = kmer;
@@ -722,6 +735,7 @@ class KmerMap {
     public static function fromReference(kmer, refPathList: Array<String>, getReverse = false) {
         var refCount = refPathList.length;
         var object = new KmerMap(kmer, refCount);
+        var hasAmbiguousReference = false;
 
         object.cuckooSetList.resize(refCount);
         object.minMaxMap = UInt16Array.fromBytes(Bytes.alloc(2 * minMaxMapSize), 0, minMaxMapSize);
@@ -790,9 +804,18 @@ class KmerMap {
                     continue;
                 }
 
-                object.updateMinMaxMap(seqBuffer, seqEnd);
+                // The minimizer table cannot represent ambiguous windows.  We
+                // still index valid runs below, but disable this optimization
+                // for mixed references.
+                if (!FastaHelper.hasAmbiguous(seqBuffer, 0, seqEnd)) {
+                    object.updateMinMaxMap(seqBuffer, seqEnd);
+                }
+                else {
+                    hasAmbiguousReference = true;
+                }
 
                 for (j in 0...(seqEnd - object.kmerLength + 1)) {
+                    if (FastaHelper.hasAmbiguous(seqBuffer, j, object.kmerLength)) continue;
                     if (object.useLongKmer) {
                         longKmerSet[LongKmer.fromBytes(seqBuffer, j, object.kmerLength).toString()] = true;
                     }
@@ -809,6 +832,7 @@ class KmerMap {
                     FastaHelper.makeRevComp(revBuffer, seqBuffer, seqEnd);
 
                     for (j in 0...(seqEnd - object.kmerLength + 1)) {
+                        if (FastaHelper.hasAmbiguous(revBuffer, j, object.kmerLength)) continue;
                         if (object.useLongKmer) {
                             longKmerSet[LongKmer.fromBytes(revBuffer, j, object.kmerLength).toString()] = true;
                         }
@@ -848,8 +872,10 @@ class KmerMap {
             totalSlots += 4 * cs.toVector().length;
         }
 
+        object.allowPatternOptimization = !hasAmbiguousReference;
         return {dict: object, failure: failureCount, count: kmerCount, occupancy: totalElements / totalSlots};
 #else
+        object.allowPatternOptimization = !hasAmbiguousReference;
         return {dict: object, failure: failureCount, count: kmerCount};
 #end
     }
@@ -1051,6 +1077,14 @@ class KmerMap {
     }
 
     public function checkPatternUsage() {
+        // Prebuilt dictionaries do not record whether their references had
+        // ambiguity. Disable this optional shortcut unless this process built
+        // the dictionary from known-unambiguous references.
+        if (!allowPatternOptimization) {
+            expectedSkipLength = 0;
+            return;
+        }
+
         var sum = 0.0;
         var c = 0.0;
 
@@ -1124,6 +1158,11 @@ class KmerMap {
         var offset        = 0;
 
         while (offset <= tailOffset) {
+            if (FastaHelper.hasAmbiguous(seq, offset, kmerLength)) {
+                offset += step;
+                continue;
+            }
+
             if (checkPattern) {
                 var pattern = 0;
                 var tetramer = 0;
@@ -1172,6 +1211,7 @@ class KmerMap {
         }
 
         if (offset - step < tailOffset) {
+            if (FastaHelper.hasAmbiguous(seq, tailOffset, kmerLength)) return;
             if (useLongKmer) {
                 markHitsLong(longMap, match, LongKmer.fromBytes(seq, tailOffset, kmerLength));
             }
@@ -2000,10 +2040,16 @@ class MainFilterNew {
                 var record2 = pairedReads ? input2.readSequence() : null;
 
                 if (record1.length < recordLen) {
+                    if (pairedReads && record2.length >= recordLen) {
+                        throw new EncodingError('Paired input files contain different numbers of records');
+                    }
                     continue;
                 }
 
                 var hasRecord2 = record2 != null && record2.length >= recordLen;
+                if (pairedReads && !hasRecord2) {
+                    throw new EncodingError('Paired input files contain different numbers of records');
+                }
                 var maxRawSeqLen = (hasRecord2 && record2[1].length > record1[1].length) ? record2[1].length : record1[1].length;
 
                 if (seqBuffer.length < maxRawSeqLen) {
@@ -2019,8 +2065,10 @@ class MainFilterNew {
 
                 var seqEnd = FastaHelper.convertToDna(seqBuffer, record1[1]);
 
+                var hasAmbiguous = FastaHelper.hasAmbiguous(seqBuffer, 0, seqEnd);
+
                 if (seqEnd >= kmerSize) {
-                    if (useFastIteration) {
+                    if (useFastIteration && !hasAmbiguous) {
                         kmerDict.markHitsFast(match, seqBuffer, seqEnd, stepSize, getReverse);
                     }
                     else {
@@ -2038,9 +2086,10 @@ class MainFilterNew {
 
                 if (hasRecord2) {
                     seqEnd = FastaHelper.convertToDna(seqBuffer, record2[1]);
+                    hasAmbiguous = FastaHelper.hasAmbiguous(seqBuffer, 0, seqEnd);
 
                     if (seqEnd >= kmerSize) {
-                        if (useFastIteration) {
+                        if (useFastIteration && !hasAmbiguous) {
                             kmerDict.markHitsFast(match, seqBuffer, seqEnd, stepSize, getReverse);
                         }
                         else {
@@ -2086,6 +2135,12 @@ class MainFilterNew {
             input1.close();
 
             if (pairedReads) {
+                while (!input2.eof()) {
+                    var extraRecord = input2.readSequence();
+                    if (extraRecord.length >= recordLen) {
+                        throw new EncodingError('Paired input files contain different numbers of records');
+                    }
+                }
                 input2.close();
             }
         }

@@ -16,8 +16,8 @@ import time
 D_BASE_DICT = {'AG':'R','CT':'Y', 'GT':'K', 'GC':'S','AC':'M', 'AT':'W','GA':'R','TC':'Y','TG':'K', 'CG':'S','CA':'M', 'TA':'W',}
 ACGT_DICT = {0: 'A', 1: 'C', 2: 'G', 3: 'T'}
 ACGT_REV   = str.maketrans('ACGT', 'TGCA')
-FWD_TRANS  = str.maketrans("ACGTU", "01233", "RYMKSWHBVDN\n\r")
-REV_TRANS  = str.maketrans("ACGTU", "32100", "RYMKSWHBVDN\n\r")
+FWD_TRANS  = str.maketrans("ACGTU", "01233")
+REV_TRANS  = str.maketrans("ACGTU", "32100")
 BIN_DICT   = {'00': 'A', '01': 'C', '10': 'G', '11': 'T'}
 
 ref_path_dict = {}  # 序列路径字典
@@ -62,6 +62,11 @@ def Seq_To_Int(dna_str, trans=FWD_TRANS, rtrans=REV_TRANS):
     """
     将基因转换为整数
     """
+    # Do not remove ambiguous bases: doing so joins the two flanks and creates
+    # k-mers that never occurred in the input sequence.
+    if any(base not in 'ACGTU' for base in dna_str):
+        return (), 0
+
     dna_fw_str = dna_str.translate(trans)
     dna_rc_str = dna_str.translate(rtrans)[::-1]
 
@@ -69,6 +74,26 @@ def Seq_To_Int(dna_str, trans=FWD_TRANS, rtrans=REV_TRANS):
         return (), 0
 
     return (int(dna_fw_str, 4), int(dna_rc_str, 4)), len(dna_fw_str)
+
+def Valid_Sequence_Runs(dna_str):
+    """Yield contiguous unambiguous sequence runs without joining across ambiguity."""
+    for _, run in Valid_Sequence_Runs_With_Positions(dna_str):
+        yield run
+
+def Valid_Sequence_Runs_With_Positions(dna_str):
+    """Yield the start coordinate and sequence of every unambiguous run."""
+    run = []
+    run_start = 0
+    for pos, base in enumerate(dna_str):
+        if base in 'ACGTU':
+            if not run:
+                run_start = pos
+            run.append(base)
+        elif run:
+            yield run_start, ''.join(run)
+            run = []
+    if run:
+        yield run_start, ''.join(run)
 
 def Int_To_Seq(seq_bin, seq_length, seq_dict=BIN_DICT):
     """
@@ -122,26 +147,37 @@ def Make_Kmer_Dict(_kmer_dict, file_path, kmer_size):
         file_id = 1 << 35  # 设置当前文件的符号位
 
         for _, seq in SimpleFastaParser(f):
-            # 序列转整数，获取长度
-            intseqs, ref_len = Seq_To_Int(''.join(filter(str.isalpha, seq)).upper())
-            ref_kmer_count = ref_len - kmer_size + 1
+            seq = ''.join(filter(str.isalpha, seq)).upper()
+            total_kmer_count = len(seq) - kmer_size + 1
+            if total_kmer_count <= 0:
+                continue
 
-            for x, y in enumerate(intseqs):
-                # 初始化符号位和文件位，反向互补序列的31位符号位为1
-                SIGN_BIN = (1 << 30) + (1 << 10) + file_id if x else (1 << 10) + file_id
+            for run_start, run in Valid_Sequence_Runs_With_Positions(seq):
+                intseqs, ref_len = Seq_To_Int(run)
+                ref_kmer_count = ref_len - kmer_size + 1
+                if ref_kmer_count <= 0:
+                    continue
 
-                for j in range(0, ref_kmer_count):
-                    temp_int = SIGN_BIN  # 初始化文件位和深度
-                    kmer_int = y >> (j << 1) & MASK_BIN  # 获取kmer的整数形式
+                for x, y in enumerate(intseqs):
+                    # 初始化符号位和文件位，反向互补序列的31位符号位为1
+                    SIGN_BIN = (1 << 30) + (1 << 10) + file_id if x else (1 << 10) + file_id
 
-                    if kmer_int in _kmer_dict:
-                        temp_int = _kmer_dict[kmer_int]
-                        temp_int += DEPTH_BIN  # 深度加1，深度大于2**20会溢出,不太可能这么深的kmer
-                        temp_int |= file_id  # 赋值文件位
-                    else:
-                        temp_int += int((j + 1) / ref_kmer_count * 1000)
+                    for j in range(0, ref_kmer_count):
+                        temp_int = SIGN_BIN  # 初始化文件位和深度
+                        kmer_int = y >> (j << 1) & MASK_BIN  # 获取kmer的整数形式
 
-                    _kmer_dict[kmer_int] = temp_int
+                        if kmer_int in _kmer_dict:
+                            temp_int = _kmer_dict[kmer_int]
+                            temp_int += DEPTH_BIN  # 深度加1，深度大于2**20会溢出,不太可能这么深的kmer
+                            temp_int |= file_id  # 赋值文件位
+                        else:
+                            if x:
+                                global_j = run_start + j
+                            else:
+                                global_j = len(seq) - run_start - ref_len + j
+                            temp_int += int((global_j + 1) / total_kmer_count * 1000)
+
+                        _kmer_dict[kmer_int] = temp_int
 
 def Reference_File_Cache_Key(file_path, kmer_size):
     stat = os.stat(file_path)
@@ -230,8 +266,12 @@ def Make_Assemble_Dict(file_list, kmer_size, _kmer_dict, _ref_dict, Filted_File_
                 infile.readline()
                 infile.readline()
                 infile.readline()
-            intseqs, read_len = Seq_To_Int(read_seq) # 序列转整数，获取长度
-            kmer_set = {x >> (j << 1) & MASK_BIN for x in intseqs for j in range(0, read_len - kmer_size)}
+            kmer_set = set()
+            for run in Valid_Sequence_Runs(read_seq):
+                intseqs, read_len = Seq_To_Int(run)
+                kmer_set.update(x >> (j << 1) & MASK_BIN
+                                for x in intseqs
+                                for j in range(0, read_len - kmer_size + 1))
             for kmer in kmer_set:
                 if kmer in _kmer_dict:
                     _kmer_dict[kmer][0] += 1
@@ -263,35 +303,45 @@ def Make_Reads_Dict(file_list, _reads_dict, Filted_File_Ext = '.fq'):
     :param _reads_dict: 待生成的字典value的格式为seq
     :return: 返回切片的长度
     """
-    read_len = 0
-    slice_len = 0
-    for file in file_list:
-        infile = open(file, 'r', encoding='utf-8', errors='ignore')
-        infile.readline()
-        paried_count = True
-        for line in infile:
-            temp_str = []
+    def read_sequences(path):
+        with open(path, 'r', encoding='utf-8', errors='ignore') as infile:
             if Filted_File_Ext == '.fasta':
-                while line and line[0] != '>':
-                    temp_str.append(line)
-                    line = infile.readline()
+                for _, seq in SimpleFastaParser(infile):
+                    yield ''.join(filter(str.isalpha, seq)).upper()
             else:
-                temp_str.append(line.strip())
-                infile.readline()
-                infile.readline()
-                infile.readline()
-            read_seq = ''.join(filter(str.isalpha, ''.join(temp_str))).upper()
-            if not read_len:
-                read_len = len(read_seq)
-                slice_len = int(read_len * 0.9)
-            intseqs = [read_seq, Reverse_Complement_ACGT(read_seq)] # 加入反向互补序列
-            for x in intseqs:
-                slice_reads = Get_Middle_Fragment(x, slice_len)
-                if slice_reads in _reads_dict:
-                    _reads_dict[slice_reads] += 1
-                else:
-                    _reads_dict[slice_reads] = 1
-        infile.close()
+                while True:
+                    header = infile.readline()
+                    if not header:
+                        break
+                    sequence = infile.readline()
+                    plus = infile.readline()
+                    quality = infile.readline()
+                    if not sequence or not plus or not quality:
+                        raise ValueError(f'Truncated FASTQ record in {path}')
+                    yield ''.join(filter(str.isalpha, sequence)).upper()
+
+    min_length = None
+    for file in file_list:
+        for seq in read_sequences(file):
+            if seq and (min_length is None or len(seq) < min_length):
+                min_length = len(seq)
+
+    if min_length is None:
+        return 0
+
+    # Use a common slice length that every read can support.  The former
+    # first-read heuristic made shorter reads permanently invisible.
+    slice_len = max(1, int(min_length * 0.9))
+
+    for file in file_list:
+        for read_seq in read_sequences(file):
+            if len(read_seq) < slice_len:
+                continue
+            intseqs = [read_seq, Reverse_Complement_ACGT(read_seq)]
+            # A palindromic middle fragment is identical in both orientations;
+            # it still represents one physical read and must only be counted once.
+            for slice_read in {Get_Middle_Fragment(seq, slice_len) for seq in intseqs}:
+                _reads_dict[slice_read] = _reads_dict.get(slice_read, 0) + 1
     return slice_len
 
 def Median(x):
@@ -384,6 +434,28 @@ def find_position(dq, n):
             return i
     return -1
 
+def Locate_Read_Slices(seq, slice_len, reads_dict):
+    """Return matching read slices and their unique placement, if any.
+
+    Each dictionary key represents a collection of physical reads with the same
+    middle slice.  A key contributes to read support once per contig, regardless
+    of how many times the sequence occurs in a repeat.  Repeated placements are
+    recorded as ``None`` because they cannot define a supported coordinate.
+    """
+    if slice_len <= 0 or len(seq) < slice_len:
+        return {}
+
+    matches = {}
+    for pos in range(len(seq) - slice_len + 1):
+        slice_str = seq[pos:pos + slice_len]
+        if slice_str not in reads_dict:
+            continue
+        if slice_str in matches:
+            matches[slice_str] = None
+        else:
+            matches[slice_str] = pos
+    return matches
+
 def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 0, assembly_mode = 'reference'):
     """
     通过将contigs与reads进行map，来检测contig的可靠性
@@ -407,12 +479,8 @@ def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 
     min_weight = max_weight >> (2 if assembly_mode == 'uce' else 1)
     processed_contigs = sorted([[''.join(ACGT_DICT[k] for k in x[1]), sum(x[0]), 0] for x in contigs if sum(x[0]) > min_weight], key=itemgetter(1), reverse=True)
     for x in processed_contigs:
-        contig_len = len(x[0])
-        for j in range(max(contig_len - slice_len + 1, 0)):
-            if contig_len - slice_len - j >= 0:
-                slice_str = x[0][contig_len - slice_len - j:contig_len - j]
-                if slice_str in reads_dict:
-                    x[2] += reads_dict[slice_str]
+        matches = Locate_Read_Slices(x[0], slice_len, reads_dict)
+        x[2] = sum(reads_dict[slice_str] for slice_str in matches)
     if assembly_mode == 'uce':
         processed_contigs.sort(key=lambda x: (len(x[0]), x[2], x[1]), reverse=True)
     else:
@@ -429,15 +497,16 @@ def Calculate_Read_Support(seq, slice_len, reads_dict):
     left_coord = contig_len
     right_coord = 0
 
-    for j in range(max(contig_len - slice_len + 1, 0)):
-        if contig_len - slice_len - j >= 0:
-            slice_str = seq[contig_len - slice_len - j:contig_len - j]
-            if slice_str in reads_dict:
-                if contig_len - slice_len - j < left_coord:
-                    left_coord = contig_len - slice_len - j
-                if contig_len - j > right_coord:
-                    right_coord = contig_len - j
-                read_count += reads_dict[slice_str]
+    matches = Locate_Read_Slices(seq, slice_len, reads_dict)
+    read_count = sum(reads_dict[slice_str] for slice_str in matches)
+
+    # Only uniquely placed slices provide positional evidence.  Multi-mapping
+    # slices still count as physical reads, but cannot support both repeat copies.
+    for pos in matches.values():
+        if pos is None:
+            continue
+        left_coord = min(left_coord, pos)
+        right_coord = max(right_coord, pos + slice_len)
 
     supported_span = max(right_coord - left_coord, 0)
     if supported_span:
@@ -609,32 +678,33 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
     return processed_contigs, kmer_set_1 | kmer_set_2, contig_pos
 
 def Calculate_Kmer_Size(ref_path, reads, slice_len, k_min, k_max, error_limit):
+    if k_min % 2 == 0:
+        k_min += 1
+
+    if slice_len <= k_min:
+        return k_min
+
     mask_bin  = (1 << (k_min << 1)) - 1
     kmer_dict = Counter()
     trans = FWD_TRANS
     rtrans = REV_TRANS
 
-    if slice_len <= k_min:
-        return k_min
-
-    if k_min % 2 == 0:
-        k_min += 1
-
     for seq in reads:
-        seq_str   = seq.translate(trans)
-        seq_str_r = seq.translate(rtrans)[::-1]
+        for run in Valid_Sequence_Runs(seq):
+            seq_str   = run.translate(trans)
+            seq_str_r = run.translate(rtrans)[::-1]
 
-        if not seq_str:
-            continue
+            if len(seq_str) < k_min:
+                continue
 
-        seq_int   = int(seq_str, 4)
-        seq_int_r = int(seq_str_r, 4)
+            seq_int   = int(seq_str, 4)
+            seq_int_r = int(seq_str_r, 4)
 
-        for _ in range(0, len(seq_str) - k_min + 1):
-            kmer_dict[seq_int   & mask_bin] += 1
-            kmer_dict[seq_int_r & mask_bin] += 1
-            seq_int   >>= 2
-            seq_int_r >>= 2
+            for _ in range(0, len(seq_str) - k_min + 1):
+                kmer_dict[seq_int   & mask_bin] += 1
+                kmer_dict[seq_int_r & mask_bin] += 1
+                seq_int   >>= 2
+                seq_int_r >>= 2
 
     kmer_dict = {k for k, v in kmer_dict.items() if v > error_limit}
     run_length_stats = [0] * (k_max - k_min + 1)
@@ -643,36 +713,37 @@ def Calculate_Kmer_Size(ref_path, reads, slice_len, k_min, k_max, error_limit):
     with open(ref_path, 'r') as f:
         for _, seq in SimpleFastaParser(f):
             seq       = ''.join(filter(str.isalpha, seq)).upper()
-            seq_str   = seq.translate(trans)
+            for run in Valid_Sequence_Runs(seq):
+                seq_str = run.translate(trans)
 
-            if not seq_str:
-                continue
-
-            seq_int   = int(seq_str, 4)
-
-            run_length_list = [0]
-
-            for _ in range(0, len(seq_str) - k_min + 1):
-                if (seq_int & mask_bin) in kmer_dict:
-                    run_length_list[-1] += 1
-                    if run_length_list[-1] >= run_maximum:
-                        run_length_list.append(run_maximum // 2)
-                elif run_length_list[-1] != 0:
-                    run_length_list.append(0)
-                seq_int >>= 2
-
-            for k, v in Counter(run_length_list).items():
-                if k == 0:
+                if len(seq_str) < k_min:
                     continue
 
-                kp = k - 1
-                odd = kp % 2
-                kp = kp - odd
+                seq_int = int(seq_str, 4)
 
-                run_length_stats[kp] += v
+                run_length_list = [0]
 
-                for i in range(2, kp + 1, 2):
-                    run_length_stats[kp - i] += v
+                for _ in range(0, len(seq_str) - k_min + 1):
+                    if (seq_int & mask_bin) in kmer_dict:
+                        run_length_list[-1] += 1
+                        if run_length_list[-1] >= run_maximum:
+                            run_length_list.append(run_maximum // 2)
+                    elif run_length_list[-1] != 0:
+                        run_length_list.append(0)
+                    seq_int >>= 2
+
+                for k, v in Counter(run_length_list).items():
+                    if k == 0:
+                        continue
+
+                    kp = k - 1
+                    odd = kp % 2
+                    kp = kp - odd
+
+                    run_length_stats[kp] += v
+
+                    for i in range(2, kp + 1, 2):
+                        run_length_stats[kp - i] += v
 
     for k, n in reversed(tuple(enumerate(run_length_stats, k_min))):
         if n > 0:
@@ -708,6 +779,24 @@ def Write_Dict(_dict, file_name):
             else:
                 f.writelines([str(key), ",", str(value), ",", '\n'])
 
+def Read_Dict(file_name):
+    if not os.path.isfile(file_name):
+        return {}
+
+    result = {}
+    with open(file_name, newline='') as f:
+        for row in csv.reader(f):
+            if len(row) >= 3 and row[0]:
+                result[row[0]] = row[1:3]
+    return result
+
+def Read_Uce_Summary(file_name):
+    if not os.path.isfile(file_name):
+        return {}
+
+    with open(file_name, newline='') as f:
+        return {row['locus']: row for row in csv.DictReader(f) if row.get('locus')}
+
 def Write_Uce_Summary(rows, file_name):
     fieldnames = [
         'locus',
@@ -731,17 +820,16 @@ def Write_Uce_Summary(rows, file_name):
         for row in rows:
             writer.writerow({name: row.get(name, '') for name in fieldnames})
 
-def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, loop_count, total_count):
+def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, loop_count, total_count, completed_keys=None):
     contig_best_path = os.path.join(args.o, "results", key + ".fasta")
     contig_all_path = os.path.join(args.o, "contigs_all", key + ".fasta")
     contig_low_path = os.path.join(args.o, "contigs_all_low", key + ".fasta")
     current_ka = args.ka
     limit = args.limit_count
 
-    if os.path.isfile(contig_best_path):
+    completed_keys = set() if completed_keys is None else completed_keys
+    if key in completed_keys and os.path.isfile(contig_best_path) and os.path.getsize(contig_best_path) > 0:
         return False, key, {"status": "skipped"}
-
-    open(contig_best_path, 'w').close()
 
     # 检查是哪种扩展名
     file_extensions = ['.fasta', '.fq']
@@ -956,29 +1044,39 @@ if __name__ == '__main__':
     try:
         Write_Print(os.path.join(args.o,  "log.txt"), '======================== Assemble =========================')
 
+        result_path = os.path.join(args.o, "result_dict.txt")
+        uce_summary_path = os.path.join(args.o, "uce_assembly_summary.csv")
+        valid_keys = set(ref_path_dict)
+        result_dict = {key: value for key, value in Read_Dict(result_path).items() if key in valid_keys}
+        uce_summary_by_locus = ({key: value
+                                 for key, value in Read_Uce_Summary(uce_summary_path).items()
+                                 if key in valid_keys}
+                                if args.assembly_mode == 'uce' else {})
+        completed_keys = set(result_dict)
+        if args.assembly_mode == 'uce':
+            completed_keys &= set(uce_summary_by_locus)
+
         results = []
         if args.processes > 1:
             pool = multiprocessing.Pool(args.processes)
             for loop_count, (key, ref_path) in enumerate(ref_path_dict.items(), start=1):
-                results.append(pool.apply_async(process_key_value, (args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict))))
+                results.append(pool.apply_async(process_key_value, (args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict), completed_keys)))
             pool.close()
             pool.join()
         else:
             for loop_count, (key, ref_path) in enumerate(ref_path_dict.items(), start=1):
-                results.append(process_key_value(args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict)))
+                results.append(process_key_value(args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict), completed_keys))
 
-        result_dict = {}
-        uce_summary_rows = []
         for result in results:
             success, key_update, result_dict_entry = result if type(result) == tuple else result.get()
             if result_dict_entry.get("status") != "skipped":
                 result_dict[key_update] = [result_dict_entry["status"], result_dict_entry["value"]]
                 if args.assembly_mode == 'uce':
-                    uce_summary_rows.append({'locus': key_update, **result_dict_entry})
+                    uce_summary_by_locus[key_update] = {'locus': key_update, **result_dict_entry}
 
-        Write_Dict(result_dict, os.path.join(args.o, "result_dict.txt"))
+        Write_Dict(result_dict, result_path)
         if args.assembly_mode == 'uce':
-            Write_Uce_Summary(uce_summary_rows, os.path.join(args.o, "uce_assembly_summary.csv"))
+            Write_Uce_Summary([uce_summary_by_locus[key] for key in sorted(uce_summary_by_locus)], uce_summary_path)
         t1 = time.time()
         Write_Print(os.path.join(args.o,  "log.txt"), '\nTime cost:', t1 - t0, '\n') # 拼接所用的时间
     except Exception as e:

@@ -239,7 +239,7 @@ def build_stats(out_dir, ref_dir, samples, count_input_reads=False):
 def count_loci_at_threshold(lengths, refs, threshold):
     return sum(
         1 for locus, ref_len in refs.items()
-        if ref_len > 0 and lengths.get(locus, 0) > ref_len * threshold
+        if ref_len > 0 and lengths.get(locus, 0) >= ref_len * threshold
     )
 
 

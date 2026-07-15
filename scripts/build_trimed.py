@@ -1,21 +1,26 @@
 from Bio.SeqIO.FastaIO import SimpleFastaParser
+from Bio.Seq import Seq
 import argparse
 import os
 import statistics
 import subprocess
 
 class SequenceMatch:
-    __slots__ = ('pident', 'length', 'qstart', 'qend')
+    __slots__ = ('pident', 'length', 'qstart', 'qend', 'reverse')
 
-    def __init__(self, pident, qstart, qend):
+    def __init__(self, pident, qstart, qend, reverse=False):
         self.pident = pident
-        self.length = qend - qstart
-        self.qstart = qstart
-        self.qend   = qend
+        self.qstart = min(qstart, qend)
+        self.qend   = max(qstart, qend)
+        self.length = self.qend - self.qstart + 1
+        self.reverse = reverse
 
     @classmethod
     def from_line(cls, line):
-        return cls(float(line[2]), int(line[6]), int(line[7]))
+        qstart, qend = int(line[6]), int(line[7])
+        sstart, send = int(line[8]), int(line[9])
+        reverse = (qstart > qend) != (sstart > send)
+        return cls(float(line[2]), qstart, qend, reverse)
 
 def execute_blastn(query_file, blast_db, executable_path=r"..\analysis\blastn.exe"):
     # Disable NCBI usage reporting to accelerate batch tasks.
@@ -77,12 +82,21 @@ def process_file(query_file, ref_file, blast_output, output_file, percentage, cr
     if not matches:
         return
 
-    if criterion == 'longest':
-        matches = matches[:1]
-    elif criterion == 'terminal':
-        matches = [SequenceMatch(100, min(m.qstart for m in matches), max(m.qend for m in matches))]
+    # A single output sequence cannot combine HSPs from opposing orientations.
+    # Retain the orientation with the greatest total aligned query length.
+    orientation = max((False, True), key=lambda reverse: sum(m.length for m in matches if m.reverse == reverse))
+    matches = [m for m in matches if m.reverse == orientation]
 
+    if criterion == 'longest':
+        matches = [max(matches, key=lambda match: match.length)]
+    elif criterion == 'terminal':
+        matches = [SequenceMatch(100, min(m.qstart for m in matches), max(m.qend for m in matches), orientation)]
+
+    matches.sort(key=lambda match: match.qstart)
     combined_sequence = ''.join(sequence[m.qstart - 1:m.qend] for m in matches)
+
+    if orientation:
+        combined_sequence = str(Seq(combined_sequence).reverse_complement())
 
     if len(combined_sequence) / median_length * 100 <= percentage:
         return
@@ -107,12 +121,17 @@ def merge_matches(blast_out):
 
     merged_matches = []
 
-    if matches:
-        current_match = matches[0]
+    for reverse in (False, True):
+        oriented_matches = [match for match in matches if match.reverse == reverse]
+        if not oriented_matches:
+            continue
 
-        for match in matches[1:]:
+        current_match = oriented_matches[0]
+
+        for match in oriented_matches[1:]:
             if match.qstart <= current_match.qend:
                 current_match.qend = max(current_match.qend, match.qend)
+                current_match.length = current_match.qend - current_match.qstart + 1
             else:
                 merged_matches.append(current_match)
                 current_match = match

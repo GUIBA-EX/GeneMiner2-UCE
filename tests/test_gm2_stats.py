@@ -39,6 +39,11 @@ def write_summary(path, rows):
 
 
 class GeneMinerStatsTests(unittest.TestCase):
+    def test_recovery_threshold_includes_exact_boundary(self):
+        refs = {'uce-1': 400, 'uce-2': 400}
+        lengths = {'uce-1': 300, 'uce-2': 299}
+        self.assertEqual(gm2_stats.count_loci_at_threshold(lengths, refs, 0.75), 1)
+
     def test_build_stats_from_uce_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
