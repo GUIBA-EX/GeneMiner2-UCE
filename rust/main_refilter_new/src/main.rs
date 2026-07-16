@@ -89,10 +89,17 @@ impl<R: BufRead> FastqReader<R> {
             || self.reader.read_line(&mut plus)? == 0
             || self.reader.read_line(&mut qual)? == 0
         {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated FASTQ record"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated FASTQ record",
+            ));
         }
 
-        let title = title.trim_end().strip_prefix('@').unwrap_or(title.trim_end()).to_string();
+        let title = title
+            .trim_end()
+            .strip_prefix('@')
+            .unwrap_or(title.trim_end())
+            .to_string();
         Ok(Some(Record {
             title,
             seq: seq.trim_end().to_string(),
@@ -175,15 +182,16 @@ impl<R: Read> Gm2Reader<R> {
                     return Ok(None);
                 }
 
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated GM2 header"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated GM2 header",
+                ));
             }
 
             read_bytes += n;
         }
 
-        let rec_len = ((header[0] as usize) << 16) | header[1] as usize;
-        let has_phr = (header[2] & 0x80) != 0;
-        let seq_len = (((header[2] & 0x7f) as usize) << 16) | header[3] as usize;
+        let (rec_len, has_phr, seq_len) = parse_gm2_header(header);
 
         if rec_len == 0 {
             return self.next_record();
@@ -207,6 +215,14 @@ impl<R: Read> Gm2Reader<R> {
     }
 }
 
+fn parse_gm2_header(header: [u8; 6]) -> (usize, bool, usize) {
+    let rec_len = ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+    let has_phr = (header[3] & 0x80) != 0;
+    let seq_len =
+        (((header[3] & 0x7f) as usize) << 16) | ((header[4] as usize) << 8) | header[5] as usize;
+    (rec_len, has_phr, seq_len)
+}
+
 enum RecordReader {
     Fasta(FastaReader<BufReader<File>>),
     Fastq(FastqReader<BufReader<File>>),
@@ -214,7 +230,12 @@ enum RecordReader {
 }
 
 impl RecordReader {
-    fn from_path(path: &Path, file_type: FileType, gm2_format: bool, suffix: String) -> io::Result<Self> {
+    fn from_path(
+        path: &Path,
+        file_type: FileType,
+        gm2_format: bool,
+        suffix: String,
+    ) -> io::Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
 
@@ -253,7 +274,10 @@ fn parse_gm2_record(record: &[u8], has_phr: bool, seq_len: usize) -> io::Result<
 
     while i < seq_len {
         if j >= record.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated GM2 sequence"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated GM2 sequence",
+            ));
         }
 
         let delta = record[j] & 0x7f;
@@ -295,14 +319,20 @@ fn parse_gm2_record(record: &[u8], has_phr: bool, seq_len: usize) -> io::Result<
 
     while i < seq_len {
         if j >= record.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated GM2 quality"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated GM2 quality",
+            ));
         }
 
         let chunk = record[j];
 
         if chunk & 0x80 != 0 {
             if j + 1 >= record.len() {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated GM2 quality run"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated GM2 quality run",
+                ));
             }
 
             let chunk2 = record[j + 1];
@@ -338,7 +368,11 @@ fn main() {
 
 fn real_main() -> Result<(), String> {
     let args = parse_args(env::args().skip(1).collect())?;
-    let read_dict = get_read_dict(args.se_dir.as_deref(), args.pe_dir.as_deref(), args.use_gm2_format)?;
+    let read_dict = get_read_dict(
+        args.se_dir.as_deref(),
+        args.pe_dir.as_deref(),
+        args.use_gm2_format,
+    )?;
     let ref_dict = get_ref_dict(&args.ref_dir)?;
     fs::create_dir_all(args.out_dir.join("large_files")).map_err(|e| e.to_string())?;
     run(args, read_dict, ref_dict)
@@ -427,7 +461,11 @@ fn next_path(argv: &[String], i: &mut usize, key: &str) -> Result<PathBuf, Strin
         .ok_or_else(|| format!("{key} requires a value"))
 }
 
-fn next_parse<T: std::str::FromStr>(argv: &[String], i: &mut usize, key: &str) -> Result<T, String> {
+fn next_parse<T: std::str::FromStr>(
+    argv: &[String],
+    i: &mut usize,
+    key: &str,
+) -> Result<T, String> {
     *i += 1;
     argv.get(*i)
         .ok_or_else(|| format!("{key} requires a value"))?
@@ -491,7 +529,11 @@ fn get_read_dict(
                 continue;
             }
 
-            let basename = path.file_stem().and_then(OsStr::to_str).unwrap_or_default().to_string();
+            let basename = path
+                .file_stem()
+                .and_then(OsStr::to_str)
+                .unwrap_or_default()
+                .to_string();
             insert_read_group(&mut read_dict, basename, vec![path])?;
         }
     }
@@ -522,7 +564,11 @@ fn get_read_dict(
             let gene_name = basename.trim_end_matches("_1").to_string();
             let ext = path.extension().and_then(OsStr::to_str).unwrap_or_default();
             let mate2 = dir.join(format!("{gene_name}_2.{ext}"));
-            let paths = if mate2.is_file() { vec![path, mate2] } else { vec![path] };
+            let paths = if mate2.is_file() {
+                vec![path, mate2]
+            } else {
+                vec![path]
+            };
             insert_read_group(&mut read_dict, gene_name, paths)?;
         }
     }
@@ -569,7 +615,11 @@ fn get_ref_dict(ref_dir: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
             continue;
         }
 
-        let basename = path.file_stem().and_then(OsStr::to_str).unwrap_or_default().to_string();
+        let basename = path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default()
+            .to_string();
 
         if ref_dict.insert(basename.clone(), path).is_some() {
             return Err(format!("Duplicate reference sequence name {basename}."));
@@ -588,7 +638,10 @@ fn run(
 
     for (name, ref_path) in ref_dict {
         let Some(read_paths) = read_dict.get(&name) else {
-            print_log(args.log_file.as_deref(), &format!("No reads for gene {name}."))?;
+            print_log(
+                args.log_file.as_deref(),
+                &format!("No reads for gene {name}."),
+            )?;
             continue;
         };
 
@@ -609,7 +662,10 @@ fn run(
     }
 
     if tasks.is_empty() {
-        print_log(args.log_file.as_deref(), "No genes with matching reads and references.")?;
+        print_log(
+            args.log_file.as_deref(),
+            "No genes with matching reads and references.",
+        )?;
         return Ok(());
     }
 
@@ -650,7 +706,9 @@ fn run(
             }
         });
 
-        let errors = errors.lock().map_err(|_| "error list poisoned".to_string())?;
+        let errors = errors
+            .lock()
+            .map_err(|_| "error list poisoned".to_string())?;
 
         if let Some(error) = errors.first() {
             return Err(error.clone());
@@ -673,19 +731,33 @@ fn filter_gene(task: Task) -> Result<(), String> {
         .read_paths
         .first()
         .and_then(|path| get_file_type(path))
-        .ok_or_else(|| format!("File '{}' has invalid file type.", task.read_paths[0].display()))?;
+        .ok_or_else(|| {
+            format!(
+                "File '{}' has invalid file type.",
+                task.read_paths[0].display()
+            )
+        })?;
 
     if task.copy_only {
-        print_log(task.log_path.as_deref(), &format!("Writing reads for gene {}.", task.name))?;
+        print_log(
+            task.log_path.as_deref(),
+            &format!("Writing reads for gene {}.", task.name),
+        )?;
         copy_reads(&task.name, &task.out_dir, &task.read_paths, file_type)?;
         return Ok(());
     }
 
-    print_log(task.log_path.as_deref(), &format!("Filtering gene {}.", task.name))?;
+    print_log(
+        task.log_path.as_deref(),
+        &format!("Filtering gene {}.", task.name),
+    )?;
     let (ref_set, effective_len) = load_reference(&task.ref_path, task.kmer_size)?;
 
     if effective_len == 0.0 {
-        print_log(task.log_path.as_deref(), &format!("Gene {} has no valid reference.", task.name))?;
+        print_log(
+            task.log_path.as_deref(),
+            &format!("Gene {} has no valid reference.", task.name),
+        )?;
         return Ok(());
     }
 
@@ -832,7 +904,11 @@ fn add_kmers(kmer_dict: &mut HashMap<Vec<u8>, u8>, seq: &[u8], kmer_size: usize,
     }
 }
 
-fn collect_runs_stats(read: &[u8], kmer_dict: &HashMap<Vec<u8>, u8>, kmer_size: usize) -> [usize; 13] {
+fn collect_runs_stats(
+    read: &[u8],
+    kmer_dict: &HashMap<Vec<u8>, u8>,
+    kmer_size: usize,
+) -> [usize; 13] {
     let mut results = [0_usize; 13];
 
     if read.len() < kmer_size {
@@ -871,7 +947,10 @@ fn collect_runs_stats(read: &[u8], kmer_dict: &HashMap<Vec<u8>, u8>, kmer_size: 
 }
 
 fn filter_read(read: &[u8], kmer_dict: &HashMap<Vec<u8>, u8>, kmer_size: usize) -> bool {
-    read.len() >= kmer_size && read.windows(kmer_size).any(|window| kmer_dict.contains_key(window))
+    read.len() >= kmer_size
+        && read
+            .windows(kmer_size)
+            .any(|window| kmer_dict.contains_key(window))
 }
 
 fn is_close(a: f64, b: f64, abs_tol: f64) -> bool {
@@ -926,8 +1005,14 @@ fn infer_orientation(stats: [usize; 13]) -> u8 {
         return orient;
     }
 
-    let lpf = (1.0 / (1.0 - fwd_l + fwd_n)).ln().mul_add(1.0 / fwd_l, 0.0).exp();
-    let lpr = (1.0 / (1.0 - rev_l + rev_n)).ln().mul_add(1.0 / rev_l, 0.0).exp();
+    let lpf = (1.0 / (1.0 - fwd_l + fwd_n))
+        .ln()
+        .mul_add(1.0 / fwd_l, 0.0)
+        .exp();
+    let lpr = (1.0 / (1.0 - rev_l + rev_n))
+        .ln()
+        .mul_add(1.0 / rev_l, 0.0)
+        .exp();
     let fpz = is_close(lpf, 0.0, TOLERANCE);
     let rpz = is_close(lpr, 0.0, TOLERANCE);
 
@@ -994,7 +1079,12 @@ fn write_record<W: Write>(out: &mut W, record: &Record, file_type: FileType) -> 
     .map_err(|e| e.to_string())
 }
 
-fn copy_reads(name: &str, out_dir: &Path, read_paths: &[PathBuf], file_type: FileType) -> Result<(), String> {
+fn copy_reads(
+    name: &str,
+    out_dir: &Path,
+    read_paths: &[PathBuf],
+    file_type: FileType,
+) -> Result<(), String> {
     let output_path = out_dir.join(format!("{}{}", name, file_type.output_ext()));
     let mut readers = make_readers(read_paths, file_type)?;
     let mut out = BufWriter::new(File::create(output_path).map_err(|e| e.to_string())?);
@@ -1017,7 +1107,10 @@ fn run_length_filter(
     kmer_size: usize,
     keep_linked_mates: bool,
 ) -> Result<PathBuf, String> {
-    let output_path = out_dir.join("large_files").join(format!("{}{}", name, file_type.output_ext()));
+    let output_path =
+        out_dir
+            .join("large_files")
+            .join(format!("{}{}", name, file_type.output_ext()));
     let kmer_dict = build_kmer_dict(ref_set, kmer_size);
     let mut readers = make_readers(read_paths, file_type)?;
     let mut out = BufWriter::new(File::create(&output_path).map_err(|e| e.to_string())?);
@@ -1065,7 +1158,9 @@ fn next_temp_group(
     let second = reader
         .next_record()
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "interleaved paired-read temporary file has an odd number of records".to_string())?;
+        .ok_or_else(|| {
+            "interleaved paired-read temporary file has an odd number of records".to_string()
+        })?;
     Ok(Some(vec![first, second]))
 }
 
@@ -1076,14 +1171,15 @@ fn count_total_length_from_path(
     kmer_dict: Option<&HashMap<Vec<u8>, u8>>,
     kmer_size: usize,
 ) -> Result<usize, String> {
-    let mut reader = RecordReader::from_path(path, file_type, false, String::new()).map_err(|e| e.to_string())?;
+    let mut reader = RecordReader::from_path(path, file_type, false, String::new())
+        .map_err(|e| e.to_string())?;
     let mut total = 0;
 
     while let Some(group) = next_temp_group(&mut reader, keep_linked_mates)? {
         let keep = match kmer_dict {
-            Some(kmer_dict) => group.iter().any(|record| {
-                filter_read(&translate_fwd(&record.seq), kmer_dict, kmer_size)
-            }),
+            Some(kmer_dict) => group
+                .iter()
+                .any(|record| filter_read(&translate_fwd(&record.seq), kmer_dict, kmer_size)),
             None => true,
         };
 
@@ -1111,7 +1207,8 @@ fn kmer_filter(
     keep_linked_mates: bool,
 ) -> Result<(), String> {
     let output_path = out_dir.join(format!("{}{}", name, file_type.output_ext()));
-    let mut total_length = count_total_length_from_path(temp_path, file_type, keep_linked_mates, None, kmer_size)?;
+    let mut total_length =
+        count_total_length_from_path(temp_path, file_type, keep_linked_mates, None, kmer_size)?;
     let mut coverage = total_length as f64 / ref_length;
     let mut too_deep = coverage > max_depth as f64;
     let mut too_large = total_length / 1_000_000 > max_size as usize;
@@ -1136,7 +1233,13 @@ fn kmer_filter(
 
         print_log(log_path, &format!("K-mer size for {name}: {kmer_size}"))?;
         let kmer_dict = build_kmer_dict(ref_set, kmer_size);
-        total_length = count_total_length_from_path(temp_path, file_type, keep_linked_mates, Some(&kmer_dict), kmer_size)?;
+        total_length = count_total_length_from_path(
+            temp_path,
+            file_type,
+            keep_linked_mates,
+            Some(&kmer_dict),
+            kmer_size,
+        )?;
         coverage = total_length as f64 / ref_length;
         too_deep = coverage > max_depth as f64;
         too_large = total_length / 1_000_000 > max_size as usize;
@@ -1155,11 +1258,15 @@ fn kmer_filter(
     }
 
     let kmer_dict = build_kmer_dict(ref_set, kmer_size);
-    let interval = std::cmp::max((total_length as f64 / 1e6 / max_size as f64).trunc() as usize, 2);
+    let interval = std::cmp::max(
+        (total_length as f64 / 1e6 / max_size as f64).trunc() as usize,
+        2,
+    );
     let mut i = 0_usize;
     let mut out = BufWriter::new(File::create(output_path).map_err(|e| e.to_string())?);
 
-    let mut reader = RecordReader::from_path(temp_path, file_type, false, String::new()).map_err(|e| e.to_string())?;
+    let mut reader = RecordReader::from_path(temp_path, file_type, false, String::new())
+        .map_err(|e| e.to_string())?;
     while let Some(linked_reads) = next_temp_group(&mut reader, keep_linked_mates)? {
         if keep_linked_mates {
             if linked_reads
@@ -1176,8 +1283,7 @@ fn kmer_filter(
                     write_record(&mut out, record, file_type)?;
                 }
             }
-        }
-        else if let Some(record) = linked_reads.first() {
+        } else if let Some(record) = linked_reads.first() {
             if filter_read(&translate_fwd(&record.seq), &kmer_dict, kmer_size) {
                 i += 1;
 
@@ -1191,4 +1297,18 @@ fn kmer_filter(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod gm2_tests {
+    use super::parse_gm2_header;
+
+    #[test]
+    fn header_uses_three_bytes_for_each_length() {
+        let (record_len, has_quality, sequence_len) =
+            parse_gm2_header([0x01, 0x02, 0x03, 0x84, 0x05, 0x06]);
+        assert_eq!(record_len, 0x010203);
+        assert!(has_quality);
+        assert_eq!(sequence_len, 0x040506);
+    }
 }

@@ -4,7 +4,7 @@ This repository contains only the command-line GeneMiner2 workflow. GUI project 
 
 ## Building from Source
 
-Building the standalone CLI bundle requires Haxe, a C++ compiler, Python, and PyInstaller. Cargo/Rust is optional: when Cargo is available, `make` builds the Rust implementation of `main_refilter_new`; otherwise it falls back to the Python implementation. Real analyses should use the bundled `cli/geneminer2` entry point after `make`. Please refer to [Usage](#usage) for command-line parameters.
+Building the standalone CLI bundle requires a C++ compiler, Python, PyInstaller, and either Cargo/Rust (recommended) or Haxe 4. When Cargo is available, `make` builds the Rust primary and secondary filters. Without Cargo, the primary filter falls back to Haxe/C++ and the secondary filter to Python/PyInstaller. Real analyses should use the bundled `cli/geneminer2` entry point after `make`. Please refer to [Usage](#usage) for command-line parameters.
 
 First, install the default C++ compiler and [zlib](https://zlib.net/) for the platform. On Ubuntu 20.04 and later, this can be done as follows:
 
@@ -14,7 +14,7 @@ sudo apt install build-essential zlib1g zlib1g-dev
 
 Advanced users can install [zlib-ng](https://github.com/zlib-ng/zlib-ng) or [cloudflare-zlib](https://github.com/cloudflare/zlib) in place of zlib to improve performance.
 
-Second, install [Haxe 4](https://haxe.org/) and [configure the C++ target](https://haxe.org/manual/target-cpp-getting-started.html). On Ubuntu 24.04 and later, the following lines are sufficient:
+Second, install [Rust and Cargo](https://www.rust-lang.org/tools/install). If Rust is not installed, install [Haxe 4](https://haxe.org/) and [configure the C++ target](https://haxe.org/manual/target-cpp-getting-started.html) instead. On Ubuntu 24.04 and later, the Haxe fallback can be installed with:
 
 ```
 sudo apt install haxe
@@ -32,8 +32,8 @@ conda activate geneminer
 Finally, download the source code of this fork and build the binaries:
 
 ```
-git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2.git
-cd GeneMiner2
+git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2-UCE.git
+cd GeneMiner2-UCE
 make
 ```
 

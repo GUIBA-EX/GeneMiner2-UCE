@@ -149,6 +149,8 @@ cli/geneminer2 stats \
 
 ## 实现与下游工具
 
+主 reads 过滤器现在提供 Rust 实现 `rust/main_filter_new/`。其命令行参数、六种输出模式和 paired-end 保留逻辑与原 `scripts/filter/MainFilterNew.hx` 保持兼容，并使用精确的 k-mer 到 locus 映射和带版本标识的缓存格式。`make` 在 Cargo 可用时默认构建 Rust 版本；原 Haxe 源码完整保留，运行 `make haxe-filter` 可另行生成 `cli/bin/MainFilterNew-haxe`。Rust 可以读取旧 Haxe 缓存；切回 Haxe 版本时应重建缓存，因为 Haxe 不能读取新的 Rust 缓存格式。
+
 二次 reads 过滤器提供 Rust 实现 `rust/main_refilter_new/`，并保持与 `scripts/main_refilter_new.py` 相同的命令行参数和输出结构。构建时如检测到 Cargo，会优先编译 Rust 版本；否则回退到 Python/PyInstaller 实现。
 
 combine 阶段可通过 `--msa-threads` 和 `--filter-processes` 控制并行。`--alignment-filter alifilter` 可调用 AliFilter 替代 trimAl；AliFilter 不随本仓库分发，必须另行安装并确保 `AliFilter` 位于 `PATH`。省略 `--alifilter-model` 或设为 `default` 时使用内置模型，只有自定义模型才需要提供真实的 `model.json` 路径。

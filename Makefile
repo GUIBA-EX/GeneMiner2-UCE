@@ -1,8 +1,11 @@
 PY_SRC := build_consensus main_assembler merge_seq unix_command
 PY_BIN := $(patsubst %,cli/bin/%,$(PY_SRC))
 REFILTER_BIN := cli/bin/main_refilter_new
+FILTER_RUST_MANIFEST := rust/main_filter_new/Cargo.toml
+FILTER_RUST_SOURCES := $(FILTER_RUST_MANIFEST) rust/main_filter_new/src/main.rs
+FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
-.PHONY: build clean cython distclean
+.PHONY: build clean cython distclean haxe-filter
 
 build: cli/bin/MainFilterNew $(REFILTER_BIN) $(PY_BIN)
 	for target in $(PY_SRC); do cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/$$target/_internal; done
@@ -12,6 +15,7 @@ clean:
 	rm -f -r scripts/filter/bin
 	rm -f -r scripts/build
 	rm -f -r scripts/dist
+	rm -f -r rust/main_filter_new/target
 	rm -f -r rust/main_refilter_new/target
 
 distclean: clean
@@ -20,9 +24,23 @@ distclean: clean
 	rm -f -r cli/bin
 	rm -f cli/geneminer2
 
-cli/bin/MainFilterNew: scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx
+cli/bin:
+	mkdir -p cli/bin
+
+cli/bin/MainFilterNew: $(FILTER_RUST_SOURCES) $(FILTER_HAXE_SOURCES) | cli/bin
+	if command -v cargo >/dev/null 2>&1; then \
+		cargo build --release --manifest-path $(FILTER_RUST_MANIFEST); \
+		install rust/main_filter_new/target/release/MainFilterNew cli/bin/MainFilterNew; \
+	else \
+		(cd scripts/filter && haxe -cpp bin -dce full -D analyzer-optimize -D HXCPP_GC_BIG_BLOCKS -D HXCPP_GC_MOVING -D HXCPP_M64 -D HXCPP_OPTIMIZE_LINK -D HXCPP_SINGLE_THREADED_APP -D HXCPP_VISIT_ALLOCS -main MainFilterNew.hx); \
+		install scripts/filter/bin/MainFilterNew cli/bin/MainFilterNew; \
+	fi
+
+haxe-filter: cli/bin/MainFilterNew-haxe
+
+cli/bin/MainFilterNew-haxe: $(FILTER_HAXE_SOURCES) | cli/bin
 	cd scripts/filter && haxe -cpp bin -dce full -D analyzer-optimize -D HXCPP_GC_BIG_BLOCKS -D HXCPP_GC_MOVING -D HXCPP_M64 -D HXCPP_OPTIMIZE_LINK -D HXCPP_SINGLE_THREADED_APP -D HXCPP_VISIT_ALLOCS -main MainFilterNew.hx
-	install -D -t cli/bin scripts/filter/bin/MainFilterNew
+	install scripts/filter/bin/MainFilterNew cli/bin/MainFilterNew-haxe
 
 cython:
 	cd scripts && cythonize -i main_refilter_ext.pyx

@@ -149,6 +149,8 @@ This command writes `uce_stats.tsv`, `uce_locus_stats.tsv`, `uce_seq_lengths.tsv
 
 ## Implementation and Downstream Tools
 
+The primary read filter now has a Rust implementation under `rust/main_filter_new/`. It preserves the command-line interface, all six output modes, and paired-end retention behavior of `scripts/filter/MainFilterNew.hx`, while using an exact k-mer-to-locus map and a versioned cache format. When Cargo is available, `make` builds the Rust version by default. The original Haxe source remains intact; run `make haxe-filter` to build it separately as `cli/bin/MainFilterNew-haxe`. Rust can read legacy Haxe caches. Rebuild the cache before switching back to Haxe because Haxe cannot read the new Rust cache format.
+
 The secondary read filter has a Rust implementation under `rust/main_refilter_new/` with the same command-line arguments and output layout as `scripts/main_refilter_new.py`. When Cargo is available, the build uses the Rust implementation; otherwise it falls back to the Python/PyInstaller version.
 
 Use `--msa-threads` and `--filter-processes` to control combine-stage parallelism. `--alignment-filter alifilter` selects AliFilter instead of trimAl. AliFilter is not bundled and must be installed separately with its `AliFilter` executable available in `PATH`. Omit `--alifilter-model`, or set it to `default`, to use the built-in model; provide a real `model.json` path only for a custom model.

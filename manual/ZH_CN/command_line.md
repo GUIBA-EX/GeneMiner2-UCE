@@ -4,7 +4,7 @@
 
 ## 从源码构建
 
-从源码构建独立 CLI 包需要 Haxe、C++ 编译器、Python 和 PyInstaller。Cargo/Rust 是可选依赖：如果环境中有 Cargo，`make` 会构建 Rust 版 `main_refilter_new`；如果没有 Cargo，则自动回退到 Python 版。真实分析应先运行 `make`，再使用打包生成的 `cli/geneminer2`。GeneMiner2 的使用方法请跳转到文档后半部分的[用法](#用法)章节。
+从源码构建独立 CLI 包需要 C++ 编译器、Python、PyInstaller，以及 Cargo/Rust（推荐）或 Haxe 4。检测到 Cargo 时，`make` 会构建 Rust 版主过滤器和二次过滤器；没有 Cargo 时，主过滤器回退到 Haxe/C++，二次过滤器回退到 Python/PyInstaller。真实分析应先运行 `make`，再使用打包生成的 `cli/geneminer2`。GeneMiner2 的使用方法请跳转到文档后半部分的[用法](#用法)章节。
 
 第一步，安装系统的默认C++编译器和[zlib](https://zlib.net/)。在Ubuntu 24.04 或更新版本上，可以运行下面的命令：
 
@@ -14,7 +14,7 @@ sudo apt install build-essential zlib1g zlib1g-dev
 
 高级用户可以选择安装[zlib-ng](https://github.com/zlib-ng/zlib-ng)或[cloudflare-zlib](https://github.com/cloudflare/zlib)代替zlib以提高性能。
 
-第二步，安装[Haxe 4](https://haxe.org/)并[配置C++目标](https://haxe.org/manual/target-cpp-getting-started.html)。在Ubuntu 24.04 或更新版本上，运行下面的命令：
+第二步，推荐安装 [Rust 和 Cargo](https://www.rust-lang.org/tools/install)。如果不安装 Rust，则必须安装 [Haxe 4](https://haxe.org/)并[配置 C++ 目标](https://haxe.org/manual/target-cpp-getting-started.html)。在 Ubuntu 24.04 或更新版本上，Haxe 回退环境可运行：
 
 ```
 sudo apt install haxe
@@ -32,8 +32,8 @@ conda activate geneminer
 最后，将本分支的源代码下载到GeneMiner2文件夹中，构建可执行文件。
 
 ```
-git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2.git
-cd GeneMiner2
+git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2-UCE.git
+cd GeneMiner2-UCE
 make
 ```
 

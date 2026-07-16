@@ -1,0 +1,13 @@
+[package]
+name = "main_filter_new"
+version = "0.3.0"
+edition = "2021"
+
+[[bin]]
+name = "MainFilterNew"
+path = "src/main.rs"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
