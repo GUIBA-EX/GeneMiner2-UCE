@@ -1886,7 +1886,7 @@ def execute_tasks(args, samples):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,
-                                     description='GeneMiner2 is a tool for extracting phylogenetic marker genes.',
+                                     description='GeneMiner2-UCE extracts phylogenetic marker loci for UCE workflows.',
                                      epilog=HELP_EPILOG)
     parser.add_argument('command',
                         choices=('filter', 'refilter', 'assemble', 'consensus', 'trim', 'combine', 'tree', 'stats', []),

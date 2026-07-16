@@ -1,8 +1,8 @@
-# GeneMiner2 UCE CLI
+# GeneMiner2-UCE
 
 **[查看中文版说明](README_zh_cn.md)**
 
-This repository is a command-line focused fork of GeneMiner2 for target-enrichment and UCE workflows. GUI project files, graphical interface documentation, screenshots, and bundled demo datasets have been removed so the repository only contains the CLI source, build files, and command-line documentation.
+GeneMiner2-UCE is a command-line-focused fork of GeneMiner2 for target-enrichment and UCE workflows. GUI project files, graphical interface documentation, screenshots, and bundled demo datasets have been removed so the repository only contains the CLI source, build files, and command-line documentation.
 
 This fork is not distributed as an installable Python package. Build the standalone CLI with `make`, then run `cli/geneminer2`. After every `git pull`, rebuild with `make`; otherwise the generated executable may still contain older code.
 
@@ -16,7 +16,7 @@ This fork is not distributed as an installable Python package. Build the standal
 - Optional AliFilter alignment filtering through `--alignment-filter alifilter`.
 - Controlled combine-stage parallelism through `--msa-threads` and `--filter-processes`.
 
-![GeneMiner2 UCE CLI workflow](docs/images/summary_EN.png)
+![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
 
 ## Changes in This Fork
 
@@ -30,11 +30,11 @@ The GUI project, screenshots, bundled demo data, and large historical files have
 
 The secondary read filter now has a Rust implementation under `rust/main_refilter_new/`. It is intended as a drop-in replacement for `scripts/main_refilter_new.py`: the command-line options and output layout are kept compatible, including `--keep-linked-mates` for UCE workflows.
 
-The Python implementation is still kept in `scripts/main_refilter_new.py` as a readable reference implementation and fallback. During `make`, GeneMiner2 builds the Rust binary when `cargo` is available; if Cargo is not installed, the build falls back to packaging the Python implementation with PyInstaller.
+The Python implementation is still kept in `scripts/main_refilter_new.py` as a readable reference implementation and fallback. During `make`, GeneMiner2-UCE builds the Rust binary when `cargo` is available; if Cargo is not installed, the build falls back to packaging the Python implementation with PyInstaller.
 
 ### UCE assembly mode
 
-`--assembly-mode uce` changes the assembly behavior so GeneMiner2 is less likely to trim contigs back to the short reference/probe interval. In UCE mode, the assembler prefers longer candidates that still have read support, penalizes weakly supported over-extension using read-density and k-mer-depth continuity, and the default command set skips the reference-based `trim` step unless `trim` is requested explicitly.
+`--assembly-mode uce` changes the assembly behavior so GeneMiner2-UCE is less likely to trim contigs back to the short reference/probe interval. In UCE mode, the assembler prefers longer candidates that still have read support, penalizes weakly supported over-extension using read-density and k-mer-depth continuity, and the default command set skips the reference-based `trim` step unless `trim` is requested explicitly.
 
 Recommended UCE-oriented assembly options are:
 

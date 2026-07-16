@@ -1,8 +1,8 @@
-# GeneMiner2 UCE CLI
+# GeneMiner2-UCE
 
 **[English README](README.md)**
 
-本仓库是面向 target-enrichment 和 UCE 数据流程的 GeneMiner2 命令行分支。仓库已经移除 GUI 工程、图形界面说明、截图和内置演示数据，只保留 CLI 源码、构建文件和命令行文档。
+GeneMiner2-UCE 是面向 target-enrichment 和 UCE 数据流程的 GeneMiner2 命令行分支。仓库已经移除 GUI 工程、图形界面说明、截图和内置演示数据，只保留 CLI 源码、构建文件和命令行文档。
 
 本分支不作为可直接 `pip install` 运行的 Python 包发布。请先用 `make` 构建独立命令行程序，然后运行 `cli/geneminer2`。每次 `git pull` 更新源码后都需要重新运行 `make`，否则生成好的可执行文件可能仍然是旧代码。
 
@@ -16,7 +16,7 @@
 - 通过 `--alignment-filter alifilter` 支持可选 AliFilter 比对列过滤。
 - 通过 `--msa-threads` 和 `--filter-processes` 控制 combine 阶段并行。
 
-![GeneMiner2 UCE CLI 流程](docs/images/summary_ZH.png)
+![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
 ## 本分支改动说明
 
@@ -34,7 +34,7 @@ Python 版本仍然保留在 `scripts/main_refilter_new.py`，作为可读的参
 
 ### UCE 组装模式
 
-`--assembly-mode uce` 会让 GeneMiner2 在组装时更少受短参考或探针边界限制，优先选择更长且仍有 reads 支持的候选 contig。使用 UCE 模式且不显式指定子命令时，默认流程会跳过基于参考序列的 `trim` 步骤，避免刚组装出的侧翼序列又被裁回探针区域。如果仍然需要参考切齐，可以显式加入 `trim` 子命令。
+`--assembly-mode uce` 会让 GeneMiner2-UCE 在组装时更少受短参考或探针边界限制，优先选择更长且仍有 reads 支持的候选 contig。使用 UCE 模式且不显式指定子命令时，默认流程会跳过基于参考序列的 `trim` 步骤，避免刚组装出的侧翼序列又被裁回探针区域。如果仍然需要参考切齐，可以显式加入 `trim` 子命令。
 
 推荐的 UCE 组装参数是：
 
