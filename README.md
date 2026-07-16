@@ -1,42 +1,46 @@
 # GeneMiner2-UCE
 
-**[查看中文版说明](README_zh_cn.md)**
+**[English README](README_EN.md)**
 
-GeneMiner2-UCE is a command-line-focused fork of GeneMiner2 for target-enrichment and UCE workflows. GUI project files, graphical interface documentation, screenshots, and bundled demo datasets have been removed so the repository only contains the CLI source, build files, and command-line documentation.
+GeneMiner2-UCE 是面向 target-enrichment 和 UCE 数据流程的 GeneMiner2 命令行分支。仓库已经移除 GUI 工程、图形界面说明、截图和内置演示数据，只保留 CLI 源码、构建文件和命令行文档。
 
-This fork is not distributed as an installable Python package. Build the standalone CLI with `make`, then run `cli/geneminer2`. After every `git pull`, rebuild with `make`; otherwise the generated executable may still contain older code.
+本分支不作为可直接 `pip install` 运行的 Python 包发布。请先用 `make` 构建独立命令行程序，然后运行 `cli/geneminer2`。每次 `git pull` 更新源码后都需要重新运行 `make`，否则生成好的可执行文件可能仍然是旧代码。
 
-## Main Features
+## 引用与联系
 
-- Reference-guided marker recovery from next-generation sequencing reads.
-- UCE-oriented assembly mode through `--assembly-mode uce`, designed to retain longer read-supported flanking contigs.
-- Optional one-round UCE raw-read rescue through `--uce-rescue-reads`.
-- phyluce-compatible UCE contig export under `uce_contigs/`.
-- HybPiper-style UCE statistics through the `stats` subcommand.
-- Optional AliFilter alignment filtering through `--alignment-filter alifilter`.
-- Controlled combine-stage parallelism through `--msa-threads` and `--filter-processes`.
+使用当前版本时必须引用 [GeneMiner2-UCE GitHub 仓库](https://github.com/GUIBA-EX/GeneMiner2-UCE)。介绍 GeneMiner2-UCE 的预印本正在准备中，发布后将在此补充。如需修改代码，请联系 [xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp)。
 
-![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
+## 主要功能
 
-## Changes in This Fork
+- 基于参考序列从二代测序 reads 中恢复目标分子标记。
+- 通过 `--assembly-mode uce` 启用 UCE 组装模式，优先保留更长且有 reads 支持的侧翼 contig。
+- 通过 `--uce-rescue-reads` 启用一轮 UCE raw-read rescue。
+- 在 `uce_contigs/` 下导出 phyluce 兼容的 UCE contig 文件。
+- 通过 `stats` 子命令生成类似 HybPiper 的 UCE 统计表。
+- 通过 `--alignment-filter alifilter` 支持可选 AliFilter 比对列过滤。
+- 通过 `--msa-threads` 和 `--filter-processes` 控制 combine 阶段并行。
 
-This fork keeps the original GeneMiner2 reference-guided recovery model, but adjusts the command-line workflow for UCE loci, where the bait/probe sequence can be short and the useful phylogenetic signal often comes from flanking sequence.
+![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
-### CLI-only layout
+## 本分支改动说明
 
-The GUI project, screenshots, bundled demo data, and large historical files have been removed from the active repository. The project is intentionally kept as a small source tree plus `Makefile` build. There is no Python `console_scripts` entry point and no `pyproject.toml`; use the generated `cli/geneminer2` executable after building.
+本分支保留 GeneMiner2 原有的参考引导 reads 捕获和组装框架，但针对 UCE 数据做了命令行流程调整。UCE 探针或 bait 通常较短，而系统发育分析中有用的信息往往来自探针两侧的 flanking region，因此本分支的目标是尽量保留有 reads 支持的侧翼延伸，同时避免接受明显异常的过长 contig。
 
-### Rust re-filter implementation
+### 只保留命令行结构
 
-The secondary read filter now has a Rust implementation under `rust/main_refilter_new/`. It is intended as a drop-in replacement for `scripts/main_refilter_new.py`: the command-line options and output layout are kept compatible, including `--keep-linked-mates` for UCE workflows.
+本仓库已经移除 GUI 工程、截图、内置 demo 数据和历史大文件。当前项目定位是小型源码仓库加 `Makefile` 构建流程。仓库不再提供 Python `console_scripts` entry point，也不再保留 `pyproject.toml`；实际运行入口是构建后生成的 `cli/geneminer2`。
 
-The Python implementation is still kept in `scripts/main_refilter_new.py` as a readable reference implementation and fallback. During `make`, GeneMiner2-UCE builds the Rust binary when `cargo` is available; if Cargo is not installed, the build falls back to packaging the Python implementation with PyInstaller.
+### Rust re-filter 实现
 
-### UCE assembly mode
+二次 reads 过滤现在增加了 Rust 实现，位于 `rust/main_refilter_new/`。它的目标是作为 `scripts/main_refilter_new.py` 的 drop-in replacement：命令行参数和输出目录结构保持兼容，包括 UCE 流程中使用的 `--keep-linked-mates`。
 
-`--assembly-mode uce` changes the assembly behavior so GeneMiner2-UCE is less likely to trim contigs back to the short reference/probe interval. In UCE mode, the assembler prefers longer candidates that still have read support, penalizes weakly supported over-extension using read-density and k-mer-depth continuity, and the default command set skips the reference-based `trim` step unless `trim` is requested explicitly.
+Python 版本仍然保留在 `scripts/main_refilter_new.py`，作为可读的参考实现和 fallback。运行 `make` 时，如果环境中有 `cargo`，会优先构建 Rust binary；如果没有 Cargo，则自动回退到用 PyInstaller 打包 Python 版本。
 
-Recommended UCE-oriented assembly options are:
+### UCE 组装模式
+
+`--assembly-mode uce` 会让 GeneMiner2-UCE 在组装时更少受短参考或探针边界限制，优先选择更长且仍有 reads 支持的候选 contig。使用 UCE 模式且不显式指定子命令时，默认流程会跳过基于参考序列的 `trim` 步骤，避免刚组装出的侧翼序列又被裁回探针区域。如果仍然需要参考切齐，可以显式加入 `trim` 子命令。
+
+推荐的 UCE 组装参数是：
 
 ```bash
 --assembly-mode uce \
@@ -47,53 +51,26 @@ Recommended UCE-oriented assembly options are:
 -e 1
 ```
 
-These settings keep boundary trimming permissive, allow automatic assembly k-mer selection over a lower range, and reduce the k-mer count threshold. They are designed for short UCE baits and divergent samples, but they can also admit noisier candidates, so the rescue summary and downstream alignments should still be inspected.
+这些参数会放宽边界裁剪，允许在较低 assembly k-mer 范围内自动选 k，并降低 k-mer 计数阈值。它们更适合短 UCE bait 和与参考有一定分化的样本，但也可能引入更多低支持候选，因此仍需要检查 rescue summary 和后续比对结果。
 
-### Reference/index cache
+### paired-end mate retention
 
-Repeated runs against the same reference directory can reuse reference k-mer indexes:
+UCE 模式下，re-filtering 阶段会在任一端 read 通过 locus 过滤时保留整对 paired-end reads。这样做是因为短探针数据中，一个 mate 可能落在保守 UCE core 上，而另一个 mate 延伸到侧翼区域。保留 mate pair 可以给 assembler 提供更多侧翼延伸信息。
 
-```bash
---reuse-reference-cache
-```
+### 一轮 raw-read rescue
 
-The cache is fingerprinted by reference file names, sizes, modification times, `-kf`, and `-s`. By default it is written under `output/.gm2_reference_cache`; use `--reference-cache-dir` to place it in a shared project or scratch directory. This speeds up repeated filter and assembly runs, but it does not change contig selection or improve assembly quality. UCE rescue references are rebuilt per sample because they include sample-specific preliminary contigs.
+`--uce-rescue-reads` 会在第一轮组装后再做一轮 raw reads 招募：
 
-UCE mode also applies conservative contig guardrails before candidate selection. By default, contigs longer than 5000 bp are rejected, and contigs at least 1000 bp long must have `uniquely_placed_read_count / contig_length >= 0.003`. Repetitively placed read slices remain visible in the summary but do not provide positional support. These defaults are intended to suppress very long, weakly supported rescue artifacts while leaving rejected candidates available for inspection. They can be adjusted with:
+1. 用原始 locus reference 加第一轮 contig 构建临时 rescue reference。
+2. 用 rescue reference 重新从 raw reads 中捕获 reads。
+3. 用 rescue reference 重新执行 re-filtering 和 assembly。
+4. 比较 rescue 结果和第一轮结果。
 
-```bash
---uce-max-contig-length 5000 \
---uce-min-read-density 0.003 \
---uce-density-check-min-length 1000
-```
+rescue 阶段采用受控并行：最多同时 rescue 4 个样本，每个样本最多 4 个线程。这样可以避免样本数较多时同时启动过多 reads 过滤任务。
 
-Two optional advanced guardrails are available but disabled by default:
+### density-ratio 回退
 
-```bash
---uce-max-depth-cv 0 \
---uce-max-depth-ratio 0
-```
-
-Set these to positive values only when you want to reject candidates with highly uneven k-mer depth or strong repeat-like depth spikes.
-
-### Paired-end mate retention
-
-In UCE mode, the re-filtering step keeps a paired-end read pair when either mate passes the locus filter. This is important for short probes: one mate may overlap the conserved UCE core while the other extends into the flanking region. Keeping the pair gives the assembler more information for contig extension.
-
-### One-round raw-read rescue
-
-`--uce-rescue-reads` runs one additional recruitment round after the first assembly:
-
-1. Build temporary rescue references from the original locus reference plus the first-round contig.
-2. Re-filter raw reads against these rescue references.
-3. Re-run re-filtering and assembly using the rescue references.
-4. Compare the rescue result with the first-round result.
-
-The rescue stage uses controlled parallelism: up to four samples are rescued at the same time, with up to four threads per sample. This avoids launching too many independent read-filtering jobs when many samples are present.
-
-### Density-ratio rollback
-
-Raw-read rescue can occasionally create very long but weakly supported contigs. To avoid accepting those artifacts, this fork compares read density before and after rescue:
+raw-read rescue 有时会产生很长但支持很弱的 contig。为避免接受这类异常延伸，本分支比较 rescue 前后的 read density：
 
 ```text
 before_density = before_read_count / before_contig_length
@@ -101,30 +78,30 @@ rescue_density = rescue_read_count / rescue_contig_length
 density_ratio = rescue_density / before_density
 ```
 
-By default, a rescue result is rejected only when:
+默认只有在以下条件成立时才回退：
 
 ```text
 density_ratio < 0.5
 ```
 
-Rejected or missing rescue results are restored to the first-round contig and marked as `reverted_failed_rescue`; accepted rescue results whose unique-read density drops below the threshold are restored and marked as `reverted_density_drop`. The threshold can be changed with:
+被回退的 locus 会恢复为第一轮 contig，并在 `uce_rescue_summary.csv` 中标记为 `reverted_density_drop`。阈值可以通过下面的参数调整：
 
 ```bash
 --uce-rescue-min-density-ratio 0.5
 ```
 
-The rescue summary records `before_read_density`, `after_read_density`, and `density_ratio` using uniquely placed reads when available, so the reason for rollback is visible. The final accepted sequence may be the first-round contig if rollback occurred.
+`uce_rescue_summary.csv` 会记录 `before_read_density`、`after_read_density` 和 `density_ratio`。其中 `after_*` 表示 rescue 尝试结果；如果发生回退，最终采用的序列是第一轮 contig，而不是 `after_*` 对应的 rescue contig。
 
-### UCE and phyluce outputs
+### UCE 和 phyluce 输出
 
-When `--assembly-mode uce` is used, the workflow writes:
+使用 `--assembly-mode uce` 时，流程会额外输出：
 
-- `uce_assembly_summary.csv`: per-sample and per-locus acceptance status and rejection reason, selected contig length, legacy left-to-right support span, union of uniquely placed slice-supported bases, support breadth and maximum unsupported gap, total/unique/multi-mapping read counts, density metrics, k-mer depth metrics, candidate count, and low-quality flag.
-- `uce_rescue_summary.csv`: rescue before/after comparison, density ratio, rollback status, and errors.
-- `uce_contigs/`: phyluce-compatible per-sample contig FASTA files.
-- `contigs_all_low/`: rejected UCE candidates retained for inspection but never promoted to primary results, rescue references, combined matrices, or phyluce exports.
+- `uce_assembly_summary.csv`：按样本和 locus 汇总组装状态、最佳 contig 长度、reads 支持跨度、read count、侧翼平衡度、候选数和低质量标记。
+- `uce_rescue_summary.csv`：记录 rescue 前后对比、density ratio、回退状态和错误信息。
+- `uce_contigs/`：按样本导出的 phyluce 兼容 contig FASTA。
+- `contigs_all_low/`：保留低支持延伸候选，便于人工检查，但不会直接提升为主结果。
 
-After a UCE run, the `stats` subcommand summarizes recovery across samples and loci:
+UCE 流程结束后，可以用 `stats` 子命令汇总样本和 locus 层面的恢复情况：
 
 ```bash
 cli/geneminer2 stats \
@@ -134,38 +111,38 @@ cli/geneminer2 stats \
   --stats-no-heatmap
 ```
 
-It writes `uce_stats.tsv`, `uce_locus_stats.tsv`, `uce_seq_lengths.tsv`, `uce_read_counts.tsv`, and `uce_filtered_read_counts.tsv`. If `pandas`, `seaborn`, and `matplotlib` are available and `--stats-no-heatmap` is not supplied, it also writes `uce_recovery_heatmap.png` and `uce_read_counts_heatmap.png`.
+该命令会输出 `uce_stats.tsv`、`uce_locus_stats.tsv`、`uce_seq_lengths.tsv`、`uce_read_counts.tsv` 和 `uce_filtered_read_counts.tsv`。如果环境中安装了 `pandas`、`seaborn` 和 `matplotlib`，且没有使用 `--stats-no-heatmap`，还会生成 `uce_recovery_heatmap.png` 和 `uce_read_counts_heatmap.png`。
 
-### AliFilter integration
+### AliFilter 整合
 
-`--alignment-filter alifilter` can be used during the combine stage as an alternative to trimAl. This is useful when many UCE alignments include noisy or sparsely occupied columns. AliFilter must be available in `PATH`; it is not bundled in this repository. Omit `--alifilter-model`, or set it to `default`, to use AliFilter's built-in default model; pass a real `model.json` path only when using a custom model.
+combine 阶段可以用 `--alignment-filter alifilter` 调用 AliFilter 替代 trimAl。这对包含噪声列或低占有率区域的 UCE 比对有帮助。AliFilter 需要用户自行安装，并确保 `AliFilter` 命令在 `PATH` 中；本仓库不捆绑 AliFilter。省略 `--alifilter-model` 或将其设为 `default` 时使用 AliFilter 内置默认模型；只有使用自定义模型时才需要传入真实的 `model.json` 路径。
 
-## Build
+## 构建
 
-Install the full build dependencies, then run:
+安装完整构建依赖后运行：
 
 ```bash
 make
 ```
 
-The CLI entry point is generated as:
+CLI 入口会生成在：
 
 ```bash
 cli/geneminer2
 ```
 
-For full build instructions and runtime dependencies, see [manual/EN_US/command_line.md](manual/EN_US/command_line.md).
+完整构建方法和运行时依赖见 [manual/ZH_CN/command_line.md](manual/ZH_CN/command_line.md)。
 
-## Minimal Usage
+## 最小用法
 
-Prepare a tab-delimited sample list:
+准备 tab 分隔的样本列表：
 
 ```text
 Sample_A	/path/to/Sample_A_R1.fq.gz	/path/to/Sample_A_R2.fq.gz
 Sample_B	/path/to/Sample_B_R1.fq.gz	/path/to/Sample_B_R2.fq.gz
 ```
 
-Prepare a reference directory where each target locus is one FASTA file, for example:
+准备参考序列目录，每个目标 locus 一个 FASTA 文件，例如：
 
 ```text
 references/
@@ -173,7 +150,7 @@ references/
   uce-0002.fasta
 ```
 
-Run the default UCE workflow:
+运行默认 UCE 流程：
 
 ```bash
 cli/geneminer2 \
@@ -184,25 +161,25 @@ cli/geneminer2 \
   --uce-rescue-reads
 ```
 
-## Documentation
+## 文档
 
-- [Command-line usage](manual/EN_US/command_line.md)
-- [Output files](manual/EN_US/output.md)
-- [中文命令行说明](manual/ZH_CN/command_line.md)
-- [中文输出文件说明](manual/ZH_CN/output.md)
+- [命令行说明](manual/ZH_CN/command_line.md)
+- [输出文件说明](manual/ZH_CN/output.md)
+- [English command-line usage](manual/EN_US/command_line.md)
+- [English output files](manual/EN_US/output.md)
 
-## Citations
+## 引用
 
-Primary reference for GeneMiner2:
+GeneMiner2 主要引用：
 
 Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. https://doi.org/10.1111/1755-0998.70111
 
-Related earlier work:
+相关前期工具：
 
 Zhang Z, Xie PL, Guo YL, Zhou WB, Liu EY, Yu Y. 2022. **Easy353**: A tool to get Angiosperms353 genes for phylogenomic research. *Molecular Biology and Evolution* 39(12): msac261. https://doi.org/10.1093/molbev/msac261
 
 Xie PL, Guo YL, Teng Y, Zhou WB, Yu Y. 2024. **GeneMiner**: A tool for extracting phylogenetic markers from next-generation sequencing data. *Molecular Ecology Resources* 24(3): e13924. https://doi.org/10.1111/1755-0998.13924
 
-If `--alignment-filter alifilter` is used, please also cite:
+如果使用 `--alignment-filter alifilter`，也请引用：
 
 Bianchini G, Zhu R, Cicconardi F, Moody ERR. 2026. **AliFilter: a machine learning approach to alignment filtering.** *Molecular Biology and Evolution* 43(4): msag097. https://doi.org/10.1093/molbev/msag097
