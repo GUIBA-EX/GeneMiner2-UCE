@@ -59,7 +59,7 @@ Repeated runs against the same reference directory can reuse reference k-mer ind
 
 The cache is fingerprinted by reference file names, sizes, modification times, `-kf`, and `-s`. By default it is written under `output/.gm2_reference_cache`; use `--reference-cache-dir` to place it in a shared project or scratch directory. This speeds up repeated filter and assembly runs, but it does not change contig selection or improve assembly quality. UCE rescue references are rebuilt per sample because they include sample-specific preliminary contigs.
 
-UCE mode also applies conservative contig guardrails before candidate selection. By default, contigs longer than 5000 bp are rejected, and contigs at least 1000 bp long must have `read_count / contig_length >= 0.003`. These defaults are intended to suppress very long, weakly supported rescue artifacts while leaving short low-coverage loci available for inspection. They can be adjusted with:
+UCE mode also applies conservative contig guardrails before candidate selection. By default, contigs longer than 5000 bp are rejected, and contigs at least 1000 bp long must have `uniquely_placed_read_count / contig_length >= 0.003`. Repetitively placed read slices remain visible in the summary but do not provide positional support. These defaults are intended to suppress very long, weakly supported rescue artifacts while leaving rejected candidates available for inspection. They can be adjusted with:
 
 ```bash
 --uce-max-contig-length 5000 \
@@ -107,22 +107,22 @@ By default, a rescue result is rejected only when:
 density_ratio < 0.5
 ```
 
-Rejected loci are restored to the first-round contig and are marked as `reverted_density_drop` in `uce_rescue_summary.csv`. The threshold can be changed with:
+Rejected or missing rescue results are restored to the first-round contig and marked as `reverted_failed_rescue`; accepted rescue results whose unique-read density drops below the threshold are restored and marked as `reverted_density_drop`. The threshold can be changed with:
 
 ```bash
 --uce-rescue-min-density-ratio 0.5
 ```
 
-The rescue summary records `before_read_density`, `after_read_density`, and `density_ratio`, so the reason for rollback is visible. The `after_*` columns describe the rescue attempt; the final accepted sequence may be the first-round contig if rollback occurred.
+The rescue summary records `before_read_density`, `after_read_density`, and `density_ratio` using uniquely placed reads when available, so the reason for rollback is visible. The final accepted sequence may be the first-round contig if rollback occurred.
 
 ### UCE and phyluce outputs
 
 When `--assembly-mode uce` is used, the workflow writes:
 
-- `uce_assembly_summary.csv`: per-sample and per-locus assembly status, selected contig length, read-supported span, read count, read density, support fraction, flank balance, k-mer depth metrics, candidate count, and low-quality flag.
+- `uce_assembly_summary.csv`: per-sample and per-locus acceptance status and rejection reason, selected contig length, legacy left-to-right support span, union of uniquely placed slice-supported bases, support breadth and maximum unsupported gap, total/unique/multi-mapping read counts, density metrics, k-mer depth metrics, candidate count, and low-quality flag.
 - `uce_rescue_summary.csv`: rescue before/after comparison, density ratio, rollback status, and errors.
 - `uce_contigs/`: phyluce-compatible per-sample contig FASTA files.
-- `contigs_all_low/`: low-support extended candidates retained for inspection but not promoted to primary results.
+- `contigs_all_low/`: rejected UCE candidates retained for inspection but never promoted to primary results, rescue references, combined matrices, or phyluce exports.
 
 After a UCE run, the `stats` subcommand summarizes recovery across samples and loci:
 

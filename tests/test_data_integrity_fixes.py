@@ -67,13 +67,39 @@ class DataIntegrityFixTests(unittest.TestCase):
 
     def test_assembler_counts_repeated_and_palindromic_read_slices_once(self):
         unique_support = main_assembler.Calculate_Read_Support('CCCAAAGGG', 3, {'AAA': 2})
-        self.assertEqual(unique_support, (2, 3, 1.0, 3, 6))
+        self.assertEqual(unique_support.total_read_count, 2)
+        self.assertEqual(unique_support.unique_read_count, 2)
+        self.assertEqual(unique_support.multi_mapping_read_count, 0)
+        self.assertEqual(unique_support.supported_extent, 3)
+        self.assertEqual(unique_support.supported_bases, 3)
+        self.assertAlmostEqual(unique_support.breadth, 1 / 3)
+        self.assertEqual(unique_support.max_gap, 3)
+        self.assertEqual(unique_support.flank_balance, 1.0)
+        self.assertEqual((unique_support.left_coord, unique_support.right_coord), (3, 6))
 
-        read_count, supported_span, _, left, right = main_assembler.Calculate_Read_Support(
+        repetitive_support = main_assembler.Calculate_Read_Support(
             'AAAAAAAAAA', 3, {'AAA': 1}
         )
-        self.assertEqual(read_count, 1)
-        self.assertEqual((supported_span, left, right), (0, 10, 0))
+        self.assertEqual(repetitive_support.total_read_count, 1)
+        self.assertEqual(repetitive_support.unique_read_count, 0)
+        self.assertEqual(repetitive_support.multi_mapping_read_count, 1)
+        self.assertEqual(repetitive_support.supported_bases, 0)
+        self.assertEqual(repetitive_support.max_gap, 10)
+
+        separated_support = main_assembler.Calculate_Read_Support(
+            'A' * 100 + 'C' * 800 + 'G' * 100,
+            100,
+            {'A' * 100: 1, 'G' * 100: 1},
+        )
+        self.assertEqual(separated_support.supported_extent, 1000)
+        self.assertEqual(separated_support.supported_bases, 200)
+        self.assertAlmostEqual(separated_support.breadth, 0.2)
+        self.assertEqual(separated_support.max_gap, 800)
+
+        overlapping_support = main_assembler.Calculate_Read_Support(
+            'AAAACCCC', 4, {'AAAA': 1, 'AACC': 1}
+        )
+        self.assertEqual(overlapping_support.supported_bases, 6)
 
         with tempfile.TemporaryDirectory() as tmp:
             reads = Path(tmp) / 'reads.fq'
@@ -200,9 +226,9 @@ class DataIntegrityFixTests(unittest.TestCase):
                                 'read_density': '1', 'support_fraction': '0.8', 'kmer_median_depth': '4',
                                 'kmer_depth_cv': '0.2', 'kmer_max_depth_ratio': '2'}}
             after = {'locus': {'locus': 'locus', 'status': 'success', 'selected_contig_length': '100', 'read_count': '10'}}
-            reverted = unix_command.revert_low_density_rescue_loci(str(sample), str(backup), before, after, 0.5)
+            reverted = unix_command.revert_invalid_rescue_loci(str(sample), str(backup), before, after, 0.5)
 
-            self.assertEqual(reverted, {'locus'})
+            self.assertEqual(reverted, {'locus': 'reverted_density_drop'})
             self.assertIn('first_reads', (sample / 'filtered' / 'locus.fasta').read_text())
             self.assertEqual((sample / 'filtered_pe' / 'locus_1.gm2').read_text(), 'first')
             self.assertEqual((sample / 'filtered_pe' / 'locus_extra_1.gm2').read_text(), 'other-rescue')
@@ -210,6 +236,34 @@ class DataIntegrityFixTests(unittest.TestCase):
             summary = (sample / 'uce_assembly_summary.csv').read_text()
             self.assertIn('read_density', summary.splitlines()[0])
             self.assertIn(',0.8,', summary)
+
+    def test_rescue_revert_restores_rejected_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / 'sample'
+            backup = Path(tmp) / 'backup'
+            (sample / 'results').mkdir(parents=True)
+            (backup / 'results').mkdir(parents=True)
+            (sample / 'results' / 'locus.fasta').write_text('>rejected\nCCCC\n')
+            (backup / 'results' / 'locus.fasta').write_text('>accepted\nAAAA\n')
+
+            before = {
+                'locus': {
+                    'locus': 'locus', 'status': 'success', 'accepted': '1',
+                    'selected_contig_length': '4', 'unique_read_count': '4',
+                },
+            }
+            after = {
+                'locus': {
+                    'locus': 'locus', 'status': 'low quality', 'accepted': '0',
+                    'selected_contig_length': '4', 'unique_read_count': '1',
+                },
+            }
+
+            reverted = unix_command.revert_invalid_rescue_loci(
+                str(sample), str(backup), before, after, 0.5)
+
+            self.assertEqual(reverted, {'locus': 'reverted_failed_rescue'})
+            self.assertIn('AAAA', (sample / 'results' / 'locus.fasta').read_text())
 
     def test_locus_read_file_matching_is_exact(self):
         self.assertTrue(unix_command.locus_file_name_matches('gene.fq', 'gene'))

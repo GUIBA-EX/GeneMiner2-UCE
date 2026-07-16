@@ -1,16 +1,45 @@
 from pathlib import Path
 from types import SimpleNamespace
+import csv
 import sys
+import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from unix_command import build_assembler_command
+from unix_command import build_assembler_command, build_uce_rescue_refs
 
 
 class UceRescueAssemblerReferenceTests(unittest.TestCase):
+    def test_rescue_references_include_only_accepted_contigs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ref = root / 'ref'
+            sample = root / 'sample'
+            results = sample / 'results'
+            rescue = sample / 'uce_rescue_refs'
+            ref.mkdir()
+            results.mkdir(parents=True)
+
+            (ref / 'accepted.fasta').write_text('>ref\nAAAA\n')
+            (ref / 'rejected.fasta').write_text('>ref\nCCCC\n')
+            (results / 'accepted.fasta').write_text('>contig\nAAAAGGGG\n')
+            (results / 'rejected.fasta').write_text('>contig\nCCCCTTTT\n')
+
+            with (sample / 'uce_assembly_summary.csv').open('w', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=['locus', 'status', 'accepted', 'low_quality'])
+                writer.writeheader()
+                writer.writerow({'locus': 'accepted', 'status': 'success', 'accepted': '1', 'low_quality': '0'})
+                writer.writerow({'locus': 'rejected', 'status': 'low quality', 'accepted': '0', 'low_quality': '1'})
+
+            added = build_uce_rescue_refs(str(ref), str(sample), str(rescue), 4)
+
+            self.assertEqual(added, 1)
+            self.assertIn('AAAAGGGG', (rescue / 'accepted.fasta').read_text())
+            self.assertNotIn('CCCCTTTT', (rescue / 'rejected.fasta').read_text())
+
     def test_assembler_command_uses_supplied_reference_dir(self):
         args = SimpleNamespace(
             ka=0,

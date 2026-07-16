@@ -23,6 +23,18 @@ def read_int(value, default=0):
         return default
 
 
+def assembly_row_is_accepted(row):
+    if not row:
+        return False
+
+    accepted = str(row.get('accepted', '')).strip().lower()
+    if accepted:
+        return accepted in {'1', 'true', 'yes'}
+
+    low_quality = str(row.get('low_quality', '')).strip().lower()
+    return row.get('status') == 'success' and low_quality not in {'1', 'true', 'yes'}
+
+
 def fmt(value, digits=3):
     if value == '':
         return ''
@@ -175,8 +187,9 @@ def build_stats(out_dir, ref_dir, samples, count_input_reads=False):
         for locus in loci:
             row = rows.get(locus, {})
             status = row.get('status', 'missing')
-            length = read_int(row.get('selected_contig_length'))
-            read_count = read_int(row.get('read_count'))
+            accepted = assembly_row_is_accepted(row)
+            length = read_int(row.get('selected_contig_length')) if accepted else 0
+            read_count = read_int(row.get('read_count')) if accepted else 0
             span = read_int(row.get('read_supported_span'))
 
             if row:
@@ -188,7 +201,7 @@ def build_stats(out_dir, ref_dir, samples, count_input_reads=False):
             read_counts[locus] = read_count
             total_bases += length
 
-            if span:
+            if accepted and span:
                 spans.append(span)
             if length > 0:
                 densities.append(read_count / length)
@@ -226,6 +239,7 @@ def build_stats(out_dir, ref_dir, samples, count_input_reads=False):
             'RescueSuccess': rescue_by_sample[sample]['success'],
             'RescueFailedRolledBack': rescue_by_sample[sample]['failed_rolled_back'],
             'RescueRevertedDensityDrop': rescue_by_sample[sample]['reverted_density_drop'],
+            'RescueRevertedFailed': rescue_by_sample[sample]['reverted_failed_rescue'],
             'TotalBasesRecovered': total_bases,
             'MeanContigLength': safe_mean(recovered_lengths),
             'MedianContigLength': safe_median(recovered_lengths),
@@ -259,7 +273,8 @@ def build_locus_stats(loci, refs, sample_names, assembly):
         for sample in sample_names:
             row = assembly[sample].get(locus, {})
             status = row.get('status', 'missing')
-            length = read_int(row.get('selected_contig_length'))
+            accepted = assembly_row_is_accepted(row)
+            length = read_int(row.get('selected_contig_length')) if accepted else 0
 
             if status == 'success':
                 success += 1
@@ -268,7 +283,7 @@ def build_locus_stats(loci, refs, sample_names, assembly):
             elif status == 'no filtered file':
                 filtered_failures += 1
 
-            if length > 0:
+            if accepted and length > 0:
                 lengths.append(length)
                 read_counts.append(read_int(row.get('read_count')))
                 spans.append(read_int(row.get('read_supported_span')))

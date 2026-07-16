@@ -86,7 +86,7 @@ class GeneMinerStatsTests(unittest.TestCase):
             self.assertEqual(loci, ['uce-1', 'uce-2'])
             self.assertEqual(sample_names, ['1_A'])
             self.assertEqual(matrices['lengths']['1_A']['uce-1'], 5)
-            self.assertEqual(matrices['read_counts']['1_A']['uce-2'], 1)
+            self.assertEqual(matrices['read_counts']['1_A']['uce-2'], 0)
             self.assertEqual(matrices['filtered_counts']['1_A']['uce-1'], 12)
             self.assertEqual(sample_stats[0]['LociSuccess'], 1)
             self.assertEqual(sample_stats[0]['LociLowQuality'], 1)

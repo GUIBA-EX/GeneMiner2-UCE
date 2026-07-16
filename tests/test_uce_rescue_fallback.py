@@ -30,6 +30,22 @@ class UceRescueFallbackTests(unittest.TestCase):
         self.assertEqual(read_density_or_blank({'selected_contig_length': '0', 'read_count': '5'}), '')
         self.assertFalse(rescue_density_below_ratio({}, {'selected_contig_length': '10', 'read_count': '1'}, 0.5))
 
+    def test_unique_read_density_is_preferred(self):
+        before = {
+            'selected_contig_length': '100',
+            'read_count': '100',
+            'unique_read_count': '10',
+        }
+        after = {
+            'selected_contig_length': '100',
+            'read_count': '1000',
+            'unique_read_count': '1',
+        }
+
+        self.assertAlmostEqual(density_ratio_or_blank(before, after), 0.1)
+        self.assertTrue(rescue_density_below_ratio(before, after, 0.5))
+        self.assertEqual(read_density_or_blank({'unique_read_density': '0.125'}), 0.125)
+
 
 if __name__ == "__main__":
     unittest.main()

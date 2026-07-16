@@ -192,6 +192,7 @@ def write_fasta_record(out, header, sequence, line_width=80):
 
 def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
     results_dir = os.path.join(sample_dir, 'results')
+    summary_rows = read_uce_summary(os.path.join(sample_dir, 'uce_assembly_summary.csv'))
     added_contigs = 0
 
     if not os.path.isdir(results_dir):
@@ -221,7 +222,8 @@ def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
                     for title, seq in SimpleFastaParser(ref_in):
                         wrote_any |= write_fasta_record(out, title, seq)
 
-                if os.path.isfile(contig_path):
+                if (os.path.isfile(contig_path)
+                        and uce_summary_row_is_accepted(summary_rows.get(gene))):
                     with open(contig_path, 'r') as contig_in:
                         for _, seq in SimpleFastaParser(contig_in):
                             if len(seq) < min_contig_len:
@@ -251,9 +253,29 @@ def read_uce_summary(summary_path):
 
     return rows
 
+
+def uce_summary_row_is_accepted(row):
+    """Read new acceptance decisions while remaining compatible with old summaries."""
+    if not row:
+        return False
+
+    accepted = str(row.get('accepted', '')).strip().lower()
+    if accepted:
+        return accepted in {'1', 'true', 'yes'}
+
+    low_quality = str(row.get('low_quality', '')).strip().lower()
+    return row.get('status') == 'success' and low_quality not in {'1', 'true', 'yes'}
+
 def int_or_blank(value):
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return ''
+
+
+def float_or_blank(value):
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return ''
 
@@ -268,8 +290,15 @@ def delta_or_blank(after, before):
 
 def read_density_or_blank(row):
     length = int_or_blank(row.get('selected_contig_length'))
-    read_count = int_or_blank(row.get('read_count'))
+    read_count = int_or_blank(row.get('unique_read_count'))
+    if length != '' and length > 0 and read_count != '':
+        return read_count / length
 
+    unique_density = float_or_blank(row.get('unique_read_density'))
+    if unique_density != '':
+        return unique_density
+
+    read_count = int_or_blank(row.get('read_count'))
     if length == '' or read_count == '' or length <= 0:
         return ''
 
@@ -298,10 +327,18 @@ def rescue_density_below_ratio(before, after, min_density_ratio):
 UCE_ASSEMBLY_SUMMARY_FIELDS = [
     'locus',
     'status',
+    'accepted',
+    'rejection_reason',
     'selected_contig_length',
     'read_supported_span',
+    'slice_supported_bases',
+    'slice_support_breadth',
+    'max_slice_support_gap',
     'read_count',
+    'unique_read_count',
+    'multi_mapping_read_count',
     'read_density',
+    'unique_read_density',
     'support_fraction',
     'flank_balance',
     'kmer_median_depth',
@@ -431,14 +468,20 @@ def format_float_or_blank(value, digits=6):
 
     return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
 
-def revert_low_density_rescue_loci(sample_dir, backup_dir, before_rows, rescue_rows, min_density_ratio):
-    reverted = set()
+def revert_invalid_rescue_loci(sample_dir, backup_dir, before_rows, rescue_rows, min_density_ratio):
+    reverted = {}
     final_rows = {locus: row.copy() for locus, row in rescue_rows.items()}
 
     for locus, before in before_rows.items():
         after = rescue_rows.get(locus)
+        if not uce_summary_row_is_accepted(before):
+            continue
 
-        if not after or not rescue_density_below_ratio(before, after, min_density_ratio):
+        if not uce_summary_row_is_accepted(after):
+            status = 'reverted_failed_rescue'
+        elif rescue_density_below_ratio(before, after, min_density_ratio):
+            status = 'reverted_density_drop'
+        else:
             continue
 
         for subdir in ('results', 'contigs_all', 'contigs_all_low'):
@@ -448,7 +491,7 @@ def revert_low_density_rescue_loci(sample_dir, backup_dir, before_rows, rescue_r
         restore_locus_read_count(sample_dir, backup_dir, locus)
 
         final_rows[locus] = before.copy()
-        reverted.add(locus)
+        reverted[locus] = status
 
     if reverted:
         write_uce_assembly_summary_rows(os.path.join(sample_dir, 'uce_assembly_summary.csv'), final_rows)
@@ -822,18 +865,23 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
 
             else:
                 after_rows = read_uce_summary(summary_path)
-                reverted_loci = revert_low_density_rescue_loci(
+                reverted_loci = revert_invalid_rescue_loci(
                     sample_dir,
                     backup_dir,
                     before_rows,
                     after_rows,
                     args.uce_rescue_min_density_ratio,
                 )
-                status_by_locus = {locus: 'reverted_density_drop' for locus in reverted_loci}
-                error_by_locus = {
-                    locus: f'rescue read density ratio below {args.uce_rescue_min_density_ratio:g}; first-round contig restored'
-                    for locus in reverted_loci
-                }
+                status_by_locus = reverted_loci
+                error_by_locus = {}
+                for locus, status in reverted_loci.items():
+                    if status == 'reverted_density_drop':
+                        error_by_locus[locus] = (
+                            f'rescue unique read density ratio below '
+                            f'{args.uce_rescue_min_density_ratio:g}; first-round contig restored')
+                    else:
+                        error_by_locus[locus] = (
+                            'rescue result missing or rejected; first-round contig restored')
                 final_rows = read_uce_summary(summary_path)
                 write_sample_uce_rescue_summary(sample_dir, name, before_rows, final_rows, 'success', status_by_locus=status_by_locus, error_by_locus=error_by_locus)
                 discard_sample_state_backup(backup_dir)
@@ -1020,6 +1068,9 @@ def write_uce_contigs_for_phyluce(args, samples):
 
             used_names.add(phyluce_sample)
             results_dir = os.path.join(out_loc, sample, 'results')
+            summary_rows = read_uce_summary(os.path.join(out_loc, sample, 'uce_assembly_summary.csv'))
+            accepted_loci = {locus for locus, row in summary_rows.items()
+                             if uce_summary_row_is_accepted(row)}
             out_path = os.path.join(uce_dir, phyluce_sample + '.contigs.fasta')
             contig_count = 0
 
@@ -1030,6 +1081,8 @@ def write_uce_contigs_for_phyluce(args, samples):
                             continue
 
                         locus = os.path.splitext(entry.name)[0]
+                        if locus not in accepted_loci:
+                            continue
 
                         with open(entry.path) as f:
                             for header, seq in SimpleFastaParser(f):
@@ -1315,6 +1368,15 @@ def combine_genes(args, samples):
         in_name = 'results'
 
     genes = {t[0] for t in get_ref_genes(args.r)}
+    accepted_loci_by_sample = {}
+    if getattr(args, 'assembly_mode', 'reference') == 'uce':
+        for name in samples.keys():
+            summary_rows = read_uce_summary(
+                os.path.join(out_loc, name, 'uce_assembly_summary.csv'))
+            accepted_loci_by_sample[name] = {
+                locus for locus, row in summary_rows.items()
+                if uce_summary_row_is_accepted(row)
+            }
 
     def merge_gene(gene):
         out_path = os.path.join(combine_dir, gene + '.fasta')
@@ -1322,6 +1384,10 @@ def combine_genes(args, samples):
 
         with open(out_path, 'w+') as f:
             for name in samples.keys():
+                if (accepted_loci_by_sample
+                        and gene not in accepted_loci_by_sample.get(name, set())):
+                    continue
+
                 in_path = os.path.join(out_loc, name, in_name, gene + '.fasta')
 
                 if not os.path.isfile(in_path):
@@ -1857,7 +1923,7 @@ if __name__ == '__main__':
     group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode: reference keeps the default reference-guided behavior; uce preserves read-supported flanks around conserved cores')
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-max-contig-length', default=5000, help='Maximum UCE contig length kept before scoring; use 0 to disable (default = 5000)', metavar='INT', type=int)
-    group_assembly.add_argument('--uce-min-read-density', default=0.003, help='Minimum read_count/length for long UCE contigs before scoring (default = 0.003)', metavar='FLOAT', type=float)
+    group_assembly.add_argument('--uce-min-read-density', default=0.003, help='Minimum uniquely placed read_count/length for long UCE contigs before scoring (default = 0.003)', metavar='FLOAT', type=float)
     group_assembly.add_argument('--uce-density-check-min-length', default=1000, help='Minimum contig length where the UCE read-density guardrail applies (default = 1000)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-max-depth-cv', default=0, help='Optional maximum k-mer depth coefficient of variation for UCE contigs; 0 disables (default = 0)', metavar='FLOAT', type=float)
     group_assembly.add_argument('--uce-max-depth-ratio', default=0, help='Optional maximum max/median k-mer depth ratio for UCE contigs; 0 disables (default = 0)', metavar='FLOAT', type=float)
