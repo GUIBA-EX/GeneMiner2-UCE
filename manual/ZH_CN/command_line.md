@@ -186,12 +186,13 @@ cli/geneminer2 population \
   --population-admixture-k-max 6
 ```
 
-若使用 `--population-start-at calling` 或 `selection`，程序会先检查所需 BAM/索引或过滤 VCF/索引是否存在；缺失时会报错，而不会静默重跑或混用文件。
+使用 `--population-reference-fasta FILE` 可固定外部公共参考。`--population-start-at mapping`、`calling` 或 `selection` 仅应在相应的公共参考、BAM 或过滤 VCF 已存在且通过检查时使用；缺失时程序会报错，而不会静默重跑或混用文件。
 
 正式解释遗传成分前，应检查：
 
 - `population/mapping/mapping_qc.tsv` 中的 mapping rate、coverage breadth 和 depth；
-- `population/reference/reference_contribution.tsv` 中公共参考来源是否过度集中；
+- `population/variants/variant_qc.tsv` 中各阶段的变异数；
+- 内部构建公共参考时，`population/reference/reference_contribution.tsv` 中公共参考来源是否过度集中；
 - 样本和位点缺失率；
 - 三种 SNP 面板的 PCA 是否给出一致的主要结构。
 

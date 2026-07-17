@@ -85,7 +85,7 @@ The `population` subcommand creates `population/` under the existing output dire
 - `structure/admixture/cv_errors.tsv`: Cross-validation error for each K and a marker for the minimum-error K.
 - `structure/admixture/status.tsv`: ADMIXTURE status: `complete`, `skipped`, `unavailable`, or `failed`.
 
-Primary interpretation of PCA and ADMIXTURE should use the one-SNP-per-UCE panel and be compared with the all-SNP and LD-pruned PCA results. If mapping rate or coverage breadth is unusually low, or `reference_contribution.tsv` shows a strongly imbalanced reference origin, investigate reference bias and missing data before interpreting ancestry proportions.
+Primary interpretation of PCA and ADMIXTURE should use the one-SNP-per-UCE panel and be compared with the all-SNP and LD-pruned PCA results. If mapping rate or coverage breadth is unusually low, investigate missing data before interpreting ancestry proportions. For internally built references, also investigate reference bias when `reference_contribution.tsv` shows a strongly imbalanced origin.
 
 ## Statistics outputs
 

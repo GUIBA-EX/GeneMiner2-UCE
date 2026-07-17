@@ -186,10 +186,13 @@ cli/geneminer2 population \
   --population-admixture-k-max 6
 ```
 
+Use `--population-reference-fasta FILE` to materialize a fixed external cohort reference. Use `--population-start-at mapping`, `calling`, or `selection` only when the corresponding reference, BAM, or filtered VCF output already exists and has passed its validation checks.
+
 Before interpreting ancestry results, inspect:
 
 - mapping rate, coverage breadth, and depth in `population/mapping/mapping_qc.tsv`;
-- whether cohort-reference contributions are concentrated in a few samples in `population/reference/reference_contribution.tsv`;
+- variant-stage counts in `population/variants/variant_qc.tsv`;
+- cohort-reference contributions in `population/reference/reference_contribution.tsv` when the reference was built internally;
 - sample and site missingness;
 - agreement among PCA results from the three SNP panels.
 

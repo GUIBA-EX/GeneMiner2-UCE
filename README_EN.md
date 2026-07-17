@@ -83,7 +83,7 @@ For short UCE baits or samples that are moderately divergent from the references
 
 These settings relax boundary control, allow automatic selection across a lower assembly k-mer range, and reduce the k-mer count threshold. They may also admit more weakly supported candidates, so the assembly summary, rescue summary, and downstream alignments should be inspected.
 
-By default, UCE mode rejects contigs longer than 5000 bp. Contigs of at least 1000 bp must also satisfy `uniquely_placed_read_count / contig_length >= 0.003`. Multi-mapping reads remain visible in the summary but do not provide unique positional support. These thresholds can be adjusted with:
+By default, UCE mode does not cap contig length. Contigs of at least 1000 bp must still satisfy `uniquely_placed_read_count / contig_length >= 0.003`. Multi-mapping reads remain visible in the summary but do not provide unique positional support. Set an explicit cap when unusually long contigs should be excluded:
 
 ```bash
 --uce-max-contig-length 5000 \
@@ -152,7 +152,7 @@ This command writes `uce_stats.tsv`, `uce_locus_stats.tsv`, `uce_seq_lengths.tsv
 
 The `population` workflow targets PCA, ADMIXTURE, and species-delimitation analyses of diploid UCE resequencing or target-enrichment data. It does not require haplotype phasing. Instead, it derives a consistent diploid genotype matrix from accepted UCE contigs and the original reads of every sample:
 
-1. Pool accepted contigs by locus and build a cohort reference. The default selection strategy mirrors the key behavior of SqCL `make_PRG.py` by choosing the longest eligible contig; `supported` instead prioritizes read support.
+1. Pool accepted contigs by locus and build a cohort reference. The default selection strategy mirrors the key behavior of SqCL `make_PRG.py` by choosing the longest eligible contig; `supported` instead prioritizes read support. Use `--population-reference-fasta` to use a fixed external cohort reference instead.
 2. Map every sample's original reads to the same reference with minibwa, then sort, mark duplicates, and collect mapping metrics with samtools.
 3. Jointly call all samples with bcftools, applying DP/GQ filters to genotypes and QUAL, call-rate, and minor-allele-count filters to sites.
 4. Produce all-SNP, one-SNP-per-UCE, and LD-pruned panels. PLINK runs PCA on all three panels, while ADMIXTURE uses the one-SNP-per-UCE panel by default.
@@ -170,7 +170,7 @@ cli/geneminer2 population \
   --population-admixture-k-max 6
 ```
 
-`minibwa`, samtools, bcftools, PLINK 1.9, and ADMIXTURE must be available in `PATH`. If ADMIXTURE is unavailable, reference construction, VCF generation, PLINK panels, and PCA still finish, and `population/structure/admixture/status.tsv` records `unavailable`. Before inference, inspect `mapping/mapping_qc.tsv`, `reference/reference_contribution.tsv`, and PCA concordance among panels. A cohort reference dominated by a few samples may introduce reference bias.
+`minibwa`, samtools, bcftools, PLINK 1.9, and ADMIXTURE must be available in `PATH`. If ADMIXTURE is unavailable, reference construction, VCF generation, PLINK panels, and PCA still finish, and `population/structure/admixture/status.tsv` records `unavailable`. `--population-start-at mapping`, `calling`, or `selection` reuses validated existing reference, BAM, or filtered-VCF outputs. Before inference, inspect `mapping/mapping_qc.tsv`, `variants/variant_qc.tsv`, and PCA concordance among panels. For internally built references, also inspect `reference/reference_contribution.tsv`; a cohort reference dominated by a few samples may introduce reference bias.
 
 ## Implementation and Downstream Tools
 

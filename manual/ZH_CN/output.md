@@ -85,7 +85,7 @@
 - `structure/admixture/cv_errors.tsv`：各 K 的交叉验证误差以及最低误差 K 标记。
 - `structure/admixture/status.tsv`：ADMIXTURE 的 `complete`、`skipped`、`unavailable` 或 `failed` 状态。
 
-PCA 和 ADMIXTURE 的主解释应优先使用每个 UCE 一个 SNP 的面板，并与 all-SNP 和 LD-pruned PCA 比较。若样本 mapping rate、coverage breadth 明显偏低，或 `reference_contribution.tsv` 显示参考来源高度不均衡，应先排查参考偏倚和缺失数据，而不是直接解释遗传成分。
+PCA 和 ADMIXTURE 的主解释应优先使用每个 UCE 一个 SNP 的面板，并与 all-SNP 和 LD-pruned PCA 比较。若样本 mapping rate、coverage breadth 明显偏低，应先排查缺失数据；仅在内部构建参考时，才根据 `reference_contribution.tsv` 的参考来源不均衡排查参考偏倚。
 
 ## 统计输出
 

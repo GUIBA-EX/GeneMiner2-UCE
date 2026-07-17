@@ -170,7 +170,7 @@ cli/geneminer2 population \
   --population-admixture-k-max 6
 ```
 
-运行时需要 `minibwa`、samtools、bcftools、PLINK 1.9 和 ADMIXTURE 位于 `PATH`。ADMIXTURE 缺失时，公共参考、VCF、PLINK 面板和 PCA 仍会完成，并在 `population/structure/admixture/status.tsv` 中记录 `unavailable`。`--population-start-at mapping`、`calling` 或 `selection` 只会复用经过检查的既有公共参考、BAM 或过滤 VCF，适合在不重复 mapping 的情况下调整下游阈值。正式推断前应检查 `mapping/mapping_qc.tsv`、`reference/reference_contribution.tsv` 和不同 SNP 面板的 PCA 是否一致；公共参考由少数样本贡献过多时，可能存在参考偏倚。
+运行时需要 `minibwa`、samtools、bcftools、PLINK 1.9 和 ADMIXTURE 位于 `PATH`。ADMIXTURE 缺失时，公共参考、VCF、PLINK 面板和 PCA 仍会完成，并在 `population/structure/admixture/status.tsv` 中记录 `unavailable`。`--population-start-at mapping`、`calling` 或 `selection` 只会复用经过检查的既有公共参考、BAM 或过滤 VCF，适合在不重复 mapping 的情况下调整下游阈值。正式推断前应检查 `mapping/mapping_qc.tsv`、`variants/variant_qc.tsv` 和不同 SNP 面板的 PCA 是否一致；仅在内部构建公共参考时，才需结合 `reference/reference_contribution.tsv` 判断是否由少数样本贡献过多而产生参考偏倚。
 
 ## 实现与下游工具
 
