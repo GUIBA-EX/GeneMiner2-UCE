@@ -45,6 +45,8 @@ conda install -c bioconda aster blast clustalo fasttree iqtree mafft magicblast 
 
 AliFilter可以作为可选的多序列比对过滤程序使用。上面的conda命令不会安装AliFilter；如需使用`--alignment-filter alifilter`，请单独下载AliFilter可执行文件，并确保命令行中可以直接调用`AliFilter`。
 
+`population` 子命令还需要 `minibwa`、samtools、bcftools 和 PLINK 1.9。ADMIXTURE 用于遗传成分分析；它是可选依赖，缺失时流程仍会生成 VCF、PLINK 和 PCA 结果。所有程序必须可从 `PATH` 调用，也可分别用 `--population-minibwa`、`--population-samtools`、`--population-bcftools`、`--population-plink` 和 `--population-admixture` 指定路径。
+
 ## 用法
 
 GeneMiner2需要tsv格式的样本列表和FASTA格式的参考序列。样本列表的具体格式是`<物种名><Tab><数据文件1>`（单端）或者`<物种名><Tab><数据文件1><Tab><数据文件2>`（双端），每一行代表一个样本。其中的数据文件建议采用绝对路径。
@@ -98,6 +100,20 @@ cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/reference
 - UCE raw-read rescue 使用受控的样本级并行：最多同时 rescue 4 个样本，每个样本最多 4 个线程；当 `-p` 较小时会自动降低并行度。
 - `--uce-rescue-min-contig-length`: 参与UCE raw-read rescue的初步contig最短长度。
 - `--uce-rescue-min-density-ratio`: UCE raw-read rescue 后保留结果所需的最低 rescue/第一轮 read-density 比值。默认值为`0.5`；低于该比值的locus会恢复为第一轮contig。
+- `population`: 从已有 UCE 组装结果构建公共参考，统一 mapping，联合检测变异，并生成群体遗传分析面板。
+- `--population-reference-strategy`: 公共参考代表序列选择策略。`sqcl-longest`（默认）选择最长的合格 contig，并用 reads 支持指标处理并列；`supported` 优先支持范围、支持广度和唯一 reads。
+- `--population-min-mapq` / `--population-min-baseq`: 联合检测时的最低 mapping quality 和 base quality，默认均为 `20`。
+- `--population-min-dp` / `--population-min-gq`: 将低于阈值的样本基因型设为缺失，默认分别为 `5` 和 `20`。
+- `--population-min-qual`: 最低位点 QUAL，默认 `20`。
+- `--population-min-call-rate`: 位点最低非缺失基因型比例，默认 `0.8`。
+- `--population-min-mac`: 最低 minor allele count，默认 `2`。
+- `--population-ld-window` / `--population-ld-step` / `--population-ld-r2`: PLINK LD pruning 参数，默认 `50`、`5` 和 `0.2`。
+- `--population-admixture-k-min` / `--population-admixture-k-max`: ADMIXTURE K 范围，默认 `2` 到 `6`，最大 K 会自动限制为样本数。
+- `--population-admixture-cv`: ADMIXTURE 交叉验证折数，默认 `10`，并自动限制为样本数。
+- `--population-skip-mark-duplicates`: 跳过 samtools `fixmate/markdup`。
+- `--population-skip-plink`: 不生成 PLINK、PCA、LD-pruned 和 ADMIXTURE 结果。
+- `--population-skip-admixture`: 保留 PLINK 和 PCA，但不运行 ADMIXTURE。
+- `--population-stop-after`: 在 `reference`、`mapping`、`calling` 或 `selection` 阶段后停止，便于检查和分步调试；默认完成 `selection` 及后续结构分析。
 - `-c`: 一致性阈值（介于0-1的小数形式）
 - `-ts`: 基于参考切齐的来源序列，可以是`assembly`或`consensus`
 - `-tm`: 基于参考切齐的模式，可以是`all`、`longest`、`terminal`或`isoform`
@@ -124,6 +140,14 @@ cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/reference
 ```
 cli/geneminer2 tree -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output -m concatenation
 ```
+
+已有 `--assembly-mode uce` 组装结果后，可单独运行群体遗传流程：
+
+```
+cli/geneminer2 population -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output --assembly-mode uce -p 8 --population-admixture-k-min 2 --population-admixture-k-max 6
+```
+
+主分析面板为每个 UCE 选择一个 SNP，适合 PCA 和 ADMIXTURE；`all_snps` 和 `ld_pruned` 面板用于敏感性检查。该流程输出未定相的二倍体基因型，不应解释为已恢复两条单倍型。
 
 类似，可以通过传递子命令和参数，只运行特定的分析步骤。假设给出这些参数：
 

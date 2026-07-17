@@ -58,6 +58,33 @@
 
 **uce_rescue_summary.csv**：跨样本合并后的 rescue 摘要。使用 `--assembly-mode uce --uce-rescue-reads` 时生成。
 
+## Population 输出（v0.4）
+
+`population` 子命令在已有输出目录下创建 `population/`：
+
+- `sample_manifest.tsv`：原始样本名、GeneMiner2 内部目录名、VCF 样本名、reads 路径和 SE/PE 布局的对应关系。
+- `reference/population_reference.fasta`：所有样本统一 mapping 使用的公共 UCE 参考。
+- `reference/population_reference_provenance.tsv`：每个 locus 的参考来源样本、选择策略、候选数、长度及 reads 支持指标。
+- `reference/reference_contribution.tsv`：每个样本贡献的参考 loci 数及比例，用于检查公共参考是否由少数样本主导。
+- `reference/locus_name_map.tsv`：原始 locus 名和 VCF 安全名称的对应关系。
+- `mapping/<sample>.bam` 和索引：minibwa 统一 mapping 后经 samtools 处理的 BAM。
+- `mapping/mapping_qc.tsv`：每个样本的 mapped/properly-paired reads、mapping rate、覆盖广度和平均深度。
+- `variants/cohort.raw.bcf`：联合检测的原始 cohort BCF。
+- `variants/cohort.biallelic.snps.vcf.gz`：拆分并保留的双等位 SNP。
+- `variants/cohort.genotype_filtered.vcf.gz`：低 DP/GQ 基因型设为缺失后的 VCF。
+- `variants/cohort.tagged.vcf.gz`：补充群体统计标签后的 VCF。
+- `variants/cohort.filtered.vcf.gz`：经过 QUAL、call rate 和 MAC 过滤的分析起点。
+- `structure/all_snps.vcf.gz` 和同名前缀 PLINK/PCA 文件：保留同一 UCE 内多个 SNP 的高敏感度面板。
+- `structure/one_snp_per_uce.vcf.gz`、`population.{bed,bim,fam}` 和 `population_pca.*`：每个 UCE 按 call rate、QUAL 和 MAC 选择一个代表 SNP 的主面板。
+- `structure/ld_pruned.vcf.gz` 和同名前缀 PLINK/PCA 文件：对全部 SNP 做 LD pruning 的敏感性面板。
+- `structure/selected_snps.tsv`：每个 UCE 被选中代表 SNP 的位置和筛选统计。
+- `structure/panel_summary.tsv`：三种面板的 SNP 数量、路径和建议用途。
+- `structure/admixture/K<K>.log`、`population.<K>.Q` 和 `population.<K>.P`：各 K 的 ADMIXTURE 日志、个体遗传成分和祖先群体等位基因频率。
+- `structure/admixture/cv_errors.tsv`：各 K 的交叉验证误差以及最低误差 K 标记。
+- `structure/admixture/status.tsv`：ADMIXTURE 的 `complete`、`skipped`、`unavailable` 或 `failed` 状态。
+
+PCA 和 ADMIXTURE 的主解释应优先使用每个 UCE 一个 SNP 的面板，并与 all-SNP 和 LD-pruned PCA 比较。若样本 mapping rate、coverage breadth 明显偏低，或 `reference_contribution.tsv` 显示参考来源高度不均衡，应先排查参考偏倚和缺失数据，而不是直接解释遗传成分。
+
 ## 统计输出
 
 `stats` 子命令会从已有输出目录生成类似 HybPiper 的 UCE 恢复统计。

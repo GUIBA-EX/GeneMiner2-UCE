@@ -3,11 +3,14 @@ PY_BIN := $(patsubst %,cli/bin/%,$(PY_SRC))
 REFILTER_BIN := cli/bin/main_refilter_new
 FILTER_RUST_MANIFEST := rust/main_filter_new/Cargo.toml
 FILTER_RUST_SOURCES := $(FILTER_RUST_MANIFEST) rust/main_filter_new/src/main.rs
+POPULATION_BIN := cli/bin/main_population
+POPULATION_RUST_MANIFEST := rust/main_population/Cargo.toml
+POPULATION_RUST_SOURCES := $(POPULATION_RUST_MANIFEST) rust/main_population/src/main.rs
 FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
 .PHONY: build clean cython distclean haxe-filter
 
-build: cli/bin/MainFilterNew $(REFILTER_BIN) $(PY_BIN)
+build: cli/bin/MainFilterNew $(REFILTER_BIN) $(POPULATION_BIN) $(PY_BIN)
 	for target in $(PY_SRC); do cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/$$target/_internal; done
 	cd cli && ln -f -r -s bin/unix_command geneminer2
 
@@ -17,6 +20,7 @@ clean:
 	rm -f -r scripts/dist
 	rm -f -r rust/main_filter_new/target
 	rm -f -r rust/main_refilter_new/target
+	rm -f -r rust/main_population/target
 
 distclean: clean
 	for target in $(PY_SRC); do rm -f scripts/$$target.spec; done
@@ -56,6 +60,10 @@ $(REFILTER_BIN): scripts/main_refilter_new.py rust/main_refilter_new/Cargo.toml 
 	fi
 
 cli/bin/unix_command: scripts/gm2_stats.py
+
+$(POPULATION_BIN): $(POPULATION_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(POPULATION_RUST_MANIFEST)
+	install rust/main_population/target/release/main_population $(POPULATION_BIN)
 
 $(PY_BIN): cli/bin/%: scripts/%.py | cython
 	cd scripts && pyinstaller -D -y --optimize 2 $(notdir $<)

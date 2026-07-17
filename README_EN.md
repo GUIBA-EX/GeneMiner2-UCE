@@ -2,6 +2,8 @@
 
 **[中文主页](README.md)**
 
+Current release: **v0.4**
+
 GeneMiner2-UCE is a command-line branch of GeneMiner2 for target-enrichment and ultraconserved element (UCE) data. It retains the original reference-guided read-recruitment and assembly framework while adapting it for short probes, flanking-sequence recovery, quality control, and phylogenetic analysis. This repository contains only the CLI source, build files, and command-line documentation; the original GUI, screenshots, and demo data are not included.
 
 ## Use and Contact
@@ -15,6 +17,7 @@ Use of this version must cite the [GeneMiner2-UCE GitHub repository](https://git
 - One controlled raw-read rescue round through `--uce-rescue-reads`.
 - Rejection of weakly supported contigs using unique-read, positional-support, and depth metrics.
 - PHYLUCE-compatible UCE exports and sample- and locus-level recovery statistics.
+- A Rust `population` workflow for cohort-reference construction, uniform mapping, joint VCF calling, PCA, and ADMIXTURE ancestry analysis.
 - Support for MAFFT, MUSCLE, Clustal Omega, trimAl, AliFilter, and several phylogenetic tree programs.
 
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
@@ -147,11 +150,37 @@ cli/geneminer2 stats \
 
 This command writes `uce_stats.tsv`, `uce_locus_stats.tsv`, `uce_seq_lengths.tsv`, `uce_read_counts.tsv`, and `uce_filtered_read_counts.tsv`. If `pandas`, `seaborn`, and `matplotlib` are available and `--stats-no-heatmap` is omitted, it also generates recovery and read-count heatmaps.
 
+## Population mode (v0.4)
+
+The `population` workflow targets PCA, ADMIXTURE, and species-delimitation analyses of diploid UCE resequencing or target-enrichment data. It does not require haplotype phasing. Instead, it derives a consistent diploid genotype matrix from accepted UCE contigs and the original reads of every sample:
+
+1. Pool accepted contigs by locus and build a cohort reference. The default selection strategy mirrors the key behavior of SqCL `make_PRG.py` by choosing the longest eligible contig; `supported` instead prioritizes read support.
+2. Map every sample's original reads to the same reference with minibwa, then sort, mark duplicates, and collect mapping metrics with samtools.
+3. Jointly call all samples with bcftools, applying DP/GQ filters to genotypes and QUAL, call-rate, and minor-allele-count filters to sites.
+4. Produce all-SNP, one-SNP-per-UCE, and LD-pruned panels. PLINK runs PCA on all three panels, while ADMIXTURE uses the one-SNP-per-UCE panel by default.
+
+Run population analysis after UCE assembly results are available:
+
+```bash
+cli/geneminer2 population \
+  -f samples.tsv \
+  -r references \
+  -o output \
+  --assembly-mode uce \
+  -p 8 \
+  --population-admixture-k-min 2 \
+  --population-admixture-k-max 6
+```
+
+`minibwa`, samtools, bcftools, PLINK 1.9, and ADMIXTURE must be available in `PATH`. If ADMIXTURE is unavailable, reference construction, VCF generation, PLINK panels, and PCA still finish, and `population/structure/admixture/status.tsv` records `unavailable`. Before inference, inspect `mapping/mapping_qc.tsv`, `reference/reference_contribution.tsv`, and PCA concordance among panels. A cohort reference dominated by a few samples may introduce reference bias.
+
 ## Implementation and Downstream Tools
 
 The primary read filter now has a Rust implementation under `rust/main_filter_new/`. It preserves the command-line interface, all six output modes, and paired-end retention behavior of `scripts/filter/MainFilterNew.hx`, while using an exact k-mer-to-locus map and a versioned cache format. When Cargo is available, `make` builds the Rust version by default. The original Haxe source remains intact; run `make haxe-filter` to build it separately as `cli/bin/MainFilterNew-haxe`. Rust can read legacy Haxe caches. Rebuild the cache before switching back to Haxe because Haxe cannot read the new Rust cache format.
 
 The secondary read filter has a Rust implementation under `rust/main_refilter_new/` with the same command-line arguments and output layout as `scripts/main_refilter_new.py`. When Cargo is available, the build uses the Rust implementation; otherwise it falls back to the Python/PyInstaller version.
+
+The v0.4 population driver is implemented in `rust/main_population/`. Cohort-reference construction, workflow orchestration, SNP selection, panel reporting, and ADMIXTURE cross-validation parsing are written in Rust; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain validated external executables.
 
 Use `--msa-threads` and `--filter-processes` to control combine-stage parallelism. `--alignment-filter alifilter` selects AliFilter instead of trimAl. AliFilter is not bundled and must be installed separately with its `AliFilter` executable available in `PATH`. Omit `--alifilter-model`, or set it to `default`, to use the built-in model; provide a real `model.json` path only for a custom model.
 

@@ -96,7 +96,7 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
         process::exit(0);
     }
     if argv.iter().any(|arg| arg == "--version") {
-        println!("MainFilterNew 0.3.0");
+        println!("MainFilterNew 0.4.0");
         process::exit(0);
     }
 

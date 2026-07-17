@@ -45,6 +45,8 @@ conda install -c bioconda aster blast clustalo fasttree iqtree mafft magicblast 
 
 AliFilter can be used as an optional alignment filtering program. It is not installed by the command above; download the AliFilter executable separately and make sure `AliFilter` is available in `PATH` before using `--alignment-filter alifilter`.
 
+The `population` subcommand additionally requires `minibwa`, samtools, bcftools, and PLINK 1.9. ADMIXTURE is an optional ancestry-analysis dependency; when it is missing, the workflow still generates VCF, PLINK, and PCA outputs. Each executable must be available in `PATH`, or its location can be supplied with `--population-minibwa`, `--population-samtools`, `--population-bcftools`, `--population-plink`, or `--population-admixture`.
+
 ## Usage
 
 To run an analysis, GeneMiner2 requires a tab-delimited sample list and reference sequences in FASTA format. The sample list has the format `<Species Name><Tab><Read File 1>` (single read) or `<Species Name><Tab><Read File 1><Tab><Read File 2>` (paired-end reads), each line denoting a sample.
@@ -98,6 +100,20 @@ Command line parameters:
 - UCE raw-read rescue uses controlled sample-level parallelism: up to four samples are rescued concurrently, with up to four threads per sample, and it scales down automatically when `-p` is lower.
 - `--uce-rescue-min-contig-length`: Minimum preliminary contig length used for UCE raw-read rescue.
 - `--uce-rescue-min-density-ratio`: Minimum rescue/before read-density ratio kept after UCE raw-read rescue. The default is `0.5`; loci below this ratio are restored to the first-round contig.
+- `population`: Build a cohort UCE reference from existing assemblies, map all samples uniformly, jointly call variants, and generate population-genetic panels.
+- `--population-reference-strategy`: Representative selection for the cohort reference. `sqcl-longest` (default) chooses the longest eligible contig and uses read-support metrics for ties; `supported` prioritizes supported span, breadth, and unique reads.
+- `--population-min-mapq` / `--population-min-baseq`: Minimum mapping and base qualities for joint calling (both default to `20`).
+- `--population-min-dp` / `--population-min-gq`: Set sample genotypes below these thresholds to missing (defaults: `5` and `20`).
+- `--population-min-qual`: Minimum site QUAL (default: `20`).
+- `--population-min-call-rate`: Minimum non-missing genotype fraction per site (default: `0.8`).
+- `--population-min-mac`: Minimum minor allele count (default: `2`).
+- `--population-ld-window` / `--population-ld-step` / `--population-ld-r2`: PLINK LD-pruning settings (defaults: `50`, `5`, and `0.2`).
+- `--population-admixture-k-min` / `--population-admixture-k-max`: ADMIXTURE K range (default: `2` through `6`); maximum K is capped at the sample count.
+- `--population-admixture-cv`: ADMIXTURE cross-validation folds (default: `10`), capped at the sample count.
+- `--population-skip-mark-duplicates`: Skip samtools `fixmate/markdup`.
+- `--population-skip-plink`: Do not generate PLINK, PCA, LD-pruned, or ADMIXTURE outputs.
+- `--population-skip-admixture`: Generate PLINK and PCA outputs without running ADMIXTURE.
+- `--population-stop-after`: Stop after `reference`, `mapping`, `calling`, or `selection` for inspection and staged debugging. The default completes selection and downstream structure analyses.
 - `-c`: Consensus threshold (as a decimal, between 0.0 and 1.0)
 - `-ts`: Trim source (`assembly` or `consensus`)
 - `-tm`: Trim method (`all`, `longest`, `terminal` or `isoform`)
@@ -124,6 +140,14 @@ For example, after running the command above, you can ask GeneMiner2 to build a 
 ```
 cli/geneminer2 tree -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output -m concatenation
 ```
+
+After UCE assembly results have been generated, run the population workflow independently with:
+
+```
+cli/geneminer2 population -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output --assembly-mode uce -p 8 --population-admixture-k-min 2 --population-admixture-k-max 6
+```
+
+The primary panel selects one SNP per UCE for PCA and ADMIXTURE. The `all_snps` and `ld_pruned` panels support sensitivity analyses. The workflow reports unphased diploid genotypes and must not be interpreted as recovering two phased haplotypes.
 
 Similarly, it is also possible to ask GeneMiner2 to run specific steps. For example, given these parameters:
 

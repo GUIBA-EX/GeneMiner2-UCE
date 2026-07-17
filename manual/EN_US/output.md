@@ -58,6 +58,33 @@ Each sample listed in the input table gets a folder under the output directory.
 
 **uce_rescue_summary.csv**: Global rescue summary merged across samples. It is generated when `--assembly-mode uce --uce-rescue-reads` is used.
 
+## Population outputs (v0.4)
+
+The `population` subcommand creates `population/` under the existing output directory:
+
+- `sample_manifest.tsv`: Mapping among original sample IDs, GeneMiner2 internal directories, VCF sample IDs, read paths, and SE/PE layouts.
+- `reference/population_reference.fasta`: Cohort UCE reference used for uniform mapping of every sample.
+- `reference/population_reference_provenance.tsv`: Source sample, selection strategy, candidate count, length, and read-support metrics for each reference locus.
+- `reference/reference_contribution.tsv`: Number and fraction of reference loci contributed by each sample, for detecting a reference dominated by a few samples.
+- `reference/locus_name_map.tsv`: Mapping between original and VCF-safe locus names.
+- `mapping/<sample>.bam` and indexes: minibwa alignments processed by samtools.
+- `mapping/mapping_qc.tsv`: Mapped and properly paired reads, mapping rate, coverage breadth, and mean depth for each sample.
+- `variants/cohort.raw.bcf`: Raw jointly called cohort BCF.
+- `variants/cohort.biallelic.snps.vcf.gz`: Normalized biallelic SNPs.
+- `variants/cohort.genotype_filtered.vcf.gz`: VCF after low-DP/GQ sample genotypes are set to missing.
+- `variants/cohort.tagged.vcf.gz`: VCF annotated with population summary tags.
+- `variants/cohort.filtered.vcf.gz`: Analysis starting point after QUAL, call-rate, and MAC filters.
+- `structure/all_snps.vcf.gz` and matching PLINK/PCA files: Sensitive panel retaining multiple SNPs within a UCE.
+- `structure/one_snp_per_uce.vcf.gz`, `population.{bed,bim,fam}`, and `population_pca.*`: Primary panel selecting one representative SNP per UCE by call rate, QUAL, and MAC.
+- `structure/ld_pruned.vcf.gz` and matching PLINK/PCA files: Sensitivity panel obtained by LD pruning all SNPs.
+- `structure/selected_snps.tsv`: Position and selection metrics of the representative SNP selected for each UCE.
+- `structure/panel_summary.tsv`: SNP counts, paths, and intended uses of all three panels.
+- `structure/admixture/K<K>.log`, `population.<K>.Q`, and `population.<K>.P`: ADMIXTURE log, individual ancestry proportions, and ancestral-population allele frequencies for each K.
+- `structure/admixture/cv_errors.tsv`: Cross-validation error for each K and a marker for the minimum-error K.
+- `structure/admixture/status.tsv`: ADMIXTURE status: `complete`, `skipped`, `unavailable`, or `failed`.
+
+Primary interpretation of PCA and ADMIXTURE should use the one-SNP-per-UCE panel and be compared with the all-SNP and LD-pruned PCA results. If mapping rate or coverage breadth is unusually low, or `reference_contribution.tsv` shows a strongly imbalanced reference origin, investigate reference bias and missing data before interpreting ancestry proportions.
+
 ## Statistics outputs
 
 The `stats` subcommand writes HybPiper-style UCE recovery summaries from an existing output directory.

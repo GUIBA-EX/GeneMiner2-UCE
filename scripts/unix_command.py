@@ -20,6 +20,7 @@ COMMAND_HELP = '''
 filter    Reference-based filtering of raw reads
 refilter  Refinement of filtered reads
 assemble  Gene assembly using wDBG
+population Build a cohort UCE reference and generate complete, one-per-UCE and LD-pruned SNP panels
 consensus Consensus generation on heterozygous sites
 trim      Flank sequence removal
 combine   Gene alignment, concatenation and cleanup
@@ -1143,6 +1144,46 @@ def write_uce_outputs(args, samples):
     if args.uce_rescue_reads:
         write_uce_rescue_summary(args, samples)
 
+def run_population(args):
+    population_bin = find_executable('main_population', internal=True)
+    command = [
+        population_bin,
+        '--output', args.o.strip(),
+        '--samples', args.f,
+        '--reference-strategy', args.population_reference_strategy,
+        '--threads', str(args.p),
+        '--min-mapq', str(args.population_min_mapq),
+        '--min-baseq', str(args.population_min_baseq),
+        '--min-dp', str(args.population_min_dp),
+        '--min-gq', str(args.population_min_gq),
+        '--min-qual', str(args.population_min_qual),
+        '--min-call-rate', str(args.population_min_call_rate),
+        '--min-mac', str(args.population_min_mac),
+        '--ld-window', str(args.population_ld_window),
+        '--ld-step', str(args.population_ld_step),
+        '--ld-r2', str(args.population_ld_r2),
+        '--admixture-k-min', str(args.population_admixture_k_min),
+        '--admixture-k-max', str(args.population_admixture_k_max),
+        '--admixture-cv', str(args.population_admixture_cv),
+        '--stop-after', args.population_stop_after,
+        '--minibwa', args.population_minibwa,
+        '--samtools', args.population_samtools,
+        '--bcftools', args.population_bcftools,
+        '--plink', args.population_plink,
+        '--admixture', args.population_admixture,
+    ]
+
+    if args.population_skip_mark_duplicates:
+        command.append('--skip-mark-duplicates')
+
+    if args.population_skip_plink:
+        command.append('--skip-plink')
+
+    if args.population_skip_admixture:
+        command.append('--skip-admixture')
+
+    subprocess.run(command, check=True)
+
 def generate_consensus(args, samples):
     out_loc = args.o.strip()
 
@@ -1836,6 +1877,7 @@ def execute_tasks(args, samples):
     do_filter = 'filter' in commands
     do_refilter = 'refilter' in commands
     do_assemble = 'assemble' in commands
+    do_population = 'population' in commands
     do_consensus = 'consensus' in commands
     do_trim = 'trim' in commands
     do_combine = 'combine' in commands
@@ -1848,6 +1890,12 @@ def execute_tasks(args, samples):
 
             if do_assemble and args.assembly_mode == 'uce':
                 write_uce_outputs(args, samples)
+
+        if do_population:
+            if do_assemble and args.assembly_mode != 'uce':
+                raise RuntimeError('population with assemble requires --assembly-mode uce')
+
+            run_population(args)
 
         if do_consensus:
             generate_consensus(args, samples)
@@ -1889,7 +1937,7 @@ if __name__ == '__main__':
                                      description='GeneMiner2-UCE extracts phylogenetic marker loci for UCE workflows.',
                                      epilog=HELP_EPILOG)
     parser.add_argument('command',
-                        choices=('filter', 'refilter', 'assemble', 'consensus', 'trim', 'combine', 'tree', 'stats', []),
+                        choices=('filter', 'refilter', 'assemble', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats', []),
                         help='One or several of the following actions, separated by space:' + COMMAND_HELP,
                         metavar='command',
                         nargs='*')
@@ -1930,6 +1978,31 @@ if __name__ == '__main__':
     group_assembly.add_argument('--uce-rescue-reads', action='store_true', default=False, help='UCE mode only: after the first assembly, recruit raw reads once using preliminary contigs plus original references, then re-filter and re-assemble')
     group_assembly.add_argument('--uce-rescue-min-contig-length', default=60, help='Minimum preliminary contig length used as a UCE raw-read rescue reference (default = 60)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-rescue-min-density-ratio', default=0.5, help='Minimum rescue/before read-density ratio kept after UCE raw-read rescue (default = 0.5)', metavar='FLOAT', type=float)
+
+    group_population = parser.add_argument_group('arguments for population SNP analysis')
+    group_population.add_argument('--population-reference-strategy', choices=('sqcl-longest', 'supported'), default='sqcl-longest', help='Public-reference representative selection: SqCL-like longest accepted contig or support-first (default = sqcl-longest)')
+    group_population.add_argument('--population-min-mapq', default=20, help='Minimum mapping quality for joint calling (default = 20)', metavar='INT', type=int)
+    group_population.add_argument('--population-min-baseq', default=20, help='Minimum base quality for joint calling (default = 20)', metavar='INT', type=int)
+    group_population.add_argument('--population-min-dp', default=5, help='Set genotypes below this depth to missing (default = 5)', metavar='INT', type=int)
+    group_population.add_argument('--population-min-gq', default=20, help='Set genotypes below this quality to missing (default = 20)', metavar='INT', type=int)
+    group_population.add_argument('--population-min-qual', default=20.0, help='Minimum site QUAL (default = 20)', metavar='FLOAT', type=float)
+    group_population.add_argument('--population-min-call-rate', default=0.8, help='Minimum non-missing genotype fraction (default = 0.8)', metavar='FLOAT', type=float)
+    group_population.add_argument('--population-min-mac', default=2, help='Minimum minor allele count (default = 2)', metavar='INT', type=int)
+    group_population.add_argument('--population-ld-window', default=50, help='SNPs per LD-pruning window (default = 50)', metavar='INT', type=int)
+    group_population.add_argument('--population-ld-step', default=5, help='SNPs shifted per LD-pruning window (default = 5)', metavar='INT', type=int)
+    group_population.add_argument('--population-ld-r2', default=0.2, help='LD-pruning r-squared threshold (default = 0.2)', metavar='FLOAT', type=float)
+    group_population.add_argument('--population-admixture-k-min', default=2, help='Minimum ADMIXTURE K (default = 2)', metavar='INT', type=int)
+    group_population.add_argument('--population-admixture-k-max', default=6, help='Maximum ADMIXTURE K (default = 6)', metavar='INT', type=int)
+    group_population.add_argument('--population-admixture-cv', default=10, help='ADMIXTURE cross-validation folds (default = 10)', metavar='INT', type=int)
+    group_population.add_argument('--population-stop-after', choices=('reference', 'mapping', 'calling', 'selection'), default='selection', help='Stop after this population stage (default = selection)')
+    group_population.add_argument('--population-skip-mark-duplicates', action='store_true', default=False, help='Skip samtools duplicate marking')
+    group_population.add_argument('--population-skip-plink', action='store_true', default=False, help='Do not export PLINK files or run PCA, LD pruning or ADMIXTURE')
+    group_population.add_argument('--population-skip-admixture', action='store_true', default=False, help='Do not run ADMIXTURE on the primary one-SNP-per-UCE panel')
+    group_population.add_argument('--population-minibwa', default='minibwa', help='minibwa executable (default = minibwa)', metavar='PATH')
+    group_population.add_argument('--population-samtools', default='samtools', help='samtools executable (default = samtools)', metavar='PATH')
+    group_population.add_argument('--population-bcftools', default='bcftools', help='bcftools executable (default = bcftools)', metavar='PATH')
+    group_population.add_argument('--population-plink', default='plink', help='PLINK 1.9 executable (default = plink)', metavar='PATH')
+    group_population.add_argument('--population-admixture', default='admixture', help='ADMIXTURE executable (default = admixture)', metavar='PATH')
 
     group_consensus = parser.add_argument_group('argument for consensus generation')
     group_consensus.add_argument('-c', '--consensus-threshold', default='0.75', help='Consensus threshold (default = 0.75)', metavar='FLOAT', type=float)
@@ -1985,6 +2058,21 @@ if __name__ == '__main__':
 
     if args.uce_rescue_min_density_ratio <= 0:
         parser.error('--uce-rescue-min-density-ratio must be greater than 0')
+
+    if args.population_min_mapq < 0 or args.population_min_baseq < 0:
+        parser.error('population mapping and base quality thresholds must be non-negative')
+
+    if args.population_min_dp < 0 or args.population_min_gq < 0 or args.population_min_mac < 1:
+        parser.error('population DP/GQ thresholds must be non-negative and MAC must be at least 1')
+
+    if not 0 < args.population_min_call_rate <= 1:
+        parser.error('--population-min-call-rate must be in (0, 1]')
+
+    if args.population_ld_window < 1 or args.population_ld_step < 1 or not 0 < args.population_ld_r2 < 1:
+        parser.error('population LD window/step must be positive and LD r-squared must be in (0, 1)')
+
+    if args.population_admixture_k_min < 2 or args.population_admixture_k_max < args.population_admixture_k_min or args.population_admixture_cv < 2:
+        parser.error('population ADMIXTURE requires 2 <= K-min <= K-max and at least 2 CV folds')
 
     if args.no_trimal and args.alignment_filter not in (None, 'none'):
         parser.error('--no-trimal cannot be combined with --alignment-filter trimal or --alignment-filter alifilter')
