@@ -1,177 +1,320 @@
-# 命令行版本
+# GeneMiner2-UCE 命令行指南
 
-本仓库只保留 GeneMiner2 命令行流程。GUI 工程、图形界面文档、截图和内置演示数据已经移除。
+GeneMiner2-UCE 是面向 UCE 和其他系统发育标记的命令行流程。本仓库不包含 GUI、内置演示数据或旧版图形界面文档。
 
-## 从源码构建
+## 1. 从源码构建
 
-从源码构建独立 CLI 包需要 C++ 编译器、Python、PyInstaller，以及 Cargo/Rust（推荐）或 Haxe 4。检测到 Cargo 时，`make` 会构建 Rust 版主过滤器和二次过滤器；没有 Cargo 时，主过滤器回退到 Haxe/C++，二次过滤器回退到 Python/PyInstaller。真实分析应先运行 `make`，再使用打包生成的 `cli/geneminer2`。GeneMiner2 的使用方法请跳转到文档后半部分的[用法](#用法)章节。
+### 1.1 构建依赖
 
-第一步，安装系统的默认C++编译器和[zlib](https://zlib.net/)。在Ubuntu 24.04 或更新版本上，可以运行下面的命令：
+完整构建需要：
 
-```
+- C/C++ 编译器和 [zlib](https://zlib.net/)；
+- [Rust 和 Cargo](https://www.rust-lang.org/tools/install/)；
+- Python 3.11、Cython、PyInstaller、Biopython、NumPy、SciPy、pandas、matplotlib 和 seaborn。
+
+Rust/Cargo 是当前完整构建的必需依赖，用于编译主 reads 过滤器、二次过滤器和 population 流程。Haxe 源码仅作为主过滤器的兼容实现保留，不能替代完整 Rust 构建。
+
+Ubuntu 可先安装系统依赖：
+
+```bash
 sudo apt install build-essential zlib1g zlib1g-dev
 ```
 
-高级用户可以选择安装[zlib-ng](https://github.com/zlib-ng/zlib-ng)或[cloudflare-zlib](https://github.com/cloudflare/zlib)代替zlib以提高性能。
+然后创建 Python 环境：
 
-第二步，推荐安装 [Rust 和 Cargo](https://www.rust-lang.org/tools/install)。如果不安装 Rust，则必须安装 [Haxe 4](https://haxe.org/)并[配置 C++ 目标](https://haxe.org/manual/target-cpp-getting-started.html)。在 Ubuntu 24.04 或更新版本上，Haxe 回退环境可运行：
-
-```
-sudo apt install haxe
-haxelib setup ~/haxelib
-haxelib install hxcpp
-```
-
-第三步，安装Python和依赖项。如果可以使用conda，执行下面的命令即可；否则，需要用系统的软件包管理器手动安装这些包。
-
-```
-conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cython matplotlib pandas seaborn pyinstaller scipy setuptools wheel
+```bash
+conda create -c conda-forge -n geneminer \
+  python=3.11 numpy=2.1.3 biopython cython matplotlib \
+  pandas seaborn pyinstaller scipy setuptools wheel
 conda activate geneminer
 ```
 
-最后，将本分支的源代码下载到GeneMiner2文件夹中，构建可执行文件。
+### 1.2 运行时依赖
 
+系统发育流程按所选步骤调用部分外部程序：
+
+```bash
+conda install -c bioconda \
+  aster blast clustalo fasttree iqtree mafft magicblast minimap2 \
+  muscle raxml-ng trimal veryfasttree
 ```
+
+可选工具：
+
+- `--alignment-filter alifilter` 需要单独安装 AliFilter，并确保 `AliFilter` 位于 `PATH`。
+- `population` 需要 `minibwa`、samtools、bcftools 和 PLINK 1.9。
+- ADMIXTURE 用于遗传成分分析。若未安装，population 仍会完成公共参考、VCF、PLINK 面板和 PCA，并将状态记录为 `unavailable`。
+
+population 外部程序默认从 `PATH` 查找，也可通过 `--population-minibwa`、`--population-samtools`、`--population-bcftools`、`--population-plink` 和 `--population-admixture` 分别指定。
+
+### 1.3 下载与构建
+
+```bash
 git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2-UCE.git
 cd GeneMiner2-UCE
 make
 ```
 
-编译完成的可执行文件放在`cli`目录下，运行`cli/geneminer2 -h`查看帮助。软件在运行时仍然需要几个独立的生物信息学工具。用conda安装的方法如下：
+构建后的统一入口为：
 
+```bash
+cli/geneminer2 -h
 ```
-conda install -c bioconda aster blast clustalo fasttree iqtree mafft magicblast minimap2 muscle raxml-ng trimal veryfasttree
-```
 
-AliFilter可以作为可选的多序列比对过滤程序使用。上面的conda命令不会安装AliFilter；如需使用`--alignment-filter alifilter`，请单独下载AliFilter可执行文件，并确保命令行中可以直接调用`AliFilter`。
+源码更新后应重新运行 `make`。
 
-`population` 子命令还需要 `minibwa`、samtools、bcftools 和 PLINK 1.9。ADMIXTURE 用于遗传成分分析；它是可选依赖，缺失时流程仍会生成 VCF、PLINK 和 PCA 结果。所有程序必须可从 `PATH` 调用，也可分别用 `--population-minibwa`、`--population-samtools`、`--population-bcftools`、`--population-plink` 和 `--population-admixture` 指定路径。
+## 2. 输入文件
 
-## 用法
+所有命令均需要以下三个参数：
 
-GeneMiner2需要tsv格式的样本列表和FASTA格式的参考序列。样本列表的具体格式是`<物种名><Tab><数据文件1>`（单端）或者`<物种名><Tab><数据文件1><Tab><数据文件2>`（双端），每一行代表一个样本。其中的数据文件建议采用绝对路径。
+- `-f FILE`：tab 分隔的样本表；
+- `-r DIR`：参考序列目录；
+- `-o DIR`：输出目录。
 
-对于双端 reads，样本列表可以写成：
+### 2.1 样本表
 
-```
+每行表示一个样本。单端数据使用两列，双端数据使用三列：
+
+```text
 Sample_A	/data/reads/Sample_A_R1.fq.gz	/data/reads/Sample_A_R2.fq.gz
 Sample_B	/data/reads/Sample_B_R1.fq.gz	/data/reads/Sample_B_R2.fq.gz
 Sample_C	/data/reads/Sample_C_R1.fq.gz	/data/reads/Sample_C_R2.fq.gz
 ```
 
-参考序列需要放在一个独立的文件夹下，每个基因可以有一条或多条参考序列。对于每个基因，将对应的所有参考序列存在`<基因名>.fasta`下。假设需要提取matK和psbA两个基因，则需要在一个空白文件夹下创建`matK.fasta`和`psbA.fasta`两个文件，分别保存对应的参考序列。
+建议使用绝对路径。样本名应保持唯一；population 会另行生成内部样本名和 VCF 样本名的对应表。
 
-假设样本列表保存在`/home/user/project/samples.tsv`，参考序列保存在`/home/user/project/references`，期望的输出文件夹为`/home/user/project/output`，用默认设置运行 GeneMiner2 的命令如下：
+### 2.2 参考序列目录
 
-```
-cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output
-```
+每个 locus 使用一个 FASTA 文件，文件名即 locus 名；同一文件可包含一条或多条参考序列：
 
-执行这行命令后，GeneMiner2 会构建一棵溯祖树，路径为`/home/user/project/output/Coalescent.tree`。
-
-如果使用`--assembly-mode uce`且不指定子命令，默认流程会跳过基于参考序列的`trim`步骤，运行`filter refilter assemble combine tree`。这样可以避免刚组装出的UCE侧翼序列在后续参考切齐步骤中被再次裁剪。如需仍然执行参考切齐，可以显式加入`trim`子命令。
-
-### Population 群体遗传分析
-
-`population` 用于从多个样本的 UCE 组装结果和原始 reads 构建未定相的二倍体 SNP 矩阵，主要服务于 PCA、ADMIXTURE、遗传成分比较和物种界定。运行前，每个样本必须已经完成 UCE 组装，并保留 `uce_assembly_summary.csv`、`results/` 和样本表中记录的原始 reads。
-
-流程包含四个核心阶段：按 locus 从已接受 contig 中选择公共参考代表序列；用 minibwa 将所有样本统一 mapping 到该参考；用 bcftools 联合检测和过滤变异；为每个 UCE 选择一个代表 SNP，并同时建立 all-SNP 和 LD-pruned 对照面板。随后 PLINK 对三个面板分别执行 PCA，ADMIXTURE 默认分析每个 UCE 一个 SNP 的主面板。
-
-该模式输出的是未定相基因型，而不是两条完整单倍型。它适合群体结构和物种界定，但不能替代需要单倍型序列、重组信息或基因树的 phasing 流程。正式解释结果前，应检查 mapping 质量、样本缺失率、公共参考来源比例，以及三个 SNP 面板之间的 PCA 一致性。
-
-命令行参数的说明如下：
-
-- `-f`: 样本列表tsv文件
-- `-r`: 参考序列文件夹
-- `-o`: 输出文件夹
-- `-p`: 同时运行的进程数
-- `--max-reads`: 每文件限制的最大读长数量（单位为百万），默认禁用
-- `-kf`: 过滤kmer大小
-- `-s`: 过滤步长
-- `--reuse-reference-cache`: 跨运行复用带指纹的 reference k-mer index，避免每次重新构建。
-- `--reference-cache-dir`: `--reuse-reference-cache` 使用的缓存目录。默认位于 `output/.gm2_reference_cache`。
-- `-ka`: 组装kmer大小，默认为自动
-- `--min-ka`: 自动估算k值的下限
-- `--max-ka`: 自动估算k值的上限
-- `-e`: 错误阈值
-- `-sb`: 软边界，支持`0`、`auto`和`unlimited`三个选项
-- `-i`: 搜索深度
-- `--assembly-mode`: 组装模式，可选`reference`或`uce`。`reference`为默认模式，保持原有基于参考序列的组装和边界控制；`uce`模式会放宽参考边界裁剪，并优先保留更长且有reads支持的UCE侧翼序列。
-- UCE组装模式下，refilter阶段会在任一端通过locus过滤时保留整对paired-end reads。这有助于保留与短UCE探针配对的侧翼reads。
-- `--uce-side-candidates`: UCE组装中每侧参与组合的分支候选数。数值越大，越可能保留较长的低支持侧翼候选，但会增加运行时间和候选路径数量。
-- `--uce-max-contig-length`: UCE候选contig进入评分前允许保留的最大长度。默认值为`5000`；设为`0`可关闭该限制。
-- `--uce-min-read-density`: 长UCE候选contig进入评分前所需的最低`read_count / contig_length`。默认值为`0.003`。
-- `--uce-density-check-min-length`: 启用UCE read-density保护阈值的最短contig长度。默认值为`1000`。
-- `--uce-max-depth-cv`: 可选的UCE候选contig k-mer深度变异系数上限。默认值为`0`，表示关闭该保护阈值。
-- `--uce-max-depth-ratio`: 可选的UCE候选contig最大/中位k-mer深度比值上限。默认值为`0`，表示关闭该保护阈值。
-- `--uce-rescue-reads`: 仅用于UCE模式。初次组装后，用初步contig和原始参考序列再招募一次raw reads，然后重新进一步过滤并重新组装。
-- UCE raw-read rescue 使用受控的样本级并行：最多同时 rescue 4 个样本，每个样本最多 4 个线程；当 `-p` 较小时会自动降低并行度。
-- `--uce-rescue-min-contig-length`: 参与UCE raw-read rescue的初步contig最短长度。
-- `--uce-rescue-min-density-ratio`: UCE raw-read rescue 后保留结果所需的最低 rescue/第一轮 read-density 比值。默认值为`0.5`；低于该比值的locus会恢复为第一轮contig。
-- `population`: 从已有 UCE 组装结果构建公共参考，统一 mapping，联合检测变异，并生成群体遗传分析面板。
-- `--population-reference-strategy`: 公共参考代表序列选择策略。`sqcl-longest`（默认）选择最长的合格 contig，并用 reads 支持指标处理并列；`supported` 优先支持范围、支持广度和唯一 reads。
-- `--population-min-mapq` / `--population-min-baseq`: 联合检测时的最低 mapping quality 和 base quality，默认均为 `20`。
-- `--population-min-dp` / `--population-min-gq`: 将低于阈值的样本基因型设为缺失，默认分别为 `5` 和 `20`。
-- `--population-min-qual`: 最低位点 QUAL，默认 `20`。
-- `--population-min-call-rate`: 位点最低非缺失基因型比例，默认 `0.8`。
-- `--population-min-mac`: 最低 minor allele count，默认 `2`。
-- `--population-ld-window` / `--population-ld-step` / `--population-ld-r2`: PLINK LD pruning 参数，默认 `50`、`5` 和 `0.2`。
-- `--population-admixture-k-min` / `--population-admixture-k-max`: ADMIXTURE K 范围，默认 `2` 到 `6`，最大 K 会自动限制为样本数。
-- `--population-admixture-cv`: ADMIXTURE 交叉验证折数，默认 `10`，并自动限制为样本数。
-- `--population-skip-mark-duplicates`: 跳过 samtools `fixmate/markdup`。
-- `--population-skip-plink`: 不生成 PLINK、PCA、LD-pruned 和 ADMIXTURE 结果。
-- `--population-skip-admixture`: 保留 PLINK 和 PCA，但不运行 ADMIXTURE。
-- `--population-stop-after`: 在 `reference`、`mapping`、`calling` 或 `selection` 阶段后停止，便于检查和分步调试；默认完成 `selection` 及后续结构分析。
-- `-c`: 一致性阈值（介于0-1的小数形式）
-- `-ts`: 基于参考切齐的来源序列，可以是`assembly`或`consensus`
-- `-tm`: 基于参考切齐的模式，可以是`all`、`longest`、`terminal`或`isoform`
-- `-tr`: 基于参考切齐的保留长度阈值（介于0-1的小数形式）
-- `-cs`: 合并结果的来源序列，可以是`assembly`、`consensus`或`trimmed`
-- `--msa-program`: 多序列比对的软件，支持`mafft`、`muscle`和`clustalo`
-- `--msa-threads`: 每个多序列比对任务使用的线程数，默认为1。GeneMiner2会限制同时运行的比对任务数量，使比对阶段请求的总线程数不超过`-p`
-- `--alignment-filter`: 建树前的比对列过滤程序，支持`trimal`、`alifilter`和`none`，默认为`trimal`
-- `--filter-processes`: 同时运行的trimAl或AliFilter过滤任务数上限，默认等于`-p`
-- `--alifilter-model`: 使用`--alignment-filter alifilter`时可选指定AliFilter的`model.json`路径；省略该参数或设为`default`时使用AliFilter内置默认模型
-- `--strict-combine-errors`: 如果任一locus在多序列比对、alignment清理或比对列过滤阶段失败，则立即停止`combine`。默认行为是输出警告并跳过失败的locus
-- `--no-trimal`: 已弃用，等同于`--alignment-filter none`
-- `stats`: 可选子命令，用于在UCE流程结束后汇总恢复结果。该命令会输出样本级统计、locus级统计、长度矩阵、read-count矩阵和过滤read-count矩阵。
-- `--stats-no-heatmap`: 不生成统计热图。
-- `--stats-count-input-reads`: 统计输入FASTQ reads数量，用于填写`InputReads`和`PctFiltered`；大数据集上可能较慢。
-- `-cd`: 清理序列的最大差异
-- `-cn`: 清理序列的最小序列数量
-- `-m`: 建树的方法，支持`coalescent`和`concatenation`
-- `-b`: 支持度计算的重复次数
-- `--phylo-program`: 建树的软件，支持`fasttree`、`veryfasttree`、`iqtree`和`raxmlng`
-
-例如，在上述命令运行结束后，使用`tree`子命令和`-m concatenation`参数，可以要求GeneMiner2基于之前的结果构建串联树：
-
-```
-cli/geneminer2 tree -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output -m concatenation
+```text
+references/
+  uce-0001.fasta
+  uce-0002.fasta
 ```
 
-已有 `--assembly-mode uce` 组装结果后，可单独运行群体遗传流程：
+## 3. 子命令与默认流程
 
+可在同一条命令中按执行顺序列出一个或多个子命令：
+
+| 子命令 | 功能 |
+| --- | --- |
+| `filter` | 根据参考 k-mer 从原始数据招募 reads |
+| `refilter` | 进一步分配和过滤每个 locus 的 reads |
+| `assemble` | 使用 wDBG 组装目标序列 |
+| `population` | 构建公共 UCE 参考并生成群体 SNP、PCA 和 ADMIXTURE 结果 |
+| `consensus` | 在杂合位点生成一致性序列 |
+| `trim` | 按参考序列裁切侧翼 |
+| `combine` | 合并样本、比对、清理和过滤 alignment |
+| `tree` | 构建溯祖树或串联树 |
+| `stats` | 汇总 UCE 恢复统计并可选生成热图 |
+
+不显式指定子命令时：
+
+- `--assembly-mode reference`（默认）运行 `filter refilter assemble trim combine tree`；
+- `--assembly-mode uce` 运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围。
+
+默认参考模式示例：
+
+```bash
+cli/geneminer2 \
+  -f /home/user/project/samples.tsv \
+  -r /home/user/project/references \
+  -o /home/user/project/output \
+  -p 8
 ```
-cli/geneminer2 population -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output --assembly-mode uce -p 8 --population-admixture-k-min 2 --population-admixture-k-max 6
+
+## 4. UCE 组装
+
+UCE 模式放宽短 probe 的参考边界限制，优先保留更长且仍有 reads 支持的侧翼序列。在 refilter 阶段，只要任一 mate 通过 locus 过滤，整对 paired-end reads 都会保留。
+
+基础运行示例：
+
+```bash
+cli/geneminer2 \
+  -f samples.tsv \
+  -r references \
+  -o output \
+  -p 8 \
+  --assembly-mode uce \
+  --uce-rescue-reads
 ```
 
-主分析面板为每个 UCE 选择一个 SNP，适合 PCA 和 ADMIXTURE；`all_snps` 和 `ld_pruned` 面板用于敏感性检查。该流程输出未定相的二倍体基因型，不应解释为已恢复两条单倍型。
+`--uce-rescue-reads` 在第一轮组装后，以初步 contig 和原始参考再次招募 raw reads，并只执行一轮 re-filtering 和 assembly。rescue 最多并行处理 4 个样本、每个样本最多使用 4 个线程，并受 `-p` 总量约束。
 
-类似，可以通过传递子命令和参数，只运行特定的分析步骤。假设给出这些参数：
+建议在放宽 `-sb`、`-e` 或 assembly k-mer 范围后检查 `uce_assembly_summary.csv`、`uce_rescue_summary.csv` 和下游 alignment。详细输出见[输出文件说明](output.md)。
 
-| 参数                        | 值                |
-| -------------------------- | ----------------- |
-| Source Sequence            | Consensus Results |
-| 保留长度阈值                 | 50%               |
-| Trim Method                | All Fragments     |
-| 比对程序                    | muscle            |
-| 最大差异大于                 | 0.2               |
-| 序列数量小于                 | 5                 |
+## 5. Population 群体遗传分析
 
-可以用下面的命令只执行**基于参考切齐**和**合并结果**：
+### 5.1 适用范围
 
+`population` 从多个样本的 UCE 组装结果和原始 reads 构建未定相的二倍体 SNP 矩阵，主要用于 PCA、ADMIXTURE、遗传成分比较和物种界定。
+
+运行前，每个样本必须已经完成 UCE 组装，并保留：
+
+- `uce_assembly_summary.csv`；
+- `results/` 中已接受的 UCE contig；
+- 样本表所列的原始 reads。
+
+该模式输出未定相基因型，而不是两条完整单倍型。它不替代需要单倍型序列、重组信息或单 locus 基因树的 phasing 流程。
+
+### 5.2 分析流程
+
+1. 按 locus 汇总已接受 contig，构建公共 UCE 参考；
+2. 使用 minibwa 将全部样本统一 mapping 到同一参考；
+3. 使用 bcftools 联合检测变异并执行基因型和位点过滤；
+4. 输出 all-SNP、每个 UCE 一个 SNP 和 LD-pruned 三种面板。
+
+PLINK 对三种面板分别执行 PCA。ADMIXTURE 默认使用每个 UCE 一个 SNP 的主面板，并在指定 K 范围内计算交叉验证误差。
+
+### 5.3 运行示例
+
+已有 UCE 组装结果后，可单独运行：
+
+```bash
+cli/geneminer2 population \
+  -f /home/user/project/samples.tsv \
+  -r /home/user/project/references \
+  -o /home/user/project/output \
+  -p 8 \
+  --assembly-mode uce \
+  --population-admixture-k-min 2 \
+  --population-admixture-k-max 6
 ```
-cli/geneminer2 trim combine -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output -ts consensus -tm all -tr 0.5 -cd 0.2 -cn 5 --msa-program muscle
+
+正式解释遗传成分前，应检查：
+
+- `population/mapping/mapping_qc.tsv` 中的 mapping rate、coverage breadth 和 depth；
+- `population/reference/reference_contribution.tsv` 中公共参考来源是否过度集中；
+- 样本和位点缺失率；
+- 三种 SNP 面板的 PCA 是否给出一致的主要结构。
+
+## 6. 分步运行示例
+
+只基于已有结果重建串联树：
+
+```bash
+cli/geneminer2 tree \
+  -f samples.tsv -r references -o output \
+  -m concatenation --phylo-program iqtree
 ```
 
-命令行版本在需要填写百分数的位置使用 0-1 的小数。一部分内部参数（例如`--min-coverage`）也可以修改，允许高级用户更灵活地控制软件行为。
+生成 consensus，按参考裁切并合并：
+
+```bash
+cli/geneminer2 consensus trim combine \
+  -f samples.tsv -r references -o output \
+  -c 0.75 -ts consensus -tm all -tr 0.5 \
+  -cs trimmed --msa-program muscle
+```
+
+从已有 UCE 结果生成统计表但不绘图：
+
+```bash
+cli/geneminer2 stats \
+  -f samples.tsv -r references -o output \
+  --stats-no-heatmap
+```
+
+## 7. 参数参考
+
+以下列出主要公开参数及当前默认值。运行 `cli/geneminer2 -h` 可查看同版本的完整帮助。
+
+### 7.1 通用输入与并行
+
+| 参数 | 说明 |
+| --- | --- |
+| `-f FILE` | 样本表，必需 |
+| `-r DIR` | 参考序列目录，必需 |
+| `-o DIR` | 输出目录，必需 |
+| `-p INT` | 并行进程总数，默认 `1` |
+
+### 7.2 Reads 过滤与 re-filtering
+
+| 参数 | 说明 |
+| --- | --- |
+| `-kf INT` | 过滤 k-mer 大小，默认 `31` |
+| `-s, --step-size INT` | reads 扫描步长，默认 `4` |
+| `--max-reads INT` | 每个文件最多处理的 reads 数，单位为百万；`0` 表示不限 |
+| `--reuse-reference-cache` | 复用带输入指纹的 reference k-mer index |
+| `--reference-cache-dir DIR` | reference cache 目录；默认 `output/.gm2_reference_cache`，且必须与上一参数同时使用 |
+| `--depth-low-water-mark INT` | 低于该深度时尝试放宽条件招募更多 reads，默认 `50` |
+| `--depth-limit INT` | re-filtering 处理的最高深度，默认 `768` |
+| `--file-size-limit INT` | re-filtering 文件大小限制，默认 `6` |
+
+### 7.3 组装与 UCE
+
+| 参数 | 说明 |
+| --- | --- |
+| `-ka INT` | assembly k-mer 大小；默认 `0`，表示自动估算 |
+| `--min-ka INT` / `--max-ka INT` | 自动估算范围，默认 `21` / `51` |
+| `-e, --error-threshold INT` | k-mer 错误阈值，默认 `2` |
+| `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
+| `-i, --search-depth INT` | 搜索深度，默认 `4096` |
+| `--min-coverage INT` | contig 最低 read depth，默认 `0` |
+| `--assembly-mode MODE` | `reference` 或 `uce`；默认 `reference` |
+| `--uce-side-candidates INT` | 每侧参与组合的分支候选数，默认 `8`，最小为 `3` |
+| `--uce-max-contig-length INT` | 进入评分的 UCE contig 最大长度，默认 `5000`；`0` 关闭 |
+| `--uce-min-read-density FLOAT` | 长 contig 的最低唯一 reads/长度，默认 `0.003` |
+| `--uce-density-check-min-length INT` | 启用 density 阈值的最短 contig，默认 `1000` |
+| `--uce-max-depth-cv FLOAT` | k-mer depth CV 上限，默认 `0`，表示关闭 |
+| `--uce-max-depth-ratio FLOAT` | 最大/中位 k-mer depth 上限，默认 `0`，表示关闭 |
+| `--uce-rescue-reads` | 执行一轮 UCE raw-read rescue |
+| `--uce-rescue-min-contig-length INT` | rescue reference 的最短 contig，默认 `60`，且不会小于 `-kf` |
+| `--uce-rescue-min-density-ratio FLOAT` | 保留 rescue 结果的最低 rescue/首轮 density，默认 `0.5` |
+
+### 7.4 Population
+
+| 参数 | 说明 |
+| --- | --- |
+| `--population-reference-strategy MODE` | `sqcl-longest`（默认）或 `supported` |
+| `--population-min-mapq INT` / `--population-min-baseq INT` | 联合检测最低 MAPQ / base quality，默认 `20` / `20` |
+| `--population-min-dp INT` / `--population-min-gq INT` | 低于阈值的基因型设为缺失，默认 `5` / `20` |
+| `--population-min-qual FLOAT` | 最低位点 QUAL，默认 `20` |
+| `--population-min-call-rate FLOAT` | 最低非缺失基因型比例，默认 `0.8` |
+| `--population-min-mac INT` | 最低 minor allele count，默认 `2` |
+| `--population-ld-window INT` / `--population-ld-step INT` | LD pruning 窗口和步长，默认 `50` / `5` SNP |
+| `--population-ld-r2 FLOAT` | LD pruning 的 r² 阈值，默认 `0.2` |
+| `--population-admixture-k-min INT` / `--population-admixture-k-max INT` | ADMIXTURE K 范围，默认 `2` / `6`；最大 K 不超过样本数 |
+| `--population-admixture-cv INT` | ADMIXTURE CV 折数，默认 `10`，不超过样本数 |
+| `--population-stop-after STAGE` | 在 `reference`、`mapping`、`calling` 或 `selection` 后停止；默认 `selection` |
+| `--population-skip-mark-duplicates` | 跳过 samtools duplicate marking |
+| `--population-skip-plink` | 不生成 PLINK、PCA、LD-pruned 或 ADMIXTURE 结果 |
+| `--population-skip-admixture` | 生成 PLINK 和 PCA，但不运行 ADMIXTURE |
+| `--population-minibwa PATH` | minibwa 可执行文件，默认 `minibwa` |
+| `--population-samtools PATH` | samtools 可执行文件，默认 `samtools` |
+| `--population-bcftools PATH` | bcftools 可执行文件，默认 `bcftools` |
+| `--population-plink PATH` | PLINK 1.9 可执行文件，默认 `plink` |
+| `--population-admixture PATH` | ADMIXTURE 可执行文件，默认 `admixture` |
+
+### 7.5 Consensus、裁切与合并
+
+| 参数 | 说明 |
+| --- | --- |
+| `-c, --consensus-threshold FLOAT` | consensus 阈值，默认 `0.75` |
+| `-ts, --trim-source SOURCE` | `assembly` 或 `consensus`；默认使用上一步结果 |
+| `-tm, --trim-mode MODE` | `all`、`longest`、`terminal` 或 `isoform`；默认 `terminal` |
+| `-tr, --trim-retention FLOAT` | 参考裁切的保留长度比例，默认 `0` |
+| `-cs, --combine-source SOURCE` | `assembly`、`consensus` 或 `trimmed`；默认使用上一步结果 |
+| `-cd, --clean-difference FLOAT` | alignment 最大可接受成对差异，默认 `1.0` |
+| `-cn, --clean-sequences INT` | alignment 最少序列数，默认 `0` |
+| `--msa-program PROGRAM` | `clustalo`、`mafft` 或 `muscle`；默认 `mafft` |
+| `--msa-threads INT` | 每个 MSA 任务的线程数，默认 `1`，且不能大于 `-p` |
+| `--alignment-filter PROGRAM` | `trimal`、`alifilter` 或 `none`；默认 `trimal` |
+| `--filter-processes INT` | 并行 alignment-filter 任务上限，默认等于 `-p` |
+| `--alifilter-model MODEL` | AliFilter 模型名或 `model.json` 路径 |
+| `--strict-combine-errors` | 任一 locus 的 alignment、清理或过滤失败时立即停止 |
+| `--no-alignment` | 跳过多序列比对 |
+| `--no-trimal` | 已弃用；等同于 `--alignment-filter none` |
+
+### 7.6 建树与统计
+
+| 参数 | 说明 |
+| --- | --- |
+| `-m, --tree-method METHOD` | `coalescent` 或 `concatenation`；默认 `coalescent` |
+| `-b, --bootstrap INT` | bootstrap 次数，默认 `1000` |
+| `--phylo-program PROGRAM` | `raxmlng`、`iqtree`、`fasttree` 或 `veryfasttree`；默认 `fasttree` |
+| `--stats-no-heatmap` | 不生成 UCE 统计热图 |
+| `--stats-count-input-reads` | 统计输入 FASTQ reads 以填写 `InputReads` 和 `PctFiltered`；大数据集上较慢 |
+
+比例类参数使用 `0–1` 小数。对正式数据修改过滤阈值前，建议先保留默认值完成小规模测试，并同时检查中间 VCF、mapping QC 和 locus 占有率。

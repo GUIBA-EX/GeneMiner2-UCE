@@ -1,177 +1,320 @@
-# Command Line Interface
+# GeneMiner2-UCE Command-Line Guide
 
-This repository contains only the command-line GeneMiner2 workflow. GUI project files, GUI documentation, screenshots, and bundled demo datasets have been removed.
+GeneMiner2-UCE is a command-line workflow for UCEs and other phylogenetic markers. This repository does not include the former GUI, bundled demonstration data, or legacy graphical documentation.
 
-## Building from Source
+## 1. Building from source
 
-Building the standalone CLI bundle requires a C++ compiler, Python, PyInstaller, and either Cargo/Rust (recommended) or Haxe 4. When Cargo is available, `make` builds the Rust primary and secondary filters. Without Cargo, the primary filter falls back to Haxe/C++ and the secondary filter to Python/PyInstaller. Real analyses should use the bundled `cli/geneminer2` entry point after `make`. Please refer to [Usage](#usage) for command-line parameters.
+### 1.1 Build dependencies
 
-First, install the default C++ compiler and [zlib](https://zlib.net/) for the platform. On Ubuntu 20.04 and later, this can be done as follows:
+A complete build requires:
 
-```
+- a C/C++ compiler and [zlib](https://zlib.net/);
+- [Rust and Cargo](https://www.rust-lang.org/tools/install/);
+- Python 3.11, Cython, PyInstaller, Biopython, NumPy, SciPy, pandas, matplotlib, and seaborn.
+
+Rust/Cargo is required for the complete current build, including the primary read filter, secondary filter, and population workflow. The Haxe source remains available only as a compatible implementation of the primary filter; it does not replace the complete Rust build.
+
+On Ubuntu, first install the system dependencies:
+
+```bash
 sudo apt install build-essential zlib1g zlib1g-dev
 ```
 
-Advanced users can install [zlib-ng](https://github.com/zlib-ng/zlib-ng) or [cloudflare-zlib](https://github.com/cloudflare/zlib) in place of zlib to improve performance.
+Then create the Python environment:
 
-Second, install [Rust and Cargo](https://www.rust-lang.org/tools/install). If Rust is not installed, install [Haxe 4](https://haxe.org/) and [configure the C++ target](https://haxe.org/manual/target-cpp-getting-started.html) instead. On Ubuntu 24.04 and later, the Haxe fallback can be installed with:
-
-```
-sudo apt install haxe
-haxelib setup ~/haxelib
-haxelib install hxcpp
-```
-
-Third, install Python dependencies. If conda is available, run the following commands. Otherwise, it would be necessary to install them manually using the system package manager.
-
-```
-conda create -c conda-forge -n geneminer python=3.11 numpy=2.1.3 biopython cython matplotlib pandas seaborn pyinstaller scipy setuptools wheel
+```bash
+conda create -c conda-forge -n geneminer \
+  python=3.11 numpy=2.1.3 biopython cython matplotlib \
+  pandas seaborn pyinstaller scipy setuptools wheel
 conda activate geneminer
 ```
 
-Finally, download the source code of this fork and build the binaries:
+### 1.2 Runtime dependencies
 
+The phylogenetic workflow calls a subset of the following external programs, depending on the selected stages:
+
+```bash
+conda install -c bioconda \
+  aster blast clustalo fasttree iqtree mafft magicblast minimap2 \
+  muscle raxml-ng trimal veryfasttree
 ```
+
+Optional and population-specific tools:
+
+- `--alignment-filter alifilter` requires a separate AliFilter installation with `AliFilter` in `PATH`.
+- `population` requires `minibwa`, samtools, bcftools, and PLINK 1.9.
+- ADMIXTURE performs ancestry analysis. If it is absent, population analysis still completes cohort-reference construction, VCF generation, PLINK export, and PCA, while recording its status as `unavailable`.
+
+Population executables are located through `PATH` by default. Override them individually with `--population-minibwa`, `--population-samtools`, `--population-bcftools`, `--population-plink`, and `--population-admixture`.
+
+### 1.3 Download and build
+
+```bash
 git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2-UCE.git
 cd GeneMiner2-UCE
 make
 ```
 
-The binaries are placed under the `cli` directory. Run `cli/geneminer2 -h` to view the help messages. Several important tools must be available at run time. With conda, these tools can be installed as follows:
+The generated entry point is:
 
+```bash
+cli/geneminer2 -h
 ```
-conda install -c bioconda aster blast clustalo fasttree iqtree mafft magicblast minimap2 muscle raxml-ng trimal veryfasttree
-```
 
-AliFilter can be used as an optional alignment filtering program. It is not installed by the command above; download the AliFilter executable separately and make sure `AliFilter` is available in `PATH` before using `--alignment-filter alifilter`.
+Run `make` again after updating the source.
 
-The `population` subcommand additionally requires `minibwa`, samtools, bcftools, and PLINK 1.9. ADMIXTURE is an optional ancestry-analysis dependency; when it is missing, the workflow still generates VCF, PLINK, and PCA outputs. Each executable must be available in `PATH`, or its location can be supplied with `--population-minibwa`, `--population-samtools`, `--population-bcftools`, `--population-plink`, or `--population-admixture`.
+## 2. Input files
 
-## Usage
+Every command requires:
 
-To run an analysis, GeneMiner2 requires a tab-delimited sample list and reference sequences in FASTA format. The sample list has the format `<Species Name><Tab><Read File 1>` (single read) or `<Species Name><Tab><Read File 1><Tab><Read File 2>` (paired-end reads), each line denoting a sample.
+- `-f FILE`: tab-delimited sample table;
+- `-r DIR`: reference-sequence directory;
+- `-o DIR`: output directory.
 
-For paired-end reads, a sample list looks as follows:
+### 2.1 Sample table
 
-```
+Each row represents one sample. Single-end data use two columns; paired-end data use three:
+
+```text
 Sample_A	/data/reads/Sample_A_R1.fq.gz	/data/reads/Sample_A_R2.fq.gz
 Sample_B	/data/reads/Sample_B_R1.fq.gz	/data/reads/Sample_B_R2.fq.gz
 Sample_C	/data/reads/Sample_C_R1.fq.gz	/data/reads/Sample_C_R2.fq.gz
 ```
 
-The reference sequences have to be under a separate directory. For each gene, place all of its reference sequences in `<Gene Name>.fasta`. For example, to extract matK and psbA genes, create `matK.fasta` and `psbA.fasta` under an empty directory, and write reference sequences into the respective file.
+Absolute paths are recommended. Sample names must be unique. Population analysis writes a manifest linking the original names to internal directory and VCF sample IDs.
 
-Next, assuming the sample list is saved to `/home/user/project/samples.tsv`, reference loci are saved under `/home/user/project/references`, and the desired output location is `/home/user/project/output`, run GeneMiner2 with default settings:
+### 2.2 Reference directory
 
-```
-cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output
-```
+Use one FASTA file per locus; the file name becomes the locus name. A file may contain one or several reference sequences:
 
-GeneMiner2 will build a coalescent tree at `/home/user/project/output/Coalescent.tree`.
-
-When `--assembly-mode uce` is used without explicit subcommands, the default workflow skips the reference-based `trim` step and runs `filter refilter assemble combine tree`. This prevents newly recovered UCE flanking regions from being trimmed again during reference-based trimming. Add the `trim` subcommand explicitly if reference-based trimming is still desired.
-
-### Population-genetic analysis
-
-The `population` workflow derives an unphased diploid SNP matrix from UCE assemblies and the original reads of multiple samples. Its primary use cases are PCA, ADMIXTURE, ancestry comparisons, and species delimitation. Before it is run, every sample must have completed UCE assembly, with `uce_assembly_summary.csv`, `results/`, and the original reads listed in the sample table still available.
-
-The workflow has four core stages: select one cohort-reference contig per locus from accepted assemblies; map every sample uniformly to that reference with minibwa; jointly call and filter variants with bcftools; and select one representative SNP per UCE while retaining all-SNP and LD-pruned comparison panels. PLINK then runs PCA on all three panels, and ADMIXTURE analyzes the one-SNP-per-UCE primary panel by default.
-
-This mode reports unphased genotypes, not two complete haplotype sequences. It is suitable for population structure and species delimitation, but it does not replace phasing when haplotype sequences, recombination information, or gene trees are required. Before interpreting results, inspect mapping quality, sample missingness, cohort-reference contributions, and PCA concordance among the three SNP panels.
-
-Command line parameters:
-
-- `-f`: Sample list in tsv format
-- `-r`: Reference directory
-- `-o`: Output directory
-- `-p`: Number of parallel processes
-- `--max-reads`: Max million reads per file, disabled by default
-- `-kf`: Filter k-mer size
-- `-s`: Filter step size
-- `--reuse-reference-cache`: Reuse fingerprinted reference k-mer indexes across runs instead of rebuilding them.
-- `--reference-cache-dir`: Directory used by `--reuse-reference-cache`. The default is `output/.gm2_reference_cache`.
-- `-ka`: Assembly k-mer size, automatic by default
-- `--min-ka`: Minimum auto-estimated assembly k-mer size
-- `--max-ka`: Maximum auto-estimated assembly k-mer size
-- `-e`: Error threshold
-- `-sb`: Soft boundary (`0`, `auto` or `unlimited`)
-- `-i`: Search depth
-- `--assembly-mode`: Assembly mode (`reference` or `uce`). `reference` is the default and preserves the existing reference-guided assembly and boundary control; `uce` relaxes reference-boundary trimming and prioritizes longer read-supported UCE flanking sequences.
-- In UCE assembly mode, re-filtering keeps paired-end mates together when either mate passes the locus filter. This helps retain flanking reads paired with short UCE probes.
-- `--uce-side-candidates`: Number of one-sided branch candidates combined during UCE assembly. Larger values can expose longer low-support flanks but increase runtime and the number of candidate paths.
-- `--uce-max-contig-length`: Maximum UCE contig length kept before scoring. The default is `5000`; use `0` to disable.
-- `--uce-min-read-density`: Minimum `read_count / contig_length` for long UCE contigs before scoring. The default is `0.003`.
-- `--uce-density-check-min-length`: Minimum contig length where the UCE read-density guardrail applies. The default is `1000`.
-- `--uce-max-depth-cv`: Optional maximum k-mer depth coefficient of variation for UCE contigs. The default is `0`, which disables this guardrail.
-- `--uce-max-depth-ratio`: Optional maximum max/median k-mer depth ratio for UCE contigs. The default is `0`, which disables this guardrail.
-- `--uce-rescue-reads`: UCE mode only. Run one additional raw-read recruitment round using preliminary contigs plus the original references, then re-filter and re-assemble.
-- UCE raw-read rescue uses controlled sample-level parallelism: up to four samples are rescued concurrently, with up to four threads per sample, and it scales down automatically when `-p` is lower.
-- `--uce-rescue-min-contig-length`: Minimum preliminary contig length used for UCE raw-read rescue.
-- `--uce-rescue-min-density-ratio`: Minimum rescue/before read-density ratio kept after UCE raw-read rescue. The default is `0.5`; loci below this ratio are restored to the first-round contig.
-- `population`: Build a cohort UCE reference from existing assemblies, map all samples uniformly, jointly call variants, and generate population-genetic panels.
-- `--population-reference-strategy`: Representative selection for the cohort reference. `sqcl-longest` (default) chooses the longest eligible contig and uses read-support metrics for ties; `supported` prioritizes supported span, breadth, and unique reads.
-- `--population-min-mapq` / `--population-min-baseq`: Minimum mapping and base qualities for joint calling (both default to `20`).
-- `--population-min-dp` / `--population-min-gq`: Set sample genotypes below these thresholds to missing (defaults: `5` and `20`).
-- `--population-min-qual`: Minimum site QUAL (default: `20`).
-- `--population-min-call-rate`: Minimum non-missing genotype fraction per site (default: `0.8`).
-- `--population-min-mac`: Minimum minor allele count (default: `2`).
-- `--population-ld-window` / `--population-ld-step` / `--population-ld-r2`: PLINK LD-pruning settings (defaults: `50`, `5`, and `0.2`).
-- `--population-admixture-k-min` / `--population-admixture-k-max`: ADMIXTURE K range (default: `2` through `6`); maximum K is capped at the sample count.
-- `--population-admixture-cv`: ADMIXTURE cross-validation folds (default: `10`), capped at the sample count.
-- `--population-skip-mark-duplicates`: Skip samtools `fixmate/markdup`.
-- `--population-skip-plink`: Do not generate PLINK, PCA, LD-pruned, or ADMIXTURE outputs.
-- `--population-skip-admixture`: Generate PLINK and PCA outputs without running ADMIXTURE.
-- `--population-stop-after`: Stop after `reference`, `mapping`, `calling`, or `selection` for inspection and staged debugging. The default completes selection and downstream structure analyses.
-- `-c`: Consensus threshold (as a decimal, between 0.0 and 1.0)
-- `-ts`: Trim source (`assembly` or `consensus`)
-- `-tm`: Trim method (`all`, `longest`, `terminal` or `isoform`)
-- `-tr`: Retention length threshold (as a decimal, between 0.0 and 1.0)
-- `-cs`: Source of combine results (`assembly`, `consensus` or `trimmed`)
-- `--msa-program`: `mafft`, `muscle` or `clustalo`
-- `--msa-threads`: Threads used by each multiple-sequence-alignment job (default = 1). GeneMiner2 limits concurrent alignment jobs so the total requested alignment threads do not exceed `-p`.
-- `--alignment-filter`: Alignment column filtering program before tree reconstruction (`trimal`, `alifilter` or `none`; default = `trimal`)
-- `--filter-processes`: Maximum number of concurrent trimAl or AliFilter jobs (default = `-p`)
-- `--alifilter-model`: Optional AliFilter `model.json` path when `--alignment-filter alifilter` is used. Omit this option, or set it to `default`, to use AliFilter's built-in default model.
-- `--strict-combine-errors`: Stop `combine` if any locus fails during multiple-sequence alignment, alignment cleanup, or alignment filtering. By default, failed loci are skipped with a warning.
-- `--no-trimal`: Deprecated alias for `--alignment-filter none`
-- `stats`: Optional subcommand that summarizes UCE recovery after a run. It writes sample-level, locus-level, length-matrix, read-count, and filtered-read-count tables.
-- `--stats-no-heatmap`: Do not create statistics heatmaps.
-- `--stats-count-input-reads`: Count input FASTQ reads for `InputReads` and `PctFiltered`; this can be slow for large datasets.
-- `-cd`: Maximum difference after clean-up
-- `-cn`: Minimum number of sequences after clean-up
-- `-m`: `coalescent` or `concatenation`
-- `-b`: Number of bootstrap replicates
-- `--phylo-program`: `fasttree`, `veryfasttree`, `iqtree` or `raxmlng`
-
-For example, after running the command above, you can ask GeneMiner2 to build a concatenation tree based on previous results using `tree` subcommand and `-m concatenation` argument:
-
-```
-cli/geneminer2 tree -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output -m concatenation
+```text
+references/
+  uce-0001.fasta
+  uce-0002.fasta
 ```
 
-After UCE assembly results have been generated, run the population workflow independently with:
+## 3. Subcommands and default workflows
 
+One or more subcommands can be listed in execution order:
+
+| Subcommand | Function |
+| --- | --- |
+| `filter` | Recruit reads using reference k-mers |
+| `refilter` | Refine per-locus read assignment and filtering |
+| `assemble` | Assemble target sequences with the wDBG assembler |
+| `population` | Build a cohort UCE reference and generate SNP, PCA, and ADMIXTURE results |
+| `consensus` | Generate consensus sequences at heterozygous sites |
+| `trim` | Remove flanks relative to reference sequences |
+| `combine` | Merge samples, align loci, clean sequences, and filter alignment columns |
+| `tree` | Infer coalescent or concatenated trees |
+| `stats` | Summarize UCE recovery and optionally generate heatmaps |
+
+When no subcommand is given:
+
+- `--assembly-mode reference` (default) runs `filter refilter assemble trim combine tree`;
+- `--assembly-mode uce` runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval.
+
+Default reference-mode example:
+
+```bash
+cli/geneminer2 \
+  -f /home/user/project/samples.tsv \
+  -r /home/user/project/references \
+  -o /home/user/project/output \
+  -p 8
 ```
-cli/geneminer2 population -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output --assembly-mode uce -p 8 --population-admixture-k-min 2 --population-admixture-k-max 6
+
+## 4. UCE assembly
+
+UCE mode relaxes boundaries imposed by short probes and favors longer flanking sequences that retain read support. During refiltering, a paired-end read pair is retained whenever either mate passes the locus filter.
+
+Basic example:
+
+```bash
+cli/geneminer2 \
+  -f samples.tsv \
+  -r references \
+  -o output \
+  -p 8 \
+  --assembly-mode uce \
+  --uce-rescue-reads
 ```
 
-The primary panel selects one SNP per UCE for PCA and ADMIXTURE. The `all_snps` and `ld_pruned` panels support sensitivity analyses. The workflow reports unphased diploid genotypes and must not be interpreted as recovering two phased haplotypes.
+`--uce-rescue-reads` uses preliminary contigs plus the original references to recruit raw reads again, followed by one additional re-filtering and assembly round. Rescue processes at most four samples concurrently, with up to four threads per sample and an overall limit set by `-p`.
 
-Similarly, it is also possible to ask GeneMiner2 to run specific steps. For example, given these parameters:
+After relaxing `-sb`, `-e`, or the assembly k-mer range, inspect `uce_assembly_summary.csv`, `uce_rescue_summary.csv`, and downstream alignments. See the [output guide](output.md) for details.
 
-| Parameter                  | Value             |
-| -------------------------- | ----------------- |
-| Source Sequence            | Consensus Results |
-| Retention Length Threshold | 50%               |
-| Trim Method                | All Fragments     |
-| Alignment Program          | muscle            |
-| Maximum difference >       | 0.2               |
-| Number of sequences        | 5                 |
+## 5. Population-genetic analysis
 
-The following line runs **Trim With Reference** and **Combine Results**:
+### 5.1 Scope
 
+`population` derives an unphased diploid SNP matrix from UCE assemblies and the original reads of multiple samples. Its principal uses are PCA, ADMIXTURE, ancestry comparison, and species delimitation.
+
+Before running it, each sample must have completed UCE assembly, and the following must remain available:
+
+- `uce_assembly_summary.csv`;
+- accepted UCE contigs under `results/`;
+- the original reads listed in the sample table.
+
+This mode reports unphased genotypes, not two complete haplotype sequences. It does not replace phasing when haplotype sequences, recombination information, or per-locus gene trees are required.
+
+### 5.2 Workflow
+
+1. Pool accepted contigs by locus and build a cohort UCE reference.
+2. Map every sample uniformly to the same reference with minibwa.
+3. Jointly call variants with bcftools and apply genotype- and site-level filters.
+4. Generate all-SNP, one-SNP-per-UCE, and LD-pruned panels.
+
+PLINK runs PCA on all three panels. ADMIXTURE uses the one-SNP-per-UCE primary panel by default and evaluates cross-validation error across the requested K range.
+
+### 5.3 Example
+
+After UCE assembly is complete, run population analysis independently:
+
+```bash
+cli/geneminer2 population \
+  -f /home/user/project/samples.tsv \
+  -r /home/user/project/references \
+  -o /home/user/project/output \
+  -p 8 \
+  --assembly-mode uce \
+  --population-admixture-k-min 2 \
+  --population-admixture-k-max 6
 ```
-cli/geneminer2 trim combine -f /home/user/project/samples.tsv -r /home/user/project/references -o /home/user/project/output -ts consensus -tm all -tr 0.5 -cd 0.2 -cn 5 --msa-program muscle
+
+Before interpreting ancestry results, inspect:
+
+- mapping rate, coverage breadth, and depth in `population/mapping/mapping_qc.tsv`;
+- whether cohort-reference contributions are concentrated in a few samples in `population/reference/reference_contribution.tsv`;
+- sample and site missingness;
+- agreement among PCA results from the three SNP panels.
+
+## 6. Staged-run examples
+
+Rebuild only a concatenated tree from existing results:
+
+```bash
+cli/geneminer2 tree \
+  -f samples.tsv -r references -o output \
+  -m concatenation --phylo-program iqtree
 ```
 
-The command-line interface accepts decimal values between 0.0 and 1.0 for percentage-like thresholds. Several internal options, such as `--min-coverage`, are also exposed for advanced users.
+Generate consensus sequences, trim them to references, and combine them:
+
+```bash
+cli/geneminer2 consensus trim combine \
+  -f samples.tsv -r references -o output \
+  -c 0.75 -ts consensus -tm all -tr 0.5 \
+  -cs trimmed --msa-program muscle
+```
+
+Generate tables from existing UCE results without plotting heatmaps:
+
+```bash
+cli/geneminer2 stats \
+  -f samples.tsv -r references -o output \
+  --stats-no-heatmap
+```
+
+## 7. Parameter reference
+
+The tables below list the main public options and current defaults. Run `cli/geneminer2 -h` for the complete help associated with the checked-out source.
+
+### 7.1 General input and parallelism
+
+| Option | Description |
+| --- | --- |
+| `-f FILE` | Sample table; required |
+| `-r DIR` | Reference-sequence directory; required |
+| `-o DIR` | Output directory; required |
+| `-p INT` | Total parallel-process limit; default `1` |
+
+### 7.2 Read filtering and refiltering
+
+| Option | Description |
+| --- | --- |
+| `-kf INT` | Filter k-mer size; default `31` |
+| `-s, --step-size INT` | Read-scanning step; default `4` |
+| `--max-reads INT` | Maximum million reads processed per file; `0` means unlimited |
+| `--reuse-reference-cache` | Reuse a fingerprinted reference k-mer index |
+| `--reference-cache-dir DIR` | Reference-cache directory; default `output/.gm2_reference_cache`; requires the preceding option |
+| `--depth-low-water-mark INT` | Below this depth, attempt relaxed read recruitment; default `50` |
+| `--depth-limit INT` | Maximum depth processed during refiltering; default `768` |
+| `--file-size-limit INT` | Refiltering file-size limit; default `6` |
+
+### 7.3 Assembly and UCE options
+
+| Option | Description |
+| --- | --- |
+| `-ka INT` | Assembly k-mer size; default `0` for automatic estimation |
+| `--min-ka INT` / `--max-ka INT` | Automatic-estimation range; defaults `21` / `51` |
+| `-e, --error-threshold INT` | k-mer error threshold; default `2` |
+| `-sb, --soft-boundary VALUE` | Integer, `auto`, or `unlimited`; default `auto` |
+| `-i, --search-depth INT` | Search depth; default `4096` |
+| `--min-coverage INT` | Minimum contig read depth; default `0` |
+| `--assembly-mode MODE` | `reference` or `uce`; default `reference` |
+| `--uce-side-candidates INT` | One-sided branch candidates; default `8`, minimum `3` |
+| `--uce-max-contig-length INT` | Maximum UCE contig length before scoring; default `5000`; `0` disables |
+| `--uce-min-read-density FLOAT` | Minimum unique-read/length ratio for long contigs; default `0.003` |
+| `--uce-density-check-min-length INT` | Minimum contig length for the density guardrail; default `1000` |
+| `--uce-max-depth-cv FLOAT` | Maximum k-mer-depth CV; default `0` disables |
+| `--uce-max-depth-ratio FLOAT` | Maximum/median k-mer-depth ratio; default `0` disables |
+| `--uce-rescue-reads` | Perform one UCE raw-read rescue round |
+| `--uce-rescue-min-contig-length INT` | Minimum rescue-reference contig; default `60` and never below `-kf` |
+| `--uce-rescue-min-density-ratio FLOAT` | Minimum rescue/first-round density retained; default `0.5` |
+
+### 7.4 Population options
+
+| Option | Description |
+| --- | --- |
+| `--population-reference-strategy MODE` | `sqcl-longest` (default) or `supported` |
+| `--population-min-mapq INT` / `--population-min-baseq INT` | Minimum MAPQ / base quality; defaults `20` / `20` |
+| `--population-min-dp INT` / `--population-min-gq INT` | Set lower-quality genotypes to missing; defaults `5` / `20` |
+| `--population-min-qual FLOAT` | Minimum site QUAL; default `20` |
+| `--population-min-call-rate FLOAT` | Minimum non-missing genotype fraction; default `0.8` |
+| `--population-min-mac INT` | Minimum minor allele count; default `2` |
+| `--population-ld-window INT` / `--population-ld-step INT` | LD-pruning window and step; defaults `50` / `5` SNPs |
+| `--population-ld-r2 FLOAT` | LD-pruning r² threshold; default `0.2` |
+| `--population-admixture-k-min INT` / `--population-admixture-k-max INT` | ADMIXTURE K range; defaults `2` / `6`; maximum K is capped at sample count |
+| `--population-admixture-cv INT` | ADMIXTURE CV folds; default `10`, capped at sample count |
+| `--population-stop-after STAGE` | Stop after `reference`, `mapping`, `calling`, or `selection`; default `selection` |
+| `--population-skip-mark-duplicates` | Skip samtools duplicate marking |
+| `--population-skip-plink` | Omit PLINK, PCA, LD-pruned, and ADMIXTURE outputs |
+| `--population-skip-admixture` | Generate PLINK and PCA without running ADMIXTURE |
+| `--population-minibwa PATH` | minibwa executable; default `minibwa` |
+| `--population-samtools PATH` | samtools executable; default `samtools` |
+| `--population-bcftools PATH` | bcftools executable; default `bcftools` |
+| `--population-plink PATH` | PLINK 1.9 executable; default `plink` |
+| `--population-admixture PATH` | ADMIXTURE executable; default `admixture` |
+
+### 7.5 Consensus, trimming, and combining
+
+| Option | Description |
+| --- | --- |
+| `-c, --consensus-threshold FLOAT` | Consensus threshold; default `0.75` |
+| `-ts, --trim-source SOURCE` | `assembly` or `consensus`; default is the preceding stage's output |
+| `-tm, --trim-mode MODE` | `all`, `longest`, `terminal`, or `isoform`; default `terminal` |
+| `-tr, --trim-retention FLOAT` | Reference-trimming retention fraction; default `0` |
+| `-cs, --combine-source SOURCE` | `assembly`, `consensus`, or `trimmed`; default is the preceding stage's output |
+| `-cd, --clean-difference FLOAT` | Maximum acceptable pairwise alignment difference; default `1.0` |
+| `-cn, --clean-sequences INT` | Minimum sequences per alignment; default `0` |
+| `--msa-program PROGRAM` | `clustalo`, `mafft`, or `muscle`; default `mafft` |
+| `--msa-threads INT` | Threads per MSA job; default `1` and cannot exceed `-p` |
+| `--alignment-filter PROGRAM` | `trimal`, `alifilter`, or `none`; default `trimal` |
+| `--filter-processes INT` | Concurrent alignment-filter jobs; default equals `-p` |
+| `--alifilter-model MODEL` | AliFilter model specification or `model.json` path |
+| `--strict-combine-errors` | Stop when any locus fails alignment, cleanup, or filtering |
+| `--no-alignment` | Skip multiple-sequence alignment |
+| `--no-trimal` | Deprecated alias for `--alignment-filter none` |
+
+### 7.6 Tree inference and statistics
+
+| Option | Description |
+| --- | --- |
+| `-m, --tree-method METHOD` | `coalescent` or `concatenation`; default `coalescent` |
+| `-b, --bootstrap INT` | Bootstrap replicates; default `1000` |
+| `--phylo-program PROGRAM` | `raxmlng`, `iqtree`, `fasttree`, or `veryfasttree`; default `fasttree` |
+| `--stats-no-heatmap` | Do not generate UCE statistics heatmaps |
+| `--stats-count-input-reads` | Count input FASTQ reads for `InputReads` and `PctFiltered`; slow on large datasets |
+
+Fractional thresholds use decimals from `0` to `1`. Before changing filters on a full dataset, run a small test with defaults and inspect intermediate VCFs, mapping QC, and locus occupancy.
