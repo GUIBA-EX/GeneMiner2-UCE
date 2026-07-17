@@ -140,6 +140,10 @@ cli/geneminer2 \
   --uce-rescue-reads
 ```
 
+默认的 `--uce-path-strategy backbone` 每个方向只构建一条路径。遇到气泡时，它对每条出边执行受 `--uce-backbone-lookahead` 限制的线性前瞻，优先选择可延伸更远的分支，再用累计 k-mer 支持度打破平局；选定后永久丢弃同一气泡的其他出边，不保存分支栈，也不 backtrack。已访问 k-mer 不会再次进入，因此环路会直接终止。
+
+该策略借鉴 MaSuRCA 的唯一线性延伸和 SPAdes 的局部 bulge 选择思路，但仍保留 GeneMiner2 的 read 支持与深度 guardrails。若需与旧算法做 A/B 对照，使用 `--uce-path-strategy search`；此时 `--uce-side-candidates` 才生效。
+
 `--uce-rescue-reads` 在第一轮组装后，以初步 contig 和原始参考再次招募 raw reads，并只执行一轮 re-filtering 和 assembly。rescue 最多并行处理 4 个样本、每个样本最多使用 4 个线程，并受 `-p` 总量约束。
 
 建议在放宽 `-sb`、`-e` 或 assembly k-mer 范围后检查 `uce_assembly_summary.csv`、`uce_rescue_summary.csv` 和下游 alignment。详细输出见[输出文件说明](output.md)。
@@ -181,6 +185,8 @@ cli/geneminer2 population \
   --population-admixture-k-min 2 \
   --population-admixture-k-max 6
 ```
+
+若使用 `--population-start-at calling` 或 `selection`，程序会先检查所需 BAM/索引或过滤 VCF/索引是否存在；缺失时会报错，而不会静默重跑或混用文件。
 
 正式解释遗传成分前，应检查：
 
@@ -252,9 +258,12 @@ cli/geneminer2 stats \
 | `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
 | `-i, --search-depth INT` | 搜索深度，默认 `4096` |
 | `--min-coverage INT` | contig 最低 read depth，默认 `0` |
+| `--assembler-implementation MODE` | `auto`（默认）先运行 Rust，失败时回退未修改的原始版；`rust` 仅运行 Rust；`original` 直接运行原始版 |
 | `--assembly-mode MODE` | `reference` 或 `uce`；默认 `reference` |
-| `--uce-side-candidates INT` | 每侧参与组合的分支候选数，默认 `8`，最小为 `3` |
-| `--uce-max-contig-length INT` | 进入评分的 UCE contig 最大长度，默认 `5000`；`0` 关闭 |
+| `--uce-path-strategy MODE` | `backbone`（默认）在气泡处提交单一路径且不回溯；`search` 保留旧的分支枚举 |
+| `--uce-backbone-lookahead INT` | backbone 在每个气泡处的线性前瞻步数，默认 `24`，最小为 `1` |
+| `--uce-side-candidates INT` | 仅在 `--uce-path-strategy search` 下使用；每侧候选数默认 `8`，最小为 `3` |
+| `--uce-max-contig-length INT` | 进入评分的 UCE contig 最大长度，默认 `0`（不限制）；可显式设为如 `5000` 以启用上限 |
 | `--uce-min-read-density FLOAT` | 长 contig 的最低唯一 reads/长度，默认 `0.003` |
 | `--uce-density-check-min-length INT` | 启用 density 阈值的最短 contig，默认 `1000` |
 | `--uce-max-depth-cv FLOAT` | k-mer depth CV 上限，默认 `0`，表示关闭 |
@@ -268,6 +277,7 @@ cli/geneminer2 stats \
 | 参数 | 说明 |
 | --- | --- |
 | `--population-reference-strategy MODE` | `sqcl-longest`（默认）或 `supported` |
+| `--population-reference-fasta FILE` | 使用固定外部 FASTA 作为公共参考；文件会复制到 `population/reference/`，不生成按样本的参考贡献统计 |
 | `--population-min-mapq INT` / `--population-min-baseq INT` | 联合检测最低 MAPQ / base quality，默认 `20` / `20` |
 | `--population-min-dp INT` / `--population-min-gq INT` | 低于阈值的基因型设为缺失，默认 `5` / `20` |
 | `--population-min-qual FLOAT` | 最低位点 QUAL，默认 `20` |
@@ -277,6 +287,7 @@ cli/geneminer2 stats \
 | `--population-ld-r2 FLOAT` | LD pruning 的 r² 阈值，默认 `0.2` |
 | `--population-admixture-k-min INT` / `--population-admixture-k-max INT` | ADMIXTURE K 范围，默认 `2` / `6`；最大 K 不超过样本数 |
 | `--population-admixture-cv INT` | ADMIXTURE CV 折数，默认 `10`，不超过样本数 |
+| `--population-start-at STAGE` | 从 `reference`（默认）、`mapping`、`calling` 或 `selection` 开始；后 3 者分别复用已检查的参考、BAM 或过滤 VCF |
 | `--population-stop-after STAGE` | 在 `reference`、`mapping`、`calling` 或 `selection` 后停止；默认 `selection` |
 | `--population-skip-mark-duplicates` | 跳过 samtools duplicate marking |
 | `--population-skip-plink` | 不生成 PLINK、PCA、LD-pruned 或 ADMIXTURE 结果 |

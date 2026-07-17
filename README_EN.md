@@ -178,6 +178,8 @@ The primary read filter now has a Rust implementation under `rust/main_filter_ne
 
 The secondary read filter has a Rust implementation under `rust/main_refilter_new/` with the same command-line arguments and output layout as `scripts/main_refilter_new.py`. When Cargo is available, the build uses the Rust implementation; otherwise it falls back to the Python/PyInstaller version.
 
+The Rust implementation under `rust/main_assembler/` is the default. `--assembler-implementation auto` (the default) runs `cli/bin/main_assembler-rust` first; if the binary is unavailable, exits unsuccessfully, or produces no result, incomplete outputs are removed and the unmodified Git-baseline implementation in `cli/bin/main_assembler-original` is retried automatically. Use `rust` for strict Rust-only execution or `original` to skip Rust. The modified `scripts/main_assembler.py` is not used as the fallback.
+
 The population driver is implemented in `rust/main_population/`. Cohort-reference construction, workflow orchestration, SNP selection, panel reporting, and ADMIXTURE cross-validation parsing are written in Rust; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain validated external executables.
 
 Use `--msa-threads` and `--filter-processes` to control combine-stage parallelism. `--alignment-filter alifilter` selects AliFilter instead of trimAl. AliFilter is not bundled and must be installed separately with its `AliFilter` executable available in `PATH`. Omit `--alifilter-model`, or set it to `default`, to use the built-in model; provide a real `model.json` path only for a custom model.

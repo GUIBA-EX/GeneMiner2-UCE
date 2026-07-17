@@ -63,10 +63,11 @@
 `population` 子命令在已有输出目录下创建 `population/`：
 
 - `sample_manifest.tsv`：原始样本名、GeneMiner2 内部目录名、VCF 样本名、reads 路径和 SE/PE 布局的对应关系。
-- `reference/population_reference.fasta`：所有样本统一 mapping 使用的公共 UCE 参考。
-- `reference/population_reference_provenance.tsv`：每个 locus 的参考来源样本、选择策略、候选数、长度及 reads 支持指标。
-- `reference/reference_contribution.tsv`：每个样本贡献的参考 loci 数及比例，用于检查公共参考是否由少数样本主导。
-- `reference/locus_name_map.tsv`：原始 locus 名和 VCF 安全名称的对应关系。
+- `reference/population_reference.fasta`：所有样本统一 mapping 使用的公共 UCE 参考。使用 `--population-reference-fasta` 时为复制后的外部参考。
+- `reference/population_reference_provenance.tsv`：内部构建参考时，每个 locus 的来源样本、选择策略、候选数、长度及 reads 支持指标。
+- `reference/reference_contribution.tsv`：内部构建参考时，每个样本贡献的参考 loci 数及比例，用于检查公共参考是否由少数样本主导。
+- `reference/locus_name_map.tsv`：内部构建参考时原始 locus 名和 VCF 安全名称的对应关系。
+- `reference/reference_source.tsv`：使用固定外部参考时，记录源文件与复制后的参考路径。
 - `mapping/<sample>.bam` 和索引：minibwa 统一 mapping 后经 samtools 处理的 BAM。
 - `mapping/mapping_qc.tsv`：每个样本的 mapped/properly-paired reads、mapping rate、覆盖广度和平均深度。
 - `variants/cohort.raw.bcf`：联合检测的原始 cohort BCF。
@@ -74,6 +75,7 @@
 - `variants/cohort.genotype_filtered.vcf.gz`：低 DP/GQ 基因型设为缺失后的 VCF。
 - `variants/cohort.tagged.vcf.gz`：补充群体统计标签后的 VCF。
 - `variants/cohort.filtered.vcf.gz`：经过 QUAL、call rate 和 MAC 过滤的分析起点。
+- `variants/variant_qc.tsv`：raw calling、双等位、基因型过滤、标签补充和位点过滤各阶段的位点数与文件路径。
 - `structure/all_snps.vcf.gz` 和同名前缀 PLINK/PCA 文件：保留同一 UCE 内多个 SNP 的高敏感度面板。
 - `structure/one_snp_per_uce.vcf.gz`、`population.{bed,bim,fam}` 和 `population_pca.*`：每个 UCE 按 call rate、QUAL 和 MAC 选择一个代表 SNP 的主面板。
 - `structure/ld_pruned.vcf.gz` 和同名前缀 PLINK/PCA 文件：对全部 SNP 做 LD pruning 的敏感性面板。

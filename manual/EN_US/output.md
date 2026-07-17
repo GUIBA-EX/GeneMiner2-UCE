@@ -63,10 +63,11 @@ Each sample listed in the input table gets a folder under the output directory.
 The `population` subcommand creates `population/` under the existing output directory:
 
 - `sample_manifest.tsv`: Mapping among original sample IDs, GeneMiner2 internal directories, VCF sample IDs, read paths, and SE/PE layouts.
-- `reference/population_reference.fasta`: Cohort UCE reference used for uniform mapping of every sample.
-- `reference/population_reference_provenance.tsv`: Source sample, selection strategy, candidate count, length, and read-support metrics for each reference locus.
-- `reference/reference_contribution.tsv`: Number and fraction of reference loci contributed by each sample, for detecting a reference dominated by a few samples.
-- `reference/locus_name_map.tsv`: Mapping between original and VCF-safe locus names.
+- `reference/population_reference.fasta`: Cohort UCE reference used for uniform mapping of every sample; when `--population-reference-fasta` is used, this is the copied external reference.
+- `reference/population_reference_provenance.tsv`: For internally built references, source sample, selection strategy, candidate count, length, and read-support metrics for each locus.
+- `reference/reference_contribution.tsv`: For internally built references, the number and fraction of loci contributed by each sample.
+- `reference/locus_name_map.tsv`: For internally built references, mapping between original and VCF-safe locus names.
+- `reference/reference_source.tsv`: For fixed external references, the source and materialized-reference paths.
 - `mapping/<sample>.bam` and indexes: minibwa alignments processed by samtools.
 - `mapping/mapping_qc.tsv`: Mapped and properly paired reads, mapping rate, coverage breadth, and mean depth for each sample.
 - `variants/cohort.raw.bcf`: Raw jointly called cohort BCF.
@@ -74,6 +75,7 @@ The `population` subcommand creates `population/` under the existing output dire
 - `variants/cohort.genotype_filtered.vcf.gz`: VCF after low-DP/GQ sample genotypes are set to missing.
 - `variants/cohort.tagged.vcf.gz`: VCF annotated with population summary tags.
 - `variants/cohort.filtered.vcf.gz`: Analysis starting point after QUAL, call-rate, and MAC filters.
+- `variants/variant_qc.tsv`: Variant counts and paths for raw calling, biallelic, genotype-filtered, tagged, and site-filtered stages.
 - `structure/all_snps.vcf.gz` and matching PLINK/PCA files: Sensitive panel retaining multiple SNPs within a UCE.
 - `structure/one_snp_per_uce.vcf.gz`, `population.{bed,bim,fam}`, and `population_pca.*`: Primary panel selecting one representative SNP per UCE by call rate, QUAL, and MAC.
 - `structure/ld_pruned.vcf.gz` and matching PLINK/PCA files: Sensitivity panel obtained by LD pruning all SNPs.

@@ -140,6 +140,10 @@ cli/geneminer2 \
   --uce-rescue-reads
 ```
 
+The default `--uce-path-strategy backbone` builds only one path in each direction. At a bubble it performs a linear look-ahead bounded by `--uce-backbone-lookahead`, prefers the branch that remains extendable for longer, and breaks ties by cumulative k-mer support. Once selected, sibling edges are permanently discarded: there is no branch stack and no backtracking. Previously visited k-mers cannot be re-entered, so cycles terminate.
+
+This combines the linear-extension idea used by MaSuRCA with SPAdes-style local bulge selection while retaining GeneMiner2 read-support and depth guardrails. For an A/B comparison with the legacy algorithm, use `--uce-path-strategy search`; `--uce-side-candidates` applies only to that strategy.
+
 `--uce-rescue-reads` uses preliminary contigs plus the original references to recruit raw reads again, followed by one additional re-filtering and assembly round. Rescue processes at most four samples concurrently, with up to four threads per sample and an overall limit set by `-p`.
 
 After relaxing `-sb`, `-e`, or the assembly k-mer range, inspect `uce_assembly_summary.csv`, `uce_rescue_summary.csv`, and downstream alignments. See the [output guide](output.md) for details.
@@ -252,9 +256,12 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-sb, --soft-boundary VALUE` | Integer, `auto`, or `unlimited`; default `auto` |
 | `-i, --search-depth INT` | Search depth; default `4096` |
 | `--min-coverage INT` | Minimum contig read depth; default `0` |
+| `--assembler-implementation MODE` | `auto` (default) tries Rust then falls back to the unmodified original; `rust` is strict Rust-only; `original` skips Rust |
 | `--assembly-mode MODE` | `reference` or `uce`; default `reference` |
-| `--uce-side-candidates INT` | One-sided branch candidates; default `8`, minimum `3` |
-| `--uce-max-contig-length INT` | Maximum UCE contig length before scoring; default `5000`; `0` disables |
+| `--uce-path-strategy MODE` | `backbone` (default) commits one path at bubbles without backtracking; `search` preserves legacy branch enumeration |
+| `--uce-backbone-lookahead INT` | Linear look-ahead steps per backbone bubble; default `24`, minimum `1` |
+| `--uce-side-candidates INT` | Used only with `--uce-path-strategy search`; default `8`, minimum `3` |
+| `--uce-max-contig-length INT` | Maximum UCE contig length before scoring; default `0` (unlimited); set, for example, `5000` to enable a cap |
 | `--uce-min-read-density FLOAT` | Minimum unique-read/length ratio for long contigs; default `0.003` |
 | `--uce-density-check-min-length INT` | Minimum contig length for the density guardrail; default `1000` |
 | `--uce-max-depth-cv FLOAT` | Maximum k-mer-depth CV; default `0` disables |
@@ -268,6 +275,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | Option | Description |
 | --- | --- |
 | `--population-reference-strategy MODE` | `sqcl-longest` (default) or `supported` |
+| `--population-reference-fasta FILE` | Use a fixed external FASTA as the cohort reference; it is copied into `population/reference/` and has no per-sample contribution table |
 | `--population-min-mapq INT` / `--population-min-baseq INT` | Minimum MAPQ / base quality; defaults `20` / `20` |
 | `--population-min-dp INT` / `--population-min-gq INT` | Set lower-quality genotypes to missing; defaults `5` / `20` |
 | `--population-min-qual FLOAT` | Minimum site QUAL; default `20` |
@@ -277,6 +285,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `--population-ld-r2 FLOAT` | LD-pruning r² threshold; default `0.2` |
 | `--population-admixture-k-min INT` / `--population-admixture-k-max INT` | ADMIXTURE K range; defaults `2` / `6`; maximum K is capped at sample count |
 | `--population-admixture-cv INT` | ADMIXTURE CV folds; default `10`, capped at sample count |
+| `--population-start-at STAGE` | Start at `reference` (default), `mapping`, `calling`, or `selection`; later stages reuse validated existing reference, BAM, or filtered VCF outputs |
 | `--population-stop-after STAGE` | Stop after `reference`, `mapping`, `calling`, or `selection`; default `selection` |
 | `--population-skip-mark-duplicates` | Skip samtools duplicate marking |
 | `--population-skip-plink` | Omit PLINK, PCA, LD-pruned, and ADMIXTURE outputs |

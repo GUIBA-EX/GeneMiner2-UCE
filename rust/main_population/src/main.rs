@@ -48,6 +48,8 @@ struct Args {
     ld_step: usize,
     ld_r2: f64,
     mark_duplicates: bool,
+    reference_fasta: Option<PathBuf>,
+    start_at: Stage,
     stop_after: Stage,
     skip_plink: bool,
     skip_admixture: bool,
@@ -79,6 +81,8 @@ impl Default for Args {
             ld_step: 5,
             ld_r2: 0.2,
             mark_duplicates: true,
+            reference_fasta: None,
+            start_at: Stage::Reference,
             stop_after: Stage::Selection,
             skip_plink: false,
             skip_admixture: false,
@@ -137,6 +141,7 @@ fn print_help() {
          --output DIR              Existing GeneMiner2 output directory\n\
          --samples FILE            Original GeneMiner2 sample TSV\n\
          --reference-strategy STR  sqcl-longest or supported (default: sqcl-longest)\n\
+         --reference-fasta FILE    Use a fixed external cohort reference\n\
          --threads INT             Threads passed to external tools (default: 1)\n\
          --min-mapq INT            Minimum mapping quality (default: 20)\n\
          --min-baseq INT           Minimum base quality (default: 20)\n\
@@ -154,6 +159,7 @@ fn print_help() {
          --admixture-k-min INT     Minimum ADMIXTURE K (default: 2)\n\
          --admixture-k-max INT     Maximum ADMIXTURE K (default: 6)\n\
          --admixture-cv INT        Cross-validation folds (default: 10)\n\
+         --start-at STAGE          reference, mapping, calling, or selection\n\
          --stop-after STAGE        reference, mapping, calling, or selection\n\
          --minibwa PATH            minibwa executable\n\
          --samtools PATH           samtools executable\n\
@@ -205,7 +211,7 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
         process::exit(0);
     }
     if argv.iter().any(|arg| arg == "--version") {
-        println!("main_population 0.4.0");
+        println!("main_population 0.5.0");
         process::exit(0);
     }
 
@@ -220,6 +226,13 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
             "--reference-strategy" => {
                 args.reference_strategy =
                     parse_reference_strategy(&take_value(&argv, &mut i, "--reference-strategy")?)?
+            }
+            "--reference-fasta" => {
+                args.reference_fasta = Some(PathBuf::from(take_value(
+                    &argv,
+                    &mut i,
+                    "--reference-fasta",
+                )?))
             }
             "--threads" => {
                 args.threads = parse_num(take_value(&argv, &mut i, "--threads")?, "--threads")?
@@ -281,6 +294,7 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
             "--stop-after" => {
                 args.stop_after = parse_stage(&take_value(&argv, &mut i, "--stop-after")?)?
             }
+            "--start-at" => args.start_at = parse_stage(&take_value(&argv, &mut i, "--start-at")?)?,
             "--minibwa" => args.minibwa = take_value(&argv, &mut i, "--minibwa")?,
             "--samtools" => args.samtools = take_value(&argv, &mut i, "--samtools")?,
             "--bcftools" => args.bcftools = take_value(&argv, &mut i, "--bcftools")?,
@@ -308,6 +322,9 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
         || args.admixture_cv < 2
     {
         return Err("ADMIXTURE requires 2 <= K-min <= K-max and at least 2 CV folds".into());
+    }
+    if args.start_at > args.stop_after {
+        return Err("--start-at must not be later than --stop-after".into());
     }
     Ok(args)
 }
@@ -676,6 +693,127 @@ fn build_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
     }
     write_sample_manifest(&root.join("sample_manifest.tsv"), samples)?;
     Ok(fasta_path)
+}
+
+fn materialize_external_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
+    let source = args
+        .reference_fasta
+        .as_ref()
+        .ok_or_else(|| "missing --reference-fasta".to_string())?;
+    if !source.is_file() {
+        return Err(format!(
+            "external reference is not a readable file: {}",
+            source.display()
+        ));
+    }
+    let reference_dir = args.output.join("population").join("reference");
+    fs::create_dir_all(&reference_dir)
+        .map_err(|e| format!("unable to create {}: {e}", reference_dir.display()))?;
+    let target = reference_dir.join("population_reference.fasta");
+    if source != &target {
+        fs::copy(source, &target).map_err(|e| {
+            format!(
+                "unable to copy external reference {} to {}: {e}",
+                source.display(),
+                target.display()
+            )
+        })?;
+    }
+    let _ = read_first_fasta(&target)?;
+    let source_path = source.canonicalize().unwrap_or_else(|_| source.clone());
+    fs::write(
+        reference_dir.join("reference_source.tsv"),
+        format!(
+            "reference_mode\tsource_path\tmaterialized_path\nexternal\t{}\t{}\n",
+            source_path.display(),
+            target.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    write_sample_manifest(
+        &args.output.join("population").join("sample_manifest.tsv"),
+        samples,
+    )?;
+    Ok(target)
+}
+
+fn existing_population_reference(args: &Args) -> AppResult<PathBuf> {
+    let reference = args
+        .output
+        .join("population")
+        .join("reference")
+        .join("population_reference.fasta");
+    if !reference.is_file() {
+        return Err(format!(
+            "missing existing population reference: {}; rerun with --population-start-at reference",
+            reference.display()
+        ));
+    }
+    Ok(reference)
+}
+
+fn prepare_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
+    if args.reference_fasta.is_some() {
+        materialize_external_reference(args, samples)
+    } else if args.start_at == Stage::Reference {
+        build_reference(args, samples)
+    } else {
+        existing_population_reference(args)
+    }
+}
+
+fn existing_bams(args: &Args, sample_count: usize) -> AppResult<Vec<PathBuf>> {
+    let list_path = args
+        .output
+        .join("population")
+        .join("mapping")
+        .join("bam.list");
+    let list = File::open(&list_path).map_err(|_| {
+        format!(
+            "missing existing BAM list: {}; rerun with --population-start-at mapping",
+            list_path.display()
+        )
+    })?;
+    let bams: Vec<PathBuf> = BufReader::new(list)
+        .lines()
+        .map(|line| line.map(PathBuf::from).map_err(|e| e.to_string()))
+        .collect::<AppResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
+    if bams.len() != sample_count {
+        return Err(format!(
+            "existing BAM list has {} entries for {sample_count} samples; rerun with --population-start-at mapping",
+            bams.len()
+        ));
+    }
+    for bam in &bams {
+        let index = PathBuf::from(format!("{}.bai", bam.display()));
+        if !bam.is_file() || !index.is_file() {
+            return Err(format!(
+                "missing existing BAM or index for {}; rerun with --population-start-at mapping",
+                bam.display()
+            ));
+        }
+    }
+    Ok(bams)
+}
+
+fn existing_filtered_vcf(args: &Args) -> AppResult<PathBuf> {
+    let filtered = args
+        .output
+        .join("population")
+        .join("variants")
+        .join("cohort.filtered.vcf.gz");
+    let csi = PathBuf::from(format!("{}.csi", filtered.display()));
+    let tbi = PathBuf::from(format!("{}.tbi", filtered.display()));
+    if !filtered.is_file() || (!csi.is_file() && !tbi.is_file()) {
+        return Err(format!(
+            "missing indexed filtered VCF: {}; rerun with --population-start-at calling",
+            filtered.display()
+        ));
+    }
+    Ok(filtered)
 }
 
 fn write_sample_manifest(path: &Path, samples: &[Sample]) -> AppResult<()> {
@@ -1128,7 +1266,56 @@ fn call_variants(args: &Args, reference: &Path, bams: &[PathBuf]) -> AppResult<P
         &args.bcftools,
         &["index".into(), "-f".into(), filtered.display().to_string()],
     )?;
+    write_variant_qc(
+        args,
+        &[
+            ("raw_called_variants", &raw),
+            ("biallelic_snps", &biallelic),
+            ("genotype_filtered", &genotype_filtered),
+            ("tagged", &tagged),
+            ("site_filtered", &filtered),
+        ],
+    )?;
     Ok(filtered)
+}
+
+fn indexed_variant_count(args: &Args, path: &Path) -> AppResult<u64> {
+    let output = Command::new(&args.bcftools)
+        .args(["index", "-n", &path.display().to_string()])
+        .output()
+        .map_err(|e| format!("unable to run bcftools index -n: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "bcftools index -n failed for {} with status {}",
+            path.display(),
+            output.status
+        ));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| format!("invalid variant count reported for {}", path.display()))
+}
+
+fn write_variant_qc(args: &Args, stages: &[(&str, &Path)]) -> AppResult<()> {
+    let path = args
+        .output
+        .join("population")
+        .join("variants")
+        .join("variant_qc.tsv");
+    let mut out = BufWriter::new(File::create(&path).map_err(|e| e.to_string())?);
+    writeln!(out, "stage\tvariant_records\tpath").map_err(|e| e.to_string())?;
+    for (stage, variant_path) in stages {
+        writeln!(
+            out,
+            "{}\t{}\t{}",
+            stage,
+            indexed_variant_count(args, variant_path)?,
+            variant_path.display()
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn genotype_filter_expression(args: &Args) -> String {
@@ -1713,19 +1900,30 @@ fn run_admixture(args: &Args, primary_bed: &Path, sample_count: usize) -> AppRes
 
 fn run(args: &Args) -> AppResult<()> {
     let samples = read_samples(&args.samples_tsv)?;
-    let reference = build_reference(args, &samples)?;
+    let reference = prepare_reference(args, &samples)?;
     println!("Population reference: {}", reference.display());
     if args.stop_after == Stage::Reference {
         return Ok(());
     }
-    let bams = map_samples(args, &samples, &reference)?;
+
+    let bams = if args.start_at <= Stage::Mapping {
+        map_samples(args, &samples, &reference)?
+    } else {
+        existing_bams(args, samples.len())?
+    };
     if args.stop_after == Stage::Mapping {
         return Ok(());
     }
-    let filtered = call_variants(args, &reference, &bams)?;
+
+    let filtered = if args.start_at <= Stage::Calling {
+        call_variants(args, &reference, &bams)?
+    } else {
+        existing_filtered_vcf(args)?
+    };
     if args.stop_after == Stage::Calling {
         return Ok(());
     }
+
     let all_vcf = prepare_all_snp_panel(args, &filtered)?;
     let final_vcf = select_one_snp(args, &all_vcf)?;
     println!("All-SNP VCF: {}", all_vcf.display());
@@ -1946,8 +2144,10 @@ printf 'CV error (K=%s): 0.%s\n' "$last" "$last"
 
     #[test]
     fn minibwa_uses_native_map_cli_and_preserves_read_group() {
-        let mut args = Args::default();
-        args.threads = 4;
+        let args = Args {
+            threads: 4,
+            ..Args::default()
+        };
         let sample = Sample {
             original: "Coral 1".into(),
             internal: "1_Coral_1".into(),
@@ -1962,6 +2162,51 @@ printf 'CV error (K=%s): 0.%s\n' "$last" "$last"
         assert!(argv[4].contains("\\t"));
         assert!(!argv[4].contains('\t'));
         assert_eq!(&argv[5..], ["ref.fa", "r1.fq.gz", "r2.fq.gz"]);
+    }
+
+    #[test]
+    fn external_reference_is_materialized_with_a_source_manifest() {
+        let root = env::temp_dir().join(format!("gm2-population-reference-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("external.fasta");
+        fs::write(&source, ">uce_1\nACGT\n").unwrap();
+        let args = Args {
+            output: root.join("out"),
+            reference_fasta: Some(source.clone()),
+            ..Args::default()
+        };
+        let samples = vec![Sample {
+            original: "A".into(),
+            internal: "1_A".into(),
+            vcf_id: "A".into(),
+            read1: "a.fq".into(),
+            read2: "a.fq".into(),
+        }];
+        let reference = prepare_reference(&args, &samples).unwrap();
+        assert_eq!(fs::read_to_string(&reference).unwrap(), ">uce_1\nACGT\n");
+        let source_manifest =
+            fs::read_to_string(root.join("out/population/reference/reference_source.tsv")).unwrap();
+        assert!(source_manifest.contains("external"));
+        assert!(source_manifest.contains(&source.display().to_string()));
+        assert!(root.join("out/population/sample_manifest.tsv").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn start_stage_must_not_follow_stop_stage() {
+        let error = parse_args(vec![
+            "--output".into(),
+            "out".into(),
+            "--samples".into(),
+            "samples.tsv".into(),
+            "--start-at".into(),
+            "calling".into(),
+            "--stop-after".into(),
+            "mapping".into(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("--start-at must not be later"));
     }
 
     #[test]
@@ -2132,9 +2377,13 @@ case "$cmd" in
     cp "$last" "$out"
     ;;
   index)
-    last=""
-    for value in "$@"; do last="$value"; done
-    : > "$last.csi"
+    if [ "$1" = "-n" ]; then
+      printf '3\n'
+    else
+      last=""
+      for value in "$@"; do last="$value"; done
+      : > "$last.csi"
+    fi
     ;;
 esac
 "##,
@@ -2198,6 +2447,10 @@ fi
             fs::read_to_string(root.join("out/population/mapping/mapping_qc.tsv")).unwrap();
         assert!(mapping_qc.contains("mapping_rate"));
         assert!(mapping_qc.contains("1.000000"));
+        let variant_qc =
+            fs::read_to_string(root.join("out/population/variants/variant_qc.tsv")).unwrap();
+        assert!(variant_qc.contains("raw_called_variants\t3"));
+        assert!(variant_qc.contains("site_filtered\t3"));
         fs::remove_dir_all(root).unwrap();
     }
 }

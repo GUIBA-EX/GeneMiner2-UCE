@@ -50,6 +50,8 @@ class UceRescueAssemblerReferenceTests(unittest.TestCase):
             min_coverage=0,
             assembly_mode="uce",
             uce_side_candidates=8,
+            uce_path_strategy="search",
+            uce_backbone_lookahead=7,
             uce_max_contig_length=5000,
             uce_min_read_density=0.003,
             uce_density_check_min_length=1000,
@@ -71,6 +73,15 @@ class UceRescueAssemblerReferenceTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-o") + 1], "/tmp/out/sample")
         self.assertEqual(cmd[cmd.index("-p") + 1], "4")
         self.assertEqual(cmd[cmd.index("--uce-max-contig-length") + 1], "5000")
+        self.assertEqual(cmd[cmd.index("--uce-path-strategy") + 1], "search")
+        self.assertEqual(cmd[cmd.index("--uce-backbone-lookahead") + 1], "7")
+
+        original_cmd = build_assembler_command(
+            "main_assembler-original", args, "/tmp/out/sample",
+            "/tmp/out/sample/uce_rescue_refs", "10000", 4, original=True,
+        )
+        self.assertNotIn("--uce-path-strategy", original_cmd)
+        self.assertNotIn("--uce-backbone-lookahead", original_cmd)
 
     def test_assembler_command_forwards_reference_cache_dir(self):
         args = SimpleNamespace(

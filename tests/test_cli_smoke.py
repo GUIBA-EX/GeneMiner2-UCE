@@ -24,6 +24,10 @@ class CliSmokeTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--assembly-mode", proc.stdout)
+        self.assertIn("--assembler-implementation", proc.stdout)
+        self.assertIn("{auto,rust,original}", proc.stdout)
+        self.assertIn("--uce-path-strategy", proc.stdout)
+        self.assertIn("--uce-backbone-lookahead", proc.stdout)
         self.assertIn("--uce-rescue-reads", proc.stdout)
         self.assertIn("--uce-rescue-min-density-ratio", proc.stdout)
         self.assertIn("--uce-max-contig-length", proc.stdout)
@@ -53,7 +57,8 @@ class CliSmokeTests(unittest.TestCase):
             population_min_mapq=20, population_min_baseq=20,
             population_min_dp=5, population_min_gq=20,
             population_min_qual=20.0, population_min_call_rate=0.8,
-            population_min_mac=2, population_stop_after="selection",
+            population_min_mac=2, population_start_at="reference", population_stop_after="selection",
+            population_reference_fasta=None,
             population_ld_window=50, population_ld_step=5, population_ld_r2=0.2,
             population_admixture_k_min=2, population_admixture_k_max=6,
             population_admixture_cv=10,
@@ -69,6 +74,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("--minibwa", command)
         self.assertEqual(command[command.index("--minibwa") + 1], "minibwa")
         self.assertEqual(command[command.index("--reference-strategy") + 1], "sqcl-longest")
+        self.assertEqual(command[command.index("--start-at") + 1], "reference")
         self.assertEqual(command[command.index("--ld-r2") + 1], "0.2")
         self.assertEqual(command[command.index("--admixture") + 1], "admixture")
         self.assertIn("--skip-plink", command)

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5 — Rust UCE assembly and reusable population analysis
+
+- Added the high-performance Rust UCE assembler with compact rolling k-mers, a bounded non-backtracking backbone path strategy, reference caching, and parallel per-locus assembly.
+- Made Rust assembly the default via `--assembler-implementation auto`; failed or unavailable Rust runs now clean incomplete outputs and retry the unmodified Git-baseline Python assembler.
+- Retained strict `rust` and direct `original` assembler modes for reproducibility and diagnosis.
+- Added fixed external cohort-reference support, checked resume stages (`mapping`, `calling`, and `selection`), and per-stage variant-count QC to the population workflow.
+- Added reusable tools for summarizing UCE validation runs and comparing a population pseudo-reference with an external reference.
+- Updated Chinese and English command-line/output documentation and regression coverage.
+
 ## v0.4 — Population analysis
 
 - Added the Rust `population` workflow: cohort-reference construction, uniform minibwa mapping, joint bcftools variant calling, and one representative SNP per UCE.

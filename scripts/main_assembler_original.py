@@ -456,84 +456,6 @@ def Get_Forward_Contig_v6(_dict, seed, kmer_size, iteration = 1024):
         node_distance += 1
     return contigs, kmer_set, pos_list, int(best_kmc_sum)
 
-
-def Get_Forward_Uce_Backbone(_dict, seed, kmer_size, iteration=1024, lookahead=24):
-    """Build one UCE extension without branch-stack backtracking.
-
-    At a bubble, inspect a bounded greedy continuation for every outgoing edge,
-    commit the first edge of the longest trace, and discard the alternatives.
-    Visited k-mers are never revisited, so cycles terminate instead of causing
-    repeated exploration.
-    """
-    mask = (1 << ((kmer_size << 1) - 2)) - 1
-    lookahead = max(1, lookahead)
-    path = [seed]
-    path_set = {seed}
-    discarded_kmers = set()
-    kmer_set = {seed}
-    pos_list = []
-    weights = deque()
-    bases = deque()
-
-    def outgoing(current, blocked):
-        next_kmer = (current & mask) << 2
-        nodes = [
-            (candidate, _dict[candidate][1],
-             _dict[candidate][0] + _dict[candidate][3])
-            for candidate in range(next_kmer, next_kmer + 4)
-            if candidate in _dict and candidate not in blocked
-            and candidate not in discarded_kmers
-        ]
-        nodes.sort(key=lambda node: (node[2], node[1] > 0), reverse=True)
-        return nodes
-
-    def trace(first_node):
-        trace_nodes = []
-        trace_seen = set(path_set)
-        node = first_node
-        for _ in range(lookahead):
-            if node[0] in trace_seen:
-                break
-            trace_nodes.append(node)
-            trace_seen.add(node[0])
-            following = outgoing(node[0], trace_seen)
-            if not following:
-                break
-            # Look-ahead is deliberately linear: no nested fork or backtrack.
-            node = following[0]
-        return trace_nodes
-
-    for _ in range(max(0, iteration)):
-        nodes = outgoing(path[-1], path_set)
-        if not nodes:
-            break
-        if len(nodes) == 1:
-            chosen = nodes[0]
-        else:
-            traces = [trace(node) for node in nodes]
-            winning_trace = max(
-                traces,
-                key=lambda candidate: (
-                    len(candidate),
-                    sum(node[2] for node in candidate),
-                    candidate[0][2],
-                ),
-            )
-            chosen = winning_trace[0]
-            discarded_kmers.update(
-                node[0] for node in nodes if node[0] != chosen[0]
-            )
-
-        kmer, ref_pos, weight = chosen
-        path.append(kmer)
-        path_set.add(kmer)
-        kmer_set.add(kmer)
-        pos_list.append(ref_pos)
-        weights.append(weight)
-        bases.append(kmer & 3)
-    return [(weights, bases)], kmer_set, pos_list, int(sum(weights))
-
-
 def find_position(dq, n):
     for i in range(len(dq) - 1, -1, -1):
         if dq[i] >= n:
@@ -810,7 +732,7 @@ def Format_Contig_Header(contig, assembly_mode, prefix='contig'):
     return header + f'_balance_{contig[CONTIG_FLANK_BALANCE]:.3f}'
 
 
-def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference', uce_side_candidates = 8, uce_guardrails = None, uce_path_strategy='search', uce_backbone_lookahead=24):
+def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference', uce_side_candidates = 8, uce_guardrails = None):
     """
     获取最优的contig
     :param _reads_dict: reads的高质量切片的词典
@@ -822,17 +744,8 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
     :param weight: 没有ref时的默认权重
     :return: contigs的集合，用到所有的kmer的集合，contig的大概位置
     """ 
-    if assembly_mode == 'uce' and uce_path_strategy == 'backbone':
-        contigs_1, kmer_set_1, pos_list_1, weight_1 = Get_Forward_Uce_Backbone(
-            _dict, seed, kmer_size, iteration, uce_backbone_lookahead)
-        contigs_2, kmer_set_2, pos_list_2, weight_2 = Get_Forward_Uce_Backbone(
-            _dict, Reverse_Int(seed, kmer_size), kmer_size, iteration,
-            uce_backbone_lookahead)
-    else:
-        contigs_1, kmer_set_1, pos_list_1, weight_1 = Get_Forward_Contig_v6(
-            _dict, seed, kmer_size, iteration)
-        contigs_2, kmer_set_2, pos_list_2, weight_2 = Get_Forward_Contig_v6(
-            _dict, Reverse_Int(seed, kmer_size), kmer_size, iteration)
+    contigs_1, kmer_set_1, pos_list_1, weight_1 = Get_Forward_Contig_v6(_dict, seed, kmer_size, iteration)
+    contigs_2, kmer_set_2, pos_list_2, weight_2 = Get_Forward_Contig_v6(_dict, Reverse_Int(seed, kmer_size), kmer_size, iteration)
     # 清理位置列表
     pos_list = [x for x in chain(pos_list_1, pos_list_2) if x > 0 and x < 1000]
     # 获取位置中位数
@@ -843,10 +756,7 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
     processed_contigs = []
     if not contigs_1_16: contigs_1_16.append(['',0,0])
     if not contigs_2_16: contigs_2_16.append(['',0,0])
-    candidate_limit = (
-        1 if assembly_mode == 'uce' and uce_path_strategy == 'backbone'
-        else uce_side_candidates if assembly_mode == 'uce' else 3
-    )
+    candidate_limit = uce_side_candidates if assembly_mode == 'uce' else 3
     for l in contigs_2_16[:candidate_limit]:
         for r in contigs_1_16[:candidate_limit]:
             c = Reverse_Complement_ACGT(l[0]) + Int_To_Seq(seed, kmer_size) + r[0]
@@ -1148,9 +1058,7 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
         org_contigs, kmer_set, contig_pos = Get_Contig_v6(
             reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min,
             iteration=iteration, soft_boundary=soft_boundary, assembly_mode=args.assembly_mode,
-            uce_side_candidates=args.uce_side_candidates, uce_guardrails=uce_guardrails,
-            uce_path_strategy=args.uce_path_strategy,
-            uce_backbone_lookahead=args.uce_backbone_lookahead)
+            uce_side_candidates=args.uce_side_candidates, uce_guardrails=uce_guardrails)
         seed_list = [item for item in seed_list if (item[0] not in kmer_set) and (Reverse_Int(item[0], current_ka) not in kmer_set)]
         for contig in org_contigs:
             contig_record = Build_Contig_Record(contig, len(seed_set & kmer_set), contig_pos)
@@ -1249,9 +1157,7 @@ if __name__ == '__main__':
     pars.add_argument('-p', '--processes', metavar='<int>', type=int, help='Number of processes for multiprocessing', default= 1)#max(multiprocessing.cpu_count()-1,2))
     pars.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode')
     pars.add_argument('--uce-side-candidates', dest='uce_side_candidates', metavar='<int>', type=int, default=8, help='''number of one-sided branch candidates to combine in UCE mode''')
-    pars.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path strategy: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration')
-    pars.add_argument('--uce-backbone-lookahead', dest='uce_backbone_lookahead', metavar='<int>', type=int, default=24, help='bounded greedy look-ahead per UCE backbone branch (default = 24)')
-    pars.add_argument('--uce-max-contig-length', dest='uce_max_contig_length', metavar='<int>', type=int, default=0, help='''maximum UCE contig length kept before scoring; 0 disables''')
+    pars.add_argument('--uce-max-contig-length', dest='uce_max_contig_length', metavar='<int>', type=int, default=5000, help='''maximum UCE contig length kept before scoring; 0 disables''')
     pars.add_argument('--uce-min-read-density', dest='uce_min_read_density', metavar='<float>', type=float, default=0.003, help='''minimum uniquely placed read_count/length for long UCE contigs''')
     pars.add_argument('--uce-density-check-min-length', dest='uce_density_check_min_length', metavar='<int>', type=int, default=1000, help='''minimum UCE contig length where read-density guardrail applies''')
     pars.add_argument('--uce-max-depth-cv', dest='uce_max_depth_cv', metavar='<float>', type=float, default=0, help='''optional maximum kmer depth coefficient of variation for UCE contigs; 0 disables''')
@@ -1259,7 +1165,6 @@ if __name__ == '__main__':
     pars.add_argument('--assembler-reference-cache-dir', dest='assembler_reference_cache_dir', metavar='<str>', default=None, help='''optional directory for cached assembler reference k-mer dictionaries''')
     args = pars.parse_args()
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
-    args.uce_backbone_lookahead = max(args.uce_backbone_lookahead, 1)
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
     args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
 

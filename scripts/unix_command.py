@@ -610,7 +610,7 @@ def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1,
 
     return dict_cmd, reads_cmd
 
-def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr):
+def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, original=False):
     command = [
         assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
         '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
@@ -624,6 +624,12 @@ def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_bound
         '--uce-max-depth-cv', str(args.uce_max_depth_cv),
         '--uce-max-depth-ratio', str(args.uce_max_depth_ratio),
     ]
+
+    if not original:
+        command.extend([
+            '--uce-path-strategy', getattr(args, 'uce_path_strategy', 'backbone'),
+            '--uce-backbone-lookahead', str(getattr(args, 'uce_backbone_lookahead', 24)),
+        ])
 
     assembler_cache_dir = getattr(args, 'assembler_reference_cache_dir', None)
     original_ref_dir = getattr(args, 'r', None)
@@ -772,33 +778,61 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         run_refilter = ignore_hook
 
     if do_assemble:
-        assembler_bin = find_executable('main_assembler', internal=True)
+        assembler_implementation = getattr(args, 'assembler_implementation', 'auto')
+        original_assembler_bin = None
+        rust_assembler_bin = None
+
+        if assembler_implementation != 'rust':
+            original_assembler_bin = find_executable('main_assembler-original', internal=True)
+
+        if assembler_implementation != 'original':
+            try:
+                rust_assembler_bin = find_executable('main_assembler-rust', internal=True)
+            except RuntimeError:
+                if assembler_implementation == 'rust':
+                    raise
+                print('Rust assembler is unavailable; using the original Python assembler.', file=sys.stderr)
 
         def run_assembler(name, thr=1, ref_dir=None):
             sample_dir = os.path.join(out_loc, name)
             in_dir = os.path.join(sample_dir, 'filtered')
             out_dir = os.path.join(sample_dir, 'results')
             result_path = os.path.join(sample_dir, 'result_dict.txt')
+            uce_summary_path = os.path.join(sample_dir, 'uce_assembly_summary.csv')
             ref_dir = args.r if ref_dir is None else ref_dir
 
             if not os.path.isdir(in_dir):
                 raise RuntimeError('No successful filter run, cannot assemble')
 
-            if os.path.isdir(out_dir):
-                shutil.rmtree(out_dir, ignore_errors=True)
+            def clear_assembly_outputs():
+                if os.path.isdir(out_dir):
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                for path in (result_path, uce_summary_path):
+                    if os.path.isfile(path):
+                        os.remove(path)
 
-            if os.path.isfile(result_path):
-                os.remove(result_path)
+            def execute_assembler(executable, original=False):
+                clear_assembly_outputs()
+                command = build_assembler_command(
+                    executable, args, sample_dir, ref_dir, soft_boundary, thr, original=original
+                )
+                subprocess.run(command, check=True)
+                if not os.path.isfile(result_path):
+                    raise RuntimeError('Assembly failed to produce result_dict.txt')
 
-            uce_summary_path = os.path.join(sample_dir, 'uce_assembly_summary.csv')
-
-            if os.path.isfile(uce_summary_path):
-                os.remove(uce_summary_path)
-
-            subprocess.run(build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr), check=True)
-
-            if not os.path.isfile(result_path):
-                raise RuntimeError('Assembly failed')
+            if assembler_implementation == 'original' or rust_assembler_bin is None:
+                execute_assembler(original_assembler_bin, original=True)
+            elif assembler_implementation == 'rust':
+                execute_assembler(rust_assembler_bin)
+            else:
+                try:
+                    execute_assembler(rust_assembler_bin)
+                except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+                    print(
+                        f"Rust assembler failed for {name} ({error}); retrying with the original Python assembler.",
+                        file=sys.stderr,
+                    )
+                    execute_assembler(original_assembler_bin, original=True)
 
     else:
         run_assembler = ignore_hook
@@ -1151,6 +1185,7 @@ def run_population(args):
         '--output', args.o.strip(),
         '--samples', args.f,
         '--reference-strategy', args.population_reference_strategy,
+        '--start-at', args.population_start_at,
         '--threads', str(args.p),
         '--min-mapq', str(args.population_min_mapq),
         '--min-baseq', str(args.population_min_baseq),
@@ -1172,6 +1207,9 @@ def run_population(args):
         '--plink', args.population_plink,
         '--admixture', args.population_admixture,
     ]
+
+    if args.population_reference_fasta:
+        command.extend(['--reference-fasta', args.population_reference_fasta])
 
     if args.population_skip_mark_duplicates:
         command.append('--skip-mark-duplicates')
@@ -1968,9 +2006,12 @@ if __name__ == '__main__':
     group_assembly.add_argument('-sb', '--soft-boundary', default='auto', help='Soft boundary (default = auto)', metavar='{INT,auto,unlimited}', type=str)
     group_assembly.add_argument('-i', '--search-depth', default=4096, help='Search depth', metavar='INT', type=int)
     group_assembly.add_argument('--min-coverage', default=0, help='Minimum read depth required for contig generation', metavar='INT', type=int)
+    group_assembly.add_argument('--assembler-implementation', choices=('auto', 'rust', 'original'), default='auto', help='Assembler implementation: auto tries Rust first and falls back to the unmodified original Python assembler; rust is strict; original skips Rust')
     group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode: reference keeps the default reference-guided behavior; uce preserves read-supported flanks around conserved cores')
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
-    group_assembly.add_argument('--uce-max-contig-length', default=5000, help='Maximum UCE contig length kept before scoring; use 0 to disable (default = 5000)', metavar='INT', type=int)
+    group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path handling: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration (default = backbone)')
+    group_assembly.add_argument('--uce-backbone-lookahead', default=24, help='Greedy look-ahead steps used to choose a UCE backbone edge at each bubble (default = 24)', metavar='INT', type=int)
+    group_assembly.add_argument('--uce-max-contig-length', default=0, help='Maximum UCE contig length kept before scoring; use 0 to disable (default = 0)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-min-read-density', default=0.003, help='Minimum uniquely placed read_count/length for long UCE contigs before scoring (default = 0.003)', metavar='FLOAT', type=float)
     group_assembly.add_argument('--uce-density-check-min-length', default=1000, help='Minimum contig length where the UCE read-density guardrail applies (default = 1000)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-max-depth-cv', default=0, help='Optional maximum k-mer depth coefficient of variation for UCE contigs; 0 disables (default = 0)', metavar='FLOAT', type=float)
@@ -1981,6 +2022,7 @@ if __name__ == '__main__':
 
     group_population = parser.add_argument_group('arguments for population SNP analysis')
     group_population.add_argument('--population-reference-strategy', choices=('sqcl-longest', 'supported'), default='sqcl-longest', help='Public-reference representative selection: SqCL-like longest accepted contig or support-first (default = sqcl-longest)')
+    group_population.add_argument('--population-reference-fasta', default=None, help='Use a fixed external cohort FASTA instead of building a reference from accepted contigs', metavar='FILE')
     group_population.add_argument('--population-min-mapq', default=20, help='Minimum mapping quality for joint calling (default = 20)', metavar='INT', type=int)
     group_population.add_argument('--population-min-baseq', default=20, help='Minimum base quality for joint calling (default = 20)', metavar='INT', type=int)
     group_population.add_argument('--population-min-dp', default=5, help='Set genotypes below this depth to missing (default = 5)', metavar='INT', type=int)
@@ -1994,6 +2036,7 @@ if __name__ == '__main__':
     group_population.add_argument('--population-admixture-k-min', default=2, help='Minimum ADMIXTURE K (default = 2)', metavar='INT', type=int)
     group_population.add_argument('--population-admixture-k-max', default=6, help='Maximum ADMIXTURE K (default = 6)', metavar='INT', type=int)
     group_population.add_argument('--population-admixture-cv', default=10, help='ADMIXTURE cross-validation folds (default = 10)', metavar='INT', type=int)
+    group_population.add_argument('--population-start-at', choices=('reference', 'mapping', 'calling', 'selection'), default='reference', help='Start at this population stage, reusing validated existing outputs when later than reference (default = reference)')
     group_population.add_argument('--population-stop-after', choices=('reference', 'mapping', 'calling', 'selection'), default='selection', help='Stop after this population stage (default = selection)')
     group_population.add_argument('--population-skip-mark-duplicates', action='store_true', default=False, help='Skip samtools duplicate marking')
     group_population.add_argument('--population-skip-plink', action='store_true', default=False, help='Do not export PLINK files or run PCA, LD pruning or ADMIXTURE')
@@ -2043,6 +2086,7 @@ if __name__ == '__main__':
         parser.error('--reference-cache-dir requires --reuse-reference-cache')
 
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
+    args.uce_backbone_lookahead = max(args.uce_backbone_lookahead, 1)
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
     args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
     args.uce_rescue_min_contig_length = max(args.uce_rescue_min_contig_length, args.kf)

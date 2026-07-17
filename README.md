@@ -83,7 +83,7 @@ cli/geneminer2 \
 
 这些设置会放宽边界控制、在较低 assembly k-mer 范围内自动选 k，并降低 k-mer 计数阈值，因此也可能增加低支持候选。使用后应检查组装摘要、rescue 摘要和下游比对。
 
-UCE 模式默认拒绝长度超过 5000 bp 的 contig。长度至少为 1000 bp 的 contig 还必须满足 `uniquely_placed_read_count / contig_length >= 0.003`。重复定位 reads 仍记录在摘要中，但不提供唯一位置支持。相关阈值可通过以下参数调整：
+UCE 模式默认不限制 contig 长度。长度至少为 1000 bp 的 contig 仍必须满足 `uniquely_placed_read_count / contig_length >= 0.003`。重复定位 reads 会记录在摘要中，但不提供唯一位置支持。若需要更保守地排除异常延长 contig，可显式设置长度上限：
 
 ```bash
 --uce-max-contig-length 5000 \
@@ -152,7 +152,7 @@ cli/geneminer2 stats \
 
 `population` 面向二倍体 UCE 重测序或 target-enrichment 数据中的 PCA、ADMIXTURE 和物种界定。它不要求单倍型定相，而是从每个样本的已接受 UCE contig 和原始 reads 构建一致的二倍体基因型矩阵：
 
-1. 按 locus 汇总已接受 contig，默认采用类似 SqCL `make_PRG.py` 的策略选择最长合格 contig，构建公共参考；`supported` 策略可改为优先 reads 支持。
+1. 按 locus 汇总已接受 contig，默认采用类似 SqCL `make_PRG.py` 的策略选择最长合格 contig，构建公共参考；`supported` 策略可改为优先 reads 支持。验证或复用既有参考时，可用 `--population-reference-fasta` 指定固定 FASTA。
 2. 使用 minibwa 将所有样本的原始 reads 统一映射到同一公共参考，并用 samtools 排序、去重复和统计 mapping 质量。
 3. 使用 bcftools 对全部样本联合检测变异，在基因型层面应用 DP/GQ，在位点层面应用 QUAL、call rate 和 MAC 过滤。
 4. 输出全部 SNP、每个 UCE 一个 SNP 和 LD-pruned 三种面板；PLINK 对三种面板分别执行 PCA，ADMIXTURE 默认使用每个 UCE 一个 SNP 的主面板。
@@ -170,13 +170,15 @@ cli/geneminer2 population \
   --population-admixture-k-max 6
 ```
 
-运行时需要 `minibwa`、samtools、bcftools、PLINK 1.9 和 ADMIXTURE 位于 `PATH`。ADMIXTURE 缺失时，公共参考、VCF、PLINK 面板和 PCA 仍会完成，并在 `population/structure/admixture/status.tsv` 中记录 `unavailable`。正式推断前应检查 `mapping/mapping_qc.tsv`、`reference/reference_contribution.tsv` 和不同 SNP 面板的 PCA 是否一致；公共参考由少数样本贡献过多时，可能存在参考偏倚。
+运行时需要 `minibwa`、samtools、bcftools、PLINK 1.9 和 ADMIXTURE 位于 `PATH`。ADMIXTURE 缺失时，公共参考、VCF、PLINK 面板和 PCA 仍会完成，并在 `population/structure/admixture/status.tsv` 中记录 `unavailable`。`--population-start-at mapping`、`calling` 或 `selection` 只会复用经过检查的既有公共参考、BAM 或过滤 VCF，适合在不重复 mapping 的情况下调整下游阈值。正式推断前应检查 `mapping/mapping_qc.tsv`、`reference/reference_contribution.tsv` 和不同 SNP 面板的 PCA 是否一致；公共参考由少数样本贡献过多时，可能存在参考偏倚。
 
 ## 实现与下游工具
 
 主 reads 过滤器现在提供 Rust 实现 `rust/main_filter_new/`。其命令行参数、六种输出模式和 paired-end 保留逻辑与原 `scripts/filter/MainFilterNew.hx` 保持兼容，并使用精确的 k-mer 到 locus 映射和带版本标识的缓存格式。`make` 在 Cargo 可用时默认构建 Rust 版本；原 Haxe 源码完整保留，运行 `make haxe-filter` 可另行生成 `cli/bin/MainFilterNew-haxe`。Rust 可以读取旧 Haxe 缓存；切回 Haxe 版本时应重建缓存，因为 Haxe 不能读取新的 Rust 缓存格式。
 
 二次 reads 过滤器提供 Rust 实现 `rust/main_refilter_new/`，并保持与 `scripts/main_refilter_new.py` 相同的命令行参数和输出结构。构建时如检测到 Cargo，会优先编译 Rust 版本；否则回退到 Python/PyInstaller 实现。
+
+assembler 默认使用 `rust/main_assembler/` 的 Rust 实现。`--assembler-implementation auto`（默认）会先运行 `cli/bin/main_assembler-rust`；若二进制不可用、执行失败或没有生成结果，则清理不完整输出并自动重试由 Git 基线保存的未修改原始实现 `cli/bin/main_assembler-original`。`rust` 可用于严格只跑 Rust，`original` 可直接跳过 Rust。当前修改版 `scripts/main_assembler.py` 不参与 fallback。
 
 population 主流程位于 `rust/main_population/`。公共参考构建、流程编排、SNP 选择、面板汇总和 ADMIXTURE 交叉验证解析均由 Rust 实现；minibwa、samtools、bcftools、PLINK 和 ADMIXTURE 作为经过验证的外部程序调用。
 
