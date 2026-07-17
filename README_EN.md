@@ -176,6 +176,8 @@ cli/geneminer2 population \
 
 The default build uses Rust filters, refiltering, and assembly while retaining compatible command lines. The assembler runs in Rust by default; `--assembler-implementation auto` retries the unmodified Python baseline if Rust fails.
 
+The short-k-mer path in Rust `MainFilterNew` uses a DNA lookup table, modulo-free probe scheduling, and an `AHashMap` index without changing filtering rules, dictionary format, or output format. The implementation boundary, DK40 target-capture benchmark, and byte-level output verification are recorded in [the MainFilter performance and compatibility note](docs/mainfilter-performance.md).
+
 Rust UCE assembly streams reads in batches (`--assembler-read-chunk-size`, default 8192), counts k-mers in parallel (`--assembler-kmer-count-threads 0` chooses workers automatically), and compresses non-branching graph chains into unitigs. For diagnosis, `--assembler-graph-format gfa|dot|both` writes graphs to `assembly_graphs/` in each sample directory; by default it writes none.
 
 The `population` driver is Rust-based; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain external dependencies. See the command-line manual for complete options and requirements.
@@ -183,6 +185,7 @@ The `population` driver is Rust-based; minibwa, samtools, bcftools, PLINK, and A
 
 - [Command-line usage](manual/EN_US/command_line.md)
 - [Output files](manual/EN_US/output.md)
+- [MainFilter performance and compatibility note](docs/mainfilter-performance.md)
 - [中文命令行说明](manual/ZH_CN/command_line.md)
 - [中文输出文件说明](manual/ZH_CN/output.md)
 - [Release history](CHANGELOG.md)

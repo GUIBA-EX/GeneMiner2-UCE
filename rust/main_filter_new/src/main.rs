@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use ahash::AHashMap;
+use std::collections::HashSet;
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs::{self, File, OpenOptions};
@@ -382,13 +383,30 @@ impl SequenceReader {
     }
 }
 
+const INVALID_BASE_CODE: u8 = u8::MAX;
+
+const fn build_base_code_table() -> [u8; 256] {
+    let mut table = [INVALID_BASE_CODE; 256];
+    table[b'A' as usize] = 0;
+    table[b'a' as usize] = 0;
+    table[b'C' as usize] = 1;
+    table[b'c' as usize] = 1;
+    table[b'G' as usize] = 2;
+    table[b'g' as usize] = 2;
+    table[b'T' as usize] = 3;
+    table[b't' as usize] = 3;
+    table[b'U' as usize] = 3;
+    table[b'u' as usize] = 3;
+    table
+}
+
+const BASE_CODE_TABLE: [u8; 256] = build_base_code_table();
+
+#[inline(always)]
 fn base_code(base: u8) -> Option<u8> {
-    match base.to_ascii_uppercase() {
-        b'A' => Some(0),
-        b'C' => Some(1),
-        b'G' => Some(2),
-        b'T' | b'U' => Some(3),
-        _ => None,
+    match BASE_CODE_TABLE[base as usize] {
+        INVALID_BASE_CODE => None,
+        code => Some(code),
     }
 }
 
@@ -400,16 +418,16 @@ enum ReferenceHits {
 
 #[derive(Clone, Debug)]
 enum KmerStore {
-    Short(HashMap<u64, ReferenceHits>),
-    Long(HashMap<Vec<u8>, ReferenceHits>),
+    Short(AHashMap<u64, ReferenceHits>),
+    Long(AHashMap<Vec<u8>, ReferenceHits>),
 }
 
 impl KmerStore {
     fn new(k: usize) -> Self {
         if k <= 32 {
-            Self::Short(HashMap::new())
+            Self::Short(AHashMap::new())
         } else {
-            Self::Long(HashMap::new())
+            Self::Long(AHashMap::new())
         }
     }
 
@@ -581,43 +599,55 @@ impl KmerIndex {
                 let mut forward = 0_u64;
                 let mut reverse = 0_u64;
                 let mut valid = 0_usize;
+                let mut next_probe = 0_usize;
                 for (end, &base) in sequence.iter().enumerate() {
                     if let Some(code) = base_code(base) {
                         forward = ((forward << 2) | code as u64) & mask;
                         reverse = (reverse >> 2) | (((3 - code) as u64) << reverse_shift);
                         valid += 1;
-                        if valid >= self.k {
-                            let start = end + 1 - self.k;
-                            if start.is_multiple_of(step) || start == tail {
-                                self.collect_short(forward, collector);
-                                if reverse != forward {
-                                    self.collect_short(reverse, collector);
-                                }
-                            }
-                        }
                     } else {
                         forward = 0;
                         reverse = 0;
                         valid = 0;
+                    }
+                    if end + 1 < self.k {
+                        continue;
+                    }
+                    let start = end + 1 - self.k;
+                    let sampled = start == next_probe;
+                    if sampled {
+                        next_probe = next_probe.saturating_add(step);
+                    }
+                    if valid >= self.k && (sampled || start == tail) {
+                        self.collect_short(forward, collector);
+                        if reverse != forward {
+                            self.collect_short(reverse, collector);
+                        }
                     }
                 }
             } else {
                 let mask = self.short_mask();
                 let mut forward = 0_u64;
                 let mut valid = 0_usize;
+                let mut next_probe = 0_usize;
                 for (end, &base) in sequence.iter().enumerate() {
                     if let Some(code) = base_code(base) {
                         forward = ((forward << 2) | code as u64) & mask;
                         valid += 1;
-                        if valid >= self.k {
-                            let start = end + 1 - self.k;
-                            if start.is_multiple_of(step) || start == tail {
-                                self.collect_short(forward, collector);
-                            }
-                        }
                     } else {
                         forward = 0;
                         valid = 0;
+                    }
+                    if end + 1 < self.k {
+                        continue;
+                    }
+                    let start = end + 1 - self.k;
+                    let sampled = start == next_probe;
+                    if sampled {
+                        next_probe = next_probe.saturating_add(step);
+                    }
+                    if valid >= self.k && (sampled || start == tail) {
+                        self.collect_short(forward, collector);
                     }
                 }
             }

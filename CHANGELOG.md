@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.65 — MainFilter deterministic lookup optimization
+
+- Optimized the Rust primary filter's short-k-mer scan with a DNA lookup table, modulo-free probe scheduling, and `AHashMap` k-mer lookup.
+- Kept filtering semantics, command-line options, and cache/output formats unchanged; documented byte-level output verification and the decisions not to add threads, LRU output handles, or low-gain hash alternatives.
 
 ## v0.6 — Scalable UCE graph assembly
 

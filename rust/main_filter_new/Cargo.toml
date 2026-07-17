@@ -11,3 +11,6 @@ path = "src/main.rs"
 codegen-units = 1
 lto = true
 strip = true
+
+[dependencies]
+ahash = "0.8"
