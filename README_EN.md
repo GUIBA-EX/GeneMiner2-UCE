@@ -2,8 +2,6 @@
 
 **[中文主页](README.md)**
 
-Current release: **v0.4**
-
 GeneMiner2-UCE is a command-line branch of GeneMiner2 for target-enrichment and ultraconserved element (UCE) data. It retains the original reference-guided read-recruitment and assembly framework while adapting it for short probes, flanking-sequence recovery, quality control, and phylogenetic analysis. This repository contains only the CLI source, build files, and command-line documentation; the original GUI, screenshots, and demo data are not included.
 
 ## Use and Contact
@@ -150,7 +148,7 @@ cli/geneminer2 stats \
 
 This command writes `uce_stats.tsv`, `uce_locus_stats.tsv`, `uce_seq_lengths.tsv`, `uce_read_counts.tsv`, and `uce_filtered_read_counts.tsv`. If `pandas`, `seaborn`, and `matplotlib` are available and `--stats-no-heatmap` is omitted, it also generates recovery and read-count heatmaps.
 
-## Population mode (v0.4)
+## Population mode
 
 The `population` workflow targets PCA, ADMIXTURE, and species-delimitation analyses of diploid UCE resequencing or target-enrichment data. It does not require haplotype phasing. Instead, it derives a consistent diploid genotype matrix from accepted UCE contigs and the original reads of every sample:
 
@@ -180,7 +178,7 @@ The primary read filter now has a Rust implementation under `rust/main_filter_ne
 
 The secondary read filter has a Rust implementation under `rust/main_refilter_new/` with the same command-line arguments and output layout as `scripts/main_refilter_new.py`. When Cargo is available, the build uses the Rust implementation; otherwise it falls back to the Python/PyInstaller version.
 
-The v0.4 population driver is implemented in `rust/main_population/`. Cohort-reference construction, workflow orchestration, SNP selection, panel reporting, and ADMIXTURE cross-validation parsing are written in Rust; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain validated external executables.
+The population driver is implemented in `rust/main_population/`. Cohort-reference construction, workflow orchestration, SNP selection, panel reporting, and ADMIXTURE cross-validation parsing are written in Rust; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain validated external executables.
 
 Use `--msa-threads` and `--filter-processes` to control combine-stage parallelism. `--alignment-filter alifilter` selects AliFilter instead of trimAl. AliFilter is not bundled and must be installed separately with its `AliFilter` executable available in `PATH`. Omit `--alifilter-model`, or set it to `default`, to use the built-in model; provide a real `model.json` path only for a custom model.
 
@@ -190,6 +188,7 @@ Use `--msa-threads` and `--filter-processes` to control combine-stage parallelis
 - [Output files](manual/EN_US/output.md)
 - [中文命令行说明](manual/ZH_CN/command_line.md)
 - [中文输出文件说明](manual/ZH_CN/output.md)
+- [Release history](CHANGELOG.md)
 
 ## References
 

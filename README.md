@@ -2,8 +2,6 @@
 
 **[English README](README_EN.md)**
 
-当前版本：**v0.4**
-
 GeneMiner2-UCE 是 GeneMiner2 的命令行分支，面向 target-enrichment 和 ultraconserved element（UCE）数据。它保留原有的参考引导 reads 捕获和组装框架，并针对短探针、侧翼序列恢复、结果质控及系统发育分析进行了调整。本仓库仅包含 CLI 源码、构建文件和命令行文档，不包含原 GUI、截图或演示数据。
 
 ## 使用声明
@@ -150,7 +148,7 @@ cli/geneminer2 stats \
 
 该命令输出 `uce_stats.tsv`、`uce_locus_stats.tsv`、`uce_seq_lengths.tsv`、`uce_read_counts.tsv` 和 `uce_filtered_read_counts.tsv`。如果环境中安装了 `pandas`、`seaborn` 和 `matplotlib`，且未使用 `--stats-no-heatmap`，还会生成恢复率和 read-count heatmap。
 
-## Population 模式（v0.4）
+## Population 模式
 
 `population` 面向二倍体 UCE 重测序或 target-enrichment 数据中的 PCA、ADMIXTURE 和物种界定。它不要求单倍型定相，而是从每个样本的已接受 UCE contig 和原始 reads 构建一致的二倍体基因型矩阵：
 
@@ -180,7 +178,7 @@ cli/geneminer2 population \
 
 二次 reads 过滤器提供 Rust 实现 `rust/main_refilter_new/`，并保持与 `scripts/main_refilter_new.py` 相同的命令行参数和输出结构。构建时如检测到 Cargo，会优先编译 Rust 版本；否则回退到 Python/PyInstaller 实现。
 
-v0.4 的 population 主流程位于 `rust/main_population/`。公共参考构建、流程编排、SNP 选择、面板汇总和 ADMIXTURE 交叉验证解析均由 Rust 实现；minibwa、samtools、bcftools、PLINK 和 ADMIXTURE 作为经过验证的外部程序调用。
+population 主流程位于 `rust/main_population/`。公共参考构建、流程编排、SNP 选择、面板汇总和 ADMIXTURE 交叉验证解析均由 Rust 实现；minibwa、samtools、bcftools、PLINK 和 ADMIXTURE 作为经过验证的外部程序调用。
 
 combine 阶段可通过 `--msa-threads` 和 `--filter-processes` 控制并行。`--alignment-filter alifilter` 可调用 AliFilter 替代 trimAl；AliFilter 不随本仓库分发，必须另行安装并确保 `AliFilter` 位于 `PATH`。省略 `--alifilter-model` 或设为 `default` 时使用内置模型，只有自定义模型才需要提供真实的 `model.json` 路径。
 
@@ -190,6 +188,7 @@ combine 阶段可通过 `--msa-threads` 和 `--filter-processes` 控制并行。
 - [中文输出文件说明](manual/ZH_CN/output.md)
 - [English command-line usage](manual/EN_US/command_line.md)
 - [English output files](manual/EN_US/output.md)
+- [版本更新记录](CHANGELOG.md)
 
 ## 相关文献
 

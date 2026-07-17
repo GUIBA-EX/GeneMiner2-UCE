@@ -71,6 +71,14 @@ GeneMiner2 will build a coalescent tree at `/home/user/project/output/Coalescent
 
 When `--assembly-mode uce` is used without explicit subcommands, the default workflow skips the reference-based `trim` step and runs `filter refilter assemble combine tree`. This prevents newly recovered UCE flanking regions from being trimmed again during reference-based trimming. Add the `trim` subcommand explicitly if reference-based trimming is still desired.
 
+### Population-genetic analysis
+
+The `population` workflow derives an unphased diploid SNP matrix from UCE assemblies and the original reads of multiple samples. Its primary use cases are PCA, ADMIXTURE, ancestry comparisons, and species delimitation. Before it is run, every sample must have completed UCE assembly, with `uce_assembly_summary.csv`, `results/`, and the original reads listed in the sample table still available.
+
+The workflow has four core stages: select one cohort-reference contig per locus from accepted assemblies; map every sample uniformly to that reference with minibwa; jointly call and filter variants with bcftools; and select one representative SNP per UCE while retaining all-SNP and LD-pruned comparison panels. PLINK then runs PCA on all three panels, and ADMIXTURE analyzes the one-SNP-per-UCE primary panel by default.
+
+This mode reports unphased genotypes, not two complete haplotype sequences. It is suitable for population structure and species delimitation, but it does not replace phasing when haplotype sequences, recombination information, or gene trees are required. Before interpreting results, inspect mapping quality, sample missingness, cohort-reference contributions, and PCA concordance among the three SNP panels.
+
 Command line parameters:
 
 - `-f`: Sample list in tsv format

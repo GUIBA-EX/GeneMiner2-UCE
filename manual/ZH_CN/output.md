@@ -58,7 +58,7 @@
 
 **uce_rescue_summary.csv**：跨样本合并后的 rescue 摘要。使用 `--assembly-mode uce --uce-rescue-reads` 时生成。
 
-## Population 输出（v0.4）
+## Population 输出
 
 `population` 子命令在已有输出目录下创建 `population/`：
 

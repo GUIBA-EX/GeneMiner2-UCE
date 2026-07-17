@@ -58,7 +58,7 @@ Each sample listed in the input table gets a folder under the output directory.
 
 **uce_rescue_summary.csv**: Global rescue summary merged across samples. It is generated when `--assembly-mode uce --uce-rescue-reads` is used.
 
-## Population outputs (v0.4)
+## Population outputs
 
 The `population` subcommand creates `population/` under the existing output directory:
 

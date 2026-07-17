@@ -71,6 +71,14 @@ cli/geneminer2 -f /home/user/project/samples.tsv -r /home/user/project/reference
 
 如果使用`--assembly-mode uce`且不指定子命令，默认流程会跳过基于参考序列的`trim`步骤，运行`filter refilter assemble combine tree`。这样可以避免刚组装出的UCE侧翼序列在后续参考切齐步骤中被再次裁剪。如需仍然执行参考切齐，可以显式加入`trim`子命令。
 
+### Population 群体遗传分析
+
+`population` 用于从多个样本的 UCE 组装结果和原始 reads 构建未定相的二倍体 SNP 矩阵，主要服务于 PCA、ADMIXTURE、遗传成分比较和物种界定。运行前，每个样本必须已经完成 UCE 组装，并保留 `uce_assembly_summary.csv`、`results/` 和样本表中记录的原始 reads。
+
+流程包含四个核心阶段：按 locus 从已接受 contig 中选择公共参考代表序列；用 minibwa 将所有样本统一 mapping 到该参考；用 bcftools 联合检测和过滤变异；为每个 UCE 选择一个代表 SNP，并同时建立 all-SNP 和 LD-pruned 对照面板。随后 PLINK 对三个面板分别执行 PCA，ADMIXTURE 默认分析每个 UCE 一个 SNP 的主面板。
+
+该模式输出的是未定相基因型，而不是两条完整单倍型。它适合群体结构和物种界定，但不能替代需要单倍型序列、重组信息或基因树的 phasing 流程。正式解释结果前，应检查 mapping 质量、样本缺失率、公共参考来源比例，以及三个 SNP 面板之间的 PCA 一致性。
+
 命令行参数的说明如下：
 
 - `-f`: 样本列表tsv文件
