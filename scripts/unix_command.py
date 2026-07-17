@@ -629,6 +629,9 @@ def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_bound
         command.extend([
             '--uce-path-strategy', getattr(args, 'uce_path_strategy', 'backbone'),
             '--uce-backbone-lookahead', str(getattr(args, 'uce_backbone_lookahead', 24)),
+            '--assembler-read-chunk-size', str(getattr(args, 'assembler_read_chunk_size', 8192)),
+            '--assembler-kmer-count-threads', str(getattr(args, 'assembler_kmer_count_threads', 0)),
+            '--assembler-graph-format', getattr(args, 'assembler_graph_format', 'none'),
         ])
 
     assembler_cache_dir = getattr(args, 'assembler_reference_cache_dir', None)
@@ -807,6 +810,9 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             def clear_assembly_outputs():
                 if os.path.isdir(out_dir):
                     shutil.rmtree(out_dir, ignore_errors=True)
+                graph_dir = os.path.join(sample_dir, 'assembly_graphs')
+                if os.path.isdir(graph_dir):
+                    shutil.rmtree(graph_dir, ignore_errors=True)
                 for path in (result_path, uce_summary_path):
                     if os.path.isfile(path):
                         os.remove(path)
@@ -2007,6 +2013,9 @@ if __name__ == '__main__':
     group_assembly.add_argument('-i', '--search-depth', default=4096, help='Search depth', metavar='INT', type=int)
     group_assembly.add_argument('--min-coverage', default=0, help='Minimum read depth required for contig generation', metavar='INT', type=int)
     group_assembly.add_argument('--assembler-implementation', choices=('auto', 'rust', 'original'), default='auto', help='Assembler implementation: auto tries Rust first and falls back to the unmodified original Python assembler; rust is strict; original skips Rust')
+    group_assembly.add_argument('--assembler-read-chunk-size', default=8192, help='Reads per bounded Rust assembler batch (default = 8192)', metavar='INT', type=int)
+    group_assembly.add_argument('--assembler-kmer-count-threads', default=0, help='Rust k-mer sort/count workers per locus; 0 allocates automatically', metavar='INT', type=int)
+    group_assembly.add_argument('--assembler-graph-format', choices=('none', 'gfa', 'dot', 'both'), default='none', help='Write compact per-locus Rust assembly graphs (default = none)')
     group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode: reference keeps the default reference-guided behavior; uce preserves read-supported flanks around conserved cores')
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path handling: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration (default = backbone)')

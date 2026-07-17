@@ -12,6 +12,14 @@ pub enum PathStrategy {
     Backbone,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphFormat {
+    None,
+    Gfa,
+    Dot,
+    Both,
+}
+
 #[derive(Clone, Debug)]
 pub struct Args {
     pub reference: PathBuf,
@@ -32,6 +40,9 @@ pub struct Args {
     pub min_read_density: f64,
     pub density_check_min_length: usize,
     pub max_depth_cv: f64,
+    pub read_chunk_size: usize,
+    pub kmer_count_threads: usize,
+    pub graph_format: GraphFormat,
     pub max_depth_ratio: f64,
     pub reference_cache_dir: Option<PathBuf>,
 }

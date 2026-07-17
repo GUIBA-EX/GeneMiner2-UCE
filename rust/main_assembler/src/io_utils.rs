@@ -3,7 +3,7 @@ use crate::seq::{encode_kmer, reverse_complement_kmer, valid_runs};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -41,33 +41,93 @@ pub fn read_fasta(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
     Ok(records)
 }
 
-pub fn read_sequences(path: &Path, fasta: bool) -> io::Result<Vec<Vec<u8>>> {
+pub fn for_each_sequence_chunk<F>(
+    path: &Path,
+    fasta: bool,
+    chunk_size: usize,
+    mut visit: F,
+) -> io::Result<()>
+where
+    F: FnMut(&[Vec<u8>]) -> io::Result<()>,
+{
+    let mut reader = BufReader::new(File::open(path)?);
+    let limit = chunk_size.max(1);
+    let mut chunk = Vec::with_capacity(limit);
+    let mut line = String::new();
     if fasta {
-        return Ok(read_fasta(path)?
-            .into_iter()
-            .map(|(_, sequence)| sequence)
-            .collect());
-    }
-
-    let text = fs::read_to_string(path)?;
-    let lines: Vec<&str> = text.lines().collect();
-    if !lines.len().is_multiple_of(4) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("truncated FASTQ record in {}", path.display()),
-        ));
-    }
-    let mut sequences = Vec::with_capacity(lines.len() / 4);
-    for record in lines.chunks_exact(4) {
-        if !record[0].starts_with('@') || !record[2].starts_with('+') {
+        let mut sequence = Vec::new();
+        let mut seen_header = false;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            if line.starts_with('>') {
+                if seen_header {
+                    chunk.push(clean_sequence(&sequence));
+                    sequence.clear();
+                    if chunk.len() == limit {
+                        visit(&chunk)?;
+                        chunk.clear();
+                    }
+                }
+                seen_header = true;
+            } else if seen_header {
+                sequence.extend_from_slice(line.as_bytes());
+            }
+        }
+        if seen_header {
+            chunk.push(clean_sequence(&sequence));
+        }
+    } else {
+        let mut record = Vec::with_capacity(4);
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            record.push(line.trim_end_matches(['\r', '\n']).to_string());
+            if record.len() == 4 {
+                if !record[0].starts_with('@') || !record[2].starts_with('+') {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid FASTQ record in {}", path.display()),
+                    ));
+                }
+                chunk.push(clean_sequence(record[1].as_bytes()));
+                record.clear();
+                if chunk.len() == limit {
+                    visit(&chunk)?;
+                    chunk.clear();
+                }
+            }
+        }
+        if !record.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid FASTQ record in {}", path.display()),
+                format!("truncated FASTQ record in {}", path.display()),
             ));
         }
-        sequences.push(clean_sequence(record[1].as_bytes()));
     }
-    Ok(sequences)
+    if !chunk.is_empty() {
+        visit(&chunk)?;
+    }
+    Ok(())
+}
+
+pub fn minimum_sequence_length(
+    path: &Path,
+    fasta: bool,
+    chunk_size: usize,
+) -> io::Result<Option<usize>> {
+    let mut minimum = None;
+    for_each_sequence_chunk(path, fasta, chunk_size, |chunk| {
+        for sequence in chunk.iter().filter(|s| !s.is_empty()) {
+            minimum = Some(minimum.map_or(sequence.len(), |old: usize| old.min(sequence.len())));
+        }
+        Ok(())
+    })?;
+    Ok(minimum)
 }
 
 pub fn discover_references(reference: &Path) -> io::Result<Vec<LocusTask>> {

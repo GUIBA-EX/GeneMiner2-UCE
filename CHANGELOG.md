@@ -1,5 +1,12 @@
 # Changelog
 
+
+## v0.6 — Scalable UCE graph assembly
+
+- Stream filtered reads in bounded batches and count k-mers through parallel, sorted per-batch aggregation.
+- Compress non-branching UCE backbone paths into unitigs, retaining bounded decisions only at graph junctions.
+- Add optional compact GFA and DOT assembly-graph output via `--assembler-graph-format`.
+- Add `--assembler-read-chunk-size` and `--assembler-kmer-count-threads`, while preserving the unmodified Python fallback.
 ## v0.5 — Rust UCE assembly and reusable population analysis
 
 - Added the high-performance Rust UCE assembler with compact rolling k-mers, a bounded non-backtracking backbone path strategy, reference caching, and parallel per-locus assembly.

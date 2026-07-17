@@ -1,10 +1,14 @@
 use crate::assembly::{
-    assemble_seed, build_assemble_dictionary, build_reads_dictionary, compare_contigs,
+    add_assemble_chunk_parallel, add_read_slices, assemble_seed, compare_contigs,
     filter_and_weight_graph,
 };
-use crate::io_utils::{find_filtered, load_or_build_reference_kmers, read_fasta, read_sequences};
-use crate::model::{Args, AssemblyMode, ContigRecord, LocusResult, LocusTask};
+use crate::io_utils::{
+    find_filtered, for_each_sequence_chunk, load_or_build_reference_kmers, minimum_sequence_length,
+    read_fasta,
+};
+use crate::model::{Args, AssemblyMode, ContigRecord, GraphFormat, LocusResult, LocusTask};
 use crate::seq::{calculate_auto_k, reverse_complement_kmer};
+use crate::unitig::write_graphs;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -128,8 +132,13 @@ fn process_locus_inner(
         clean_locus_outputs(args, &task.key);
         return Ok(LocusResult::failure(&task.key, "no filtered file"));
     };
-    let sequences = read_sequences(&filtered_path, fasta)?;
-    let (reads, slice_len) = build_reads_dictionary(&sequences);
+    let minimum = minimum_sequence_length(&filtered_path, fasta, args.read_chunk_size)?;
+    let slice_len = minimum.map_or(0, |length| ((length as f64 * 0.9) as usize).max(1));
+    let mut reads = HashMap::new();
+    for_each_sequence_chunk(&filtered_path, fasta, args.read_chunk_size, |chunk| {
+        add_read_slices(&mut reads, chunk, slice_len);
+        Ok(())
+    })?;
     if reads.is_empty() {
         clean_locus_outputs(args, &task.key);
         log_line(
@@ -186,8 +195,34 @@ fn process_locus_inner(
         current_k,
         args.reference_cache_dir.as_deref(),
     )?;
-    let mut graph = build_assemble_dictionary(&sequences, current_k, &reference);
+    let mut graph = HashMap::new();
+    for_each_sequence_chunk(&filtered_path, fasta, args.read_chunk_size, |chunk| {
+        add_assemble_chunk_parallel(
+            &mut graph,
+            chunk,
+            current_k,
+            &reference,
+            args.kmer_count_threads,
+        );
+        Ok(())
+    })?;
     filter_and_weight_graph(&mut graph, args.error_limit, task.reference_count);
+    let (gfa, dot) = match args.graph_format {
+        GraphFormat::None => (false, false),
+        GraphFormat::Gfa => (true, false),
+        GraphFormat::Dot => (false, true),
+        GraphFormat::Both => (true, true),
+    };
+    if gfa || dot {
+        write_graphs(
+            &args.output.join("assembly_graphs"),
+            &task.key,
+            &graph,
+            current_k,
+            gfa,
+            dot,
+        )?;
+    }
     if graph.len() < 3 {
         clean_locus_outputs(args, &task.key);
         log_line(

@@ -9,19 +9,7 @@ use crate::seq::{
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-pub fn build_reads_dictionary(sequences: &[Vec<u8>]) -> (HashMap<Vec<u8>, u64>, usize) {
-    let Some(minimum) = sequences
-        .iter()
-        .filter(|seq| !seq.is_empty())
-        .map(Vec::len)
-        .min()
-    else {
-        return (HashMap::new(), 0);
-    };
-    let slice_len = ((minimum as f64) * 0.9) as usize;
-    let slice_len = slice_len.max(1);
-    let mut reads = HashMap::new();
-
+pub fn add_read_slices(reads: &mut HashMap<Vec<u8>, u64>, sequences: &[Vec<u8>], slice_len: usize) {
     for sequence in sequences {
         if sequence.len() < slice_len {
             continue;
@@ -35,9 +23,81 @@ pub fn build_reads_dictionary(sequences: &[Vec<u8>]) -> (HashMap<Vec<u8>, u64>, 
             *reads.entry(reverse).or_default() += 1;
         }
     }
-    (reads, slice_len)
 }
 
+pub fn add_assemble_chunk_parallel(
+    graph: &mut HashMap<u128, KmerInfo>,
+    sequences: &[Vec<u8>],
+    k: usize,
+    reference: &HashMap<u128, RefKmer>,
+    threads: usize,
+) {
+    let workers = threads.max(1).min(sequences.len().max(1));
+    let width = sequences.len().div_ceil(workers);
+    let mut partials: Vec<Vec<(u128, i64)>> = Vec::new();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = sequences
+            .chunks(width)
+            .map(|part| {
+                scope.spawn(move || {
+                    let mut observations = Vec::new();
+                    for sequence in part {
+                        let mut physical = HashSet::new();
+                        for (_, run) in valid_runs(sequence) {
+                            for_each_kmer(run, k, |_, forward, reverse| {
+                                physical.insert(forward);
+                                physical.insert(reverse);
+                            });
+                        }
+                        observations.extend(physical);
+                    }
+                    observations.sort_unstable();
+                    let mut counts = Vec::new();
+                    for value in observations {
+                        if let Some((last, count)) = counts.last_mut() {
+                            if *last == value {
+                                *count += 1;
+                                continue;
+                            }
+                        }
+                        counts.push((value, 1));
+                    }
+                    counts
+                })
+            })
+            .collect();
+        for handle in handles {
+            partials.push(handle.join().expect("k-mer worker panicked"));
+        }
+    });
+    for partial in partials {
+        for (kmer, count) in partial {
+            let value = graph.entry(kmer).or_insert_with(|| {
+                reference.get(&kmer).map_or(
+                    KmerInfo {
+                        depth: 0,
+                        position: 1023,
+                        is_reverse: true,
+                        reference_weight: 0,
+                    },
+                    |r| KmerInfo {
+                        depth: 0,
+                        position: if r.is_reverse {
+                            1000 - r.position
+                        } else {
+                            r.position
+                        },
+                        is_reverse: r.is_reverse,
+                        reference_weight: r.depth as i64,
+                    },
+                )
+            });
+            value.depth += count;
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn build_assemble_dictionary(
     sequences: &[Vec<u8>],
     k: usize,
@@ -226,6 +286,27 @@ pub fn walk_backbone(
         positions.push(chosen.position);
         result.weights.push(chosen.weight);
         result.bases.push((chosen.kmer & 3) as u8);
+
+        // Unitig fast path: consume an entire non-branching chain in one decision.
+        loop {
+            let linear = outgoing(
+                graph,
+                *path.last().expect("path"),
+                k,
+                &visited,
+                Some(&discarded),
+                true,
+            );
+            if linear.len() != 1 || path.len() > iteration {
+                break;
+            }
+            let node = linear[0];
+            path.push(node.kmer);
+            visited.insert(node.kmer);
+            positions.push(node.position);
+            result.weights.push(node.weight);
+            result.bases.push((node.kmer & 3) as u8);
+        }
     }
 
     let weight = result.weights.iter().sum();
@@ -793,5 +874,23 @@ mod tests {
         let (paths, visited, _, _) = walk_backbone(&graph, seed, 3, 100, 24);
         assert_eq!(paths[0].bases.len(), 3);
         assert_eq!(visited.len(), 4);
+    }
+    #[test]
+    fn parallel_chunk_count_matches_legacy_count() {
+        let sequences = vec![
+            b"ATGCCATG".to_vec(),
+            b"ATGCCATG".to_vec(),
+            b"TTGCCATA".to_vec(),
+        ];
+        let reference = HashMap::new();
+        let expected = build_assemble_dictionary(&sequences, 4, &reference);
+        let mut observed = HashMap::new();
+        for chunk in sequences.chunks(2) {
+            add_assemble_chunk_parallel(&mut observed, chunk, 4, &reference, 2);
+        }
+        assert_eq!(expected.len(), observed.len());
+        for (kmer, value) in expected {
+            assert_eq!(value.depth, observed[&kmer].depth);
+        }
     }
 }

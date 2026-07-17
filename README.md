@@ -172,18 +172,13 @@ cli/geneminer2 population \
 
 运行时需要 `minibwa`、samtools、bcftools、PLINK 1.9 和 ADMIXTURE 位于 `PATH`。ADMIXTURE 缺失时，公共参考、VCF、PLINK 面板和 PCA 仍会完成，并在 `population/structure/admixture/status.tsv` 中记录 `unavailable`。`--population-start-at mapping`、`calling` 或 `selection` 只会复用经过检查的既有公共参考、BAM 或过滤 VCF，适合在不重复 mapping 的情况下调整下游阈值。正式推断前应检查 `mapping/mapping_qc.tsv`、`variants/variant_qc.tsv` 和不同 SNP 面板的 PCA 是否一致；仅在内部构建公共参考时，才需结合 `reference/reference_contribution.tsv` 判断是否由少数样本贡献过多而产生参考偏倚。
 
-## 实现与下游工具
+## 实现说明
 
-主 reads 过滤器现在提供 Rust 实现 `rust/main_filter_new/`。其命令行参数、六种输出模式和 paired-end 保留逻辑与原 `scripts/filter/MainFilterNew.hx` 保持兼容，并使用精确的 k-mer 到 locus 映射和带版本标识的缓存格式。`make` 在 Cargo 可用时默认构建 Rust 版本；原 Haxe 源码完整保留，运行 `make haxe-filter` 可另行生成 `cli/bin/MainFilterNew-haxe`。Rust 可以读取旧 Haxe 缓存；切回 Haxe 版本时应重建缓存，因为 Haxe 不能读取新的 Rust 缓存格式。
+默认构建 Rust 过滤器、refilter 和 assembler；参数与原流程兼容。装配器默认使用 Rust，`--assembler-implementation auto` 失败时会自动重试未修改的 Python 基线实现。
 
-二次 reads 过滤器提供 Rust 实现 `rust/main_refilter_new/`，并保持与 `scripts/main_refilter_new.py` 相同的命令行参数和输出结构。构建时如检测到 Cargo，会优先编译 Rust 版本；否则回退到 Python/PyInstaller 实现。
+Rust UCE 装配按块读取 reads（`--assembler-read-chunk-size`，默认 8192），并行统计 k-mer（`--assembler-kmer-count-threads 0` 自动分配），并将无分叉图链压缩为 unitig。需要排查组装时，可用 `--assembler-graph-format gfa|dot|both` 在样本目录的 `assembly_graphs/` 输出图；默认不输出。
 
-assembler 默认使用 `rust/main_assembler/` 的 Rust 实现。`--assembler-implementation auto`（默认）会先运行 `cli/bin/main_assembler-rust`；若二进制不可用、执行失败或没有生成结果，则清理不完整输出并自动重试由 Git 基线保存的未修改原始实现 `cli/bin/main_assembler-original`。`rust` 可用于严格只跑 Rust，`original` 可直接跳过 Rust。当前修改版 `scripts/main_assembler.py` 不参与 fallback。
-
-population 主流程位于 `rust/main_population/`。公共参考构建、流程编排、SNP 选择、面板汇总和 ADMIXTURE 交叉验证解析均由 Rust 实现；minibwa、samtools、bcftools、PLINK 和 ADMIXTURE 作为经过验证的外部程序调用。
-
-combine 阶段可通过 `--msa-threads` 和 `--filter-processes` 控制并行。`--alignment-filter alifilter` 可调用 AliFilter 替代 trimAl；AliFilter 不随本仓库分发，必须另行安装并确保 `AliFilter` 位于 `PATH`。省略 `--alifilter-model` 或设为 `default` 时使用内置模型，只有自定义模型才需要提供真实的 `model.json` 路径。
-
+`population` 由 Rust 驱动；minibwa、samtools、bcftools、PLINK 和 ADMIXTURE 仍为外部依赖。完整参数和工具要求请见命令行文档。
 ## 文档
 
 - [中文命令行说明](manual/ZH_CN/command_line.md)

@@ -172,18 +172,13 @@ cli/geneminer2 population \
 
 `minibwa`, samtools, bcftools, PLINK 1.9, and ADMIXTURE must be available in `PATH`. If ADMIXTURE is unavailable, reference construction, VCF generation, PLINK panels, and PCA still finish, and `population/structure/admixture/status.tsv` records `unavailable`. `--population-start-at mapping`, `calling`, or `selection` reuses validated existing reference, BAM, or filtered-VCF outputs. Before inference, inspect `mapping/mapping_qc.tsv`, `variants/variant_qc.tsv`, and PCA concordance among panels. For internally built references, also inspect `reference/reference_contribution.tsv`; a cohort reference dominated by a few samples may introduce reference bias.
 
-## Implementation and Downstream Tools
+## Implementation Notes
 
-The primary read filter now has a Rust implementation under `rust/main_filter_new/`. It preserves the command-line interface, all six output modes, and paired-end retention behavior of `scripts/filter/MainFilterNew.hx`, while using an exact k-mer-to-locus map and a versioned cache format. When Cargo is available, `make` builds the Rust version by default. The original Haxe source remains intact; run `make haxe-filter` to build it separately as `cli/bin/MainFilterNew-haxe`. Rust can read legacy Haxe caches. Rebuild the cache before switching back to Haxe because Haxe cannot read the new Rust cache format.
+The default build uses Rust filters, refiltering, and assembly while retaining compatible command lines. The assembler runs in Rust by default; `--assembler-implementation auto` retries the unmodified Python baseline if Rust fails.
 
-The secondary read filter has a Rust implementation under `rust/main_refilter_new/` with the same command-line arguments and output layout as `scripts/main_refilter_new.py`. When Cargo is available, the build uses the Rust implementation; otherwise it falls back to the Python/PyInstaller version.
+Rust UCE assembly streams reads in batches (`--assembler-read-chunk-size`, default 8192), counts k-mers in parallel (`--assembler-kmer-count-threads 0` chooses workers automatically), and compresses non-branching graph chains into unitigs. For diagnosis, `--assembler-graph-format gfa|dot|both` writes graphs to `assembly_graphs/` in each sample directory; by default it writes none.
 
-The Rust implementation under `rust/main_assembler/` is the default. `--assembler-implementation auto` (the default) runs `cli/bin/main_assembler-rust` first; if the binary is unavailable, exits unsuccessfully, or produces no result, incomplete outputs are removed and the unmodified Git-baseline implementation in `cli/bin/main_assembler-original` is retried automatically. Use `rust` for strict Rust-only execution or `original` to skip Rust. The modified `scripts/main_assembler.py` is not used as the fallback.
-
-The population driver is implemented in `rust/main_population/`. Cohort-reference construction, workflow orchestration, SNP selection, panel reporting, and ADMIXTURE cross-validation parsing are written in Rust; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain validated external executables.
-
-Use `--msa-threads` and `--filter-processes` to control combine-stage parallelism. `--alignment-filter alifilter` selects AliFilter instead of trimAl. AliFilter is not bundled and must be installed separately with its `AliFilter` executable available in `PATH`. Omit `--alifilter-model`, or set it to `default`, to use the built-in model; provide a real `model.json` path only for a custom model.
-
+The `population` driver is Rust-based; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain external dependencies. See the command-line manual for complete options and requirements.
 ## Documentation
 
 - [Command-line usage](manual/EN_US/command_line.md)

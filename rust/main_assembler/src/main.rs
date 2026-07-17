@@ -3,9 +3,10 @@ mod io_utils;
 mod model;
 mod pipeline;
 mod seq;
+mod unitig;
 
 use io_utils::discover_references;
-use model::{Args, AssemblyMode, PathStrategy};
+use model::{Args, AssemblyMode, GraphFormat, PathStrategy};
 use pipeline::{
     log_line, process_locus, read_result_dict, read_summary_lines, summary_line, write_result_dict,
     write_summary,
@@ -51,6 +52,11 @@ UCE:
   --uce-max-depth-ratio FLOAT     Max/median depth guardrail; 0 disables
   --assembler-reference-cache-dir DIR
                                    Versioned Rust reference k-mer cache
+  --assembler-read-chunk-size INT  Reads per streaming batch (default: 8192)
+  --assembler-kmer-count-threads INT
+                                   Sort/count workers per locus; 0=auto
+  --assembler-graph-format none|gfa|dot|both
+                                   Write compact assembly graphs (default: none)
 
 Other:
   -h, --help                      Show this help
@@ -101,6 +107,9 @@ fn parse_args() -> Result<Args, String> {
         max_depth_cv: 0.0,
         max_depth_ratio: 0.0,
         reference_cache_dir: None,
+        read_chunk_size: 8192,
+        kmer_count_threads: 0,
+        graph_format: GraphFormat::None,
     };
 
     let mut index = 1;
@@ -112,7 +121,7 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("main_assembler 0.5.0");
+                println!("main_assembler 0.6.0");
                 std::process::exit(0);
             }
             "-r" => reference = Some(PathBuf::from(next_value(&arguments, &mut index, flag)?)),
@@ -164,6 +173,21 @@ fn parse_args() -> Result<Args, String> {
                 args.reference_cache_dir =
                     Some(PathBuf::from(next_value(&arguments, &mut index, flag)?))
             }
+            "--assembler-read-chunk-size" => {
+                args.read_chunk_size = parse_number(&arguments, &mut index, flag)?
+            }
+            "--assembler-kmer-count-threads" => {
+                args.kmer_count_threads = parse_number(&arguments, &mut index, flag)?
+            }
+            "--assembler-graph-format" => {
+                args.graph_format = match next_value(&arguments, &mut index, flag)?.as_str() {
+                    "none" => GraphFormat::None,
+                    "gfa" => GraphFormat::Gfa,
+                    "dot" => GraphFormat::Dot,
+                    "both" => GraphFormat::Both,
+                    value => return Err(format!("invalid --assembler-graph-format: {value}")),
+                }
+            }
             unknown => return Err(format!("unknown argument: {unknown}")),
         }
         index += 1;
@@ -175,6 +199,7 @@ fn parse_args() -> Result<Args, String> {
     args.side_candidates = args.side_candidates.max(3);
     args.backbone_lookahead = args.backbone_lookahead.max(1);
     args.density_check_min_length = args.density_check_min_length.max(1);
+    args.read_chunk_size = args.read_chunk_size.max(1);
 
     if args.kmer_size > 63 || args.kmer_min > 63 || args.kmer_max > 63 {
         return Err("Rust u128 assembler supports k-mer sizes up to 63".to_string());
@@ -188,7 +213,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(args)
 }
 
-fn run(args: Args) -> io::Result<()> {
+fn run(mut args: Args) -> io::Result<()> {
     std::fs::create_dir_all(args.output.join("results"))?;
     std::fs::create_dir_all(args.output.join("contigs_all"))?;
     std::fs::create_dir_all(args.output.join("contigs_all_low"))?;
@@ -224,6 +249,9 @@ fn run(args: Args) -> io::Result<()> {
     let completed = Arc::new(completed);
     let next_task = Arc::new(AtomicUsize::new(0));
     let worker_count = args.threads.min(tasks.len().max(1));
+    if args.kmer_count_threads == 0 {
+        args.kmer_count_threads = (args.threads / worker_count).max(1);
+    }
     let (sender, receiver) = mpsc::channel();
 
     std::thread::scope(|scope| {
