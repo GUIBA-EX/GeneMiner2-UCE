@@ -2,7 +2,7 @@
 
 **[English README](README_EN.md)**
 
-GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 target-enrichment、ultraconserved element（UCE）和相关二代测序数据。原来参考引导招募 reads 那套框架还留着，另外又加上了 UCE 侧翼恢复、ITS2 多候选组装和 UCE 群体遗传分析，基本上一套就能整明白。
+GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 target-enrichment、ultraconserved element（UCE）和相关二代测序数据。原来参考引导招募 reads 那套框架还留着，另外又加上了 UCE 侧翼恢复、ITS2 多候选组装和 UCE 群体遗传分析，基本上一套就能整明白。主打的就是一个带派。
 
 用这个软件出了结果，别忘了引用 [GeneMiner2-UCE GitHub 仓库](https://github.com/GUIBA-EX/GeneMiner2-UCE)。正式论文发出来以后，这旮沓会马上补上。
 
