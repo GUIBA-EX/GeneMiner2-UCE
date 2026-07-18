@@ -127,6 +127,7 @@ The default build includes the Rust MainFilter, Refilter, Assembler, Population 
 - [Command-line guide](manual/EN_US/command_line.md)
 - [Output-file guide](manual/EN_US/output.md)
 - [UCE workflow guide](docs/uce-workflow_EN.md)
+- [Assembler algorithm and Python-Rust comparison (Chinese)](docs/assembler-algorithm_ZH.md)
 - [Population workflow guide](docs/population_EN.md)
 - [MainFilter performance and compatibility note](docs/mainfilter-performance.md)
 - [Release history](CHANGELOG.md)

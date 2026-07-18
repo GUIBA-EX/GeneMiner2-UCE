@@ -39,8 +39,6 @@ make
 cli/geneminer2
 ```
 
-- [新旧 Assembler 算法与三项参考来源](docs/assembler-algorithm_ZH.md)
-
 以后要是拉了带源码改动的新版本，记着再跑一遍 `make`，别拿旧程序硬对付。完整构建依赖和外部工具要求都写在[中文命令行指南](manual/ZH_CN/command_line.md)里了。
 
 ## 麻溜儿跑一遍
@@ -129,6 +127,7 @@ cli/geneminer2 population \
 - [中文命令行指南](manual/ZH_CN/command_line.md)
 - [中文输出文件说明](manual/ZH_CN/output.md)
 - [UCE 流程说明](docs/uce-workflow_ZH.md)
+- [新旧 Assembler 算法与 Python-Rust 对照](docs/assembler-algorithm_ZH.md)
 - [Population 流程说明](docs/population_ZH.md)
 - [MainFilter 性能与兼容性说明](docs/mainfilter-performance.md)
 - [版本更新记录](CHANGELOG.md)

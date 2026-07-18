@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## v0.8 — Original-Rust default and assembler validation
 
 - Made `original-rust` the `reference + auto` default and renamed the user-facing UCE Rust implementation selector from `rust` to `uce-rust`.
 
