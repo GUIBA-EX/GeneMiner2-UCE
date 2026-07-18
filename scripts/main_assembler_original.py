@@ -3,79 +3,23 @@ from collections import Counter, deque
 from itertools import chain
 from operator import itemgetter
 import argparse
-import csv
 import gc
-import hashlib
-import math
 import multiprocessing
 import os
-import pickle
 import sys
 import time
-from typing import NamedTuple
 
 D_BASE_DICT = {'AG':'R','CT':'Y', 'GT':'K', 'GC':'S','AC':'M', 'AT':'W','GA':'R','TC':'Y','TG':'K', 'CG':'S','CA':'M', 'TA':'W',}
 ACGT_DICT = {0: 'A', 1: 'C', 2: 'G', 3: 'T'}
 ACGT_REV   = str.maketrans('ACGT', 'TGCA')
-FWD_TRANS  = str.maketrans("ACGTU", "01233")
-REV_TRANS  = str.maketrans("ACGTU", "32100")
+FWD_TRANS  = str.maketrans("ACGTU", "01233", "RYMKSWHBVDN\n\r")
+REV_TRANS  = str.maketrans("ACGTU", "32100", "RYMKSWHBVDN\n\r")
 BIN_DICT   = {'00': 'A', '01': 'C', '10': 'G', '11': 'T'}
 
 ref_path_dict = {}  # 序列路径字典
 ref_count_dict = {} # 参考序列条数字典
 kmer_dict = {}  # kmer字典
 ref_reads_count_dict = {}  # reads计数的字典
-
-RAW_SEQ = 0
-RAW_WEIGHT = 1
-RAW_READ_COUNT = 2
-RAW_SUPPORTED_SPAN = 3
-RAW_FLANK_BALANCE = 4
-RAW_READ_DENSITY = 5
-RAW_SUPPORT_FRACTION = 6
-RAW_KMER_MEDIAN_DEPTH = 7
-RAW_KMER_DEPTH_CV = 8
-RAW_KMER_MAX_DEPTH_RATIO = 9
-RAW_UNIQUE_READ_COUNT = 10
-RAW_MULTI_MAPPING_READ_COUNT = 11
-RAW_SUPPORTED_BASES = 12
-RAW_SUPPORT_BREADTH = 13
-RAW_MAX_SUPPORT_GAP = 14
-RAW_ACCEPTED = 15
-RAW_REJECTION_REASON = 16
-
-CONTIG_SEQ = 0
-CONTIG_SEED_COUNT = 1
-CONTIG_POS = 2
-CONTIG_WEIGHT = 3
-CONTIG_READ_COUNT = 4
-CONTIG_SUPPORTED_SPAN = 5
-CONTIG_FLANK_BALANCE = 6
-CONTIG_READ_DENSITY = 7
-CONTIG_SUPPORT_FRACTION = 8
-CONTIG_KMER_MEDIAN_DEPTH = 9
-CONTIG_KMER_DEPTH_CV = 10
-CONTIG_KMER_MAX_DEPTH_RATIO = 11
-CONTIG_UNIQUE_READ_COUNT = 12
-CONTIG_MULTI_MAPPING_READ_COUNT = 13
-CONTIG_SUPPORTED_BASES = 14
-CONTIG_SUPPORT_BREADTH = 15
-CONTIG_MAX_SUPPORT_GAP = 16
-CONTIG_ACCEPTED = 17
-CONTIG_REJECTION_REASON = 18
-
-
-class ReadSupport(NamedTuple):
-    total_read_count: int
-    unique_read_count: int
-    multi_mapping_read_count: int
-    supported_extent: int
-    supported_bases: int
-    breadth: float
-    max_gap: int
-    flank_balance: float
-    left_coord: int
-    right_coord: int
 
 def Write_Print(log_path, *log_str, sep = " "):
     """
@@ -90,11 +34,6 @@ def Seq_To_Int(dna_str, trans=FWD_TRANS, rtrans=REV_TRANS):
     """
     将基因转换为整数
     """
-    # Do not remove ambiguous bases: doing so joins the two flanks and creates
-    # k-mers that never occurred in the input sequence.
-    if any(base not in 'ACGTU' for base in dna_str):
-        return (), 0
-
     dna_fw_str = dna_str.translate(trans)
     dna_rc_str = dna_str.translate(rtrans)[::-1]
 
@@ -102,26 +41,6 @@ def Seq_To_Int(dna_str, trans=FWD_TRANS, rtrans=REV_TRANS):
         return (), 0
 
     return (int(dna_fw_str, 4), int(dna_rc_str, 4)), len(dna_fw_str)
-
-def Valid_Sequence_Runs(dna_str):
-    """Yield contiguous unambiguous sequence runs without joining across ambiguity."""
-    for _, run in Valid_Sequence_Runs_With_Positions(dna_str):
-        yield run
-
-def Valid_Sequence_Runs_With_Positions(dna_str):
-    """Yield the start coordinate and sequence of every unambiguous run."""
-    run = []
-    run_start = 0
-    for pos, base in enumerate(dna_str):
-        if base in 'ACGTU':
-            if not run:
-                run_start = pos
-            run.append(base)
-        elif run:
-            yield run_start, ''.join(run)
-            run = []
-    if run:
-        yield run_start, ''.join(run)
 
 def Int_To_Seq(seq_bin, seq_length, seq_dict=BIN_DICT):
     """
@@ -175,71 +94,26 @@ def Make_Kmer_Dict(_kmer_dict, file_path, kmer_size):
         file_id = 1 << 35  # 设置当前文件的符号位
 
         for _, seq in SimpleFastaParser(f):
-            seq = ''.join(filter(str.isalpha, seq)).upper()
-            total_kmer_count = len(seq) - kmer_size + 1
-            if total_kmer_count <= 0:
-                continue
+            # 序列转整数，获取长度
+            intseqs, ref_len = Seq_To_Int(''.join(filter(str.isalpha, seq)).upper())
+            ref_kmer_count = ref_len - kmer_size + 1
 
-            for run_start, run in Valid_Sequence_Runs_With_Positions(seq):
-                intseqs, ref_len = Seq_To_Int(run)
-                ref_kmer_count = ref_len - kmer_size + 1
-                if ref_kmer_count <= 0:
-                    continue
+            for x, y in enumerate(intseqs):
+                # 初始化符号位和文件位，反向互补序列的31位符号位为1
+                SIGN_BIN = (1 << 30) + (1 << 10) + file_id if x else (1 << 10) + file_id
 
-                for x, y in enumerate(intseqs):
-                    # 初始化符号位和文件位，反向互补序列的31位符号位为1
-                    SIGN_BIN = (1 << 30) + (1 << 10) + file_id if x else (1 << 10) + file_id
+                for j in range(0, ref_kmer_count):
+                    temp_int = SIGN_BIN  # 初始化文件位和深度
+                    kmer_int = y >> (j << 1) & MASK_BIN  # 获取kmer的整数形式
 
-                    for j in range(0, ref_kmer_count):
-                        temp_int = SIGN_BIN  # 初始化文件位和深度
-                        kmer_int = y >> (j << 1) & MASK_BIN  # 获取kmer的整数形式
+                    if kmer_int in _kmer_dict:
+                        temp_int = _kmer_dict[kmer_int]
+                        temp_int += DEPTH_BIN  # 深度加1，深度大于2**20会溢出,不太可能这么深的kmer
+                        temp_int |= file_id  # 赋值文件位
+                    else:
+                        temp_int += int((j + 1) / ref_kmer_count * 1000)
 
-                        if kmer_int in _kmer_dict:
-                            temp_int = _kmer_dict[kmer_int]
-                            temp_int += DEPTH_BIN  # 深度加1，深度大于2**20会溢出,不太可能这么深的kmer
-                            temp_int |= file_id  # 赋值文件位
-                        else:
-                            if x:
-                                global_j = run_start + j
-                            else:
-                                global_j = len(seq) - run_start - ref_len + j
-                            temp_int += int((global_j + 1) / total_kmer_count * 1000)
-
-                        _kmer_dict[kmer_int] = temp_int
-
-def Reference_File_Cache_Key(file_path, kmer_size):
-    stat = os.stat(file_path)
-    digest = hashlib.sha256()
-    digest.update(os.path.abspath(file_path).encode())
-    digest.update(b'\0')
-    digest.update(str(stat.st_size).encode())
-    digest.update(b'\0')
-    digest.update(str(stat.st_mtime_ns).encode())
-    return f'{os.path.basename(file_path)}.k{kmer_size}.{digest.hexdigest()[:16]}.pkl'
-
-def Load_Or_Make_Kmer_Dict(_kmer_dict, file_path, kmer_size, cache_dir=None):
-    if not cache_dir:
-        Make_Kmer_Dict(_kmer_dict, file_path, kmer_size)
-        return False
-
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, Reference_File_Cache_Key(file_path, kmer_size))
-
-    if os.path.isfile(cache_path):
-        try:
-            with open(cache_path, 'rb') as handle:
-                _kmer_dict.update(pickle.load(handle))
-            return True
-        except (OSError, EOFError, pickle.PickleError, AttributeError, ValueError):
-            _kmer_dict.clear()
-
-    Make_Kmer_Dict(_kmer_dict, file_path, kmer_size)
-
-    temp_path = f'{cache_path}.{os.getpid()}.tmp'
-    with open(temp_path, 'wb') as handle:
-        pickle.dump(_kmer_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(temp_path, cache_path)
-    return False
+                    _kmer_dict[kmer_int] = temp_int
 
 def Get_Ref_Info(ref_path, _ref_path_dict, _ref_count_dict):
     """
@@ -294,12 +168,8 @@ def Make_Assemble_Dict(file_list, kmer_size, _kmer_dict, _ref_dict, Filted_File_
                 infile.readline()
                 infile.readline()
                 infile.readline()
-            kmer_set = set()
-            for run in Valid_Sequence_Runs(read_seq):
-                intseqs, read_len = Seq_To_Int(run)
-                kmer_set.update(x >> (j << 1) & MASK_BIN
-                                for x in intseqs
-                                for j in range(0, read_len - kmer_size + 1))
+            intseqs, read_len = Seq_To_Int(read_seq) # 序列转整数，获取长度
+            kmer_set = {x >> (j << 1) & MASK_BIN for x in intseqs for j in range(0, read_len - kmer_size)}
             for kmer in kmer_set:
                 if kmer in _kmer_dict:
                     _kmer_dict[kmer][0] += 1
@@ -331,45 +201,35 @@ def Make_Reads_Dict(file_list, _reads_dict, Filted_File_Ext = '.fq'):
     :param _reads_dict: 待生成的字典value的格式为seq
     :return: 返回切片的长度
     """
-    def read_sequences(path):
-        with open(path, 'r', encoding='utf-8', errors='ignore') as infile:
+    read_len = 0
+    slice_len = 0
+    for file in file_list:
+        infile = open(file, 'r', encoding='utf-8', errors='ignore')
+        infile.readline()
+        paried_count = True
+        for line in infile:
+            temp_str = []
             if Filted_File_Ext == '.fasta':
-                for _, seq in SimpleFastaParser(infile):
-                    yield ''.join(filter(str.isalpha, seq)).upper()
+                while line and line[0] != '>':
+                    temp_str.append(line)
+                    line = infile.readline()
             else:
-                while True:
-                    header = infile.readline()
-                    if not header:
-                        break
-                    sequence = infile.readline()
-                    plus = infile.readline()
-                    quality = infile.readline()
-                    if not sequence or not plus or not quality:
-                        raise ValueError(f'Truncated FASTQ record in {path}')
-                    yield ''.join(filter(str.isalpha, sequence)).upper()
-
-    min_length = None
-    for file in file_list:
-        for seq in read_sequences(file):
-            if seq and (min_length is None or len(seq) < min_length):
-                min_length = len(seq)
-
-    if min_length is None:
-        return 0
-
-    # Use a common slice length that every read can support.  The former
-    # first-read heuristic made shorter reads permanently invisible.
-    slice_len = max(1, int(min_length * 0.9))
-
-    for file in file_list:
-        for read_seq in read_sequences(file):
-            if len(read_seq) < slice_len:
-                continue
-            intseqs = [read_seq, Reverse_Complement_ACGT(read_seq)]
-            # A palindromic middle fragment is identical in both orientations;
-            # it still represents one physical read and must only be counted once.
-            for slice_read in {Get_Middle_Fragment(seq, slice_len) for seq in intseqs}:
-                _reads_dict[slice_read] = _reads_dict.get(slice_read, 0) + 1
+                temp_str.append(line.strip())
+                infile.readline()
+                infile.readline()
+                infile.readline()
+            read_seq = ''.join(filter(str.isalpha, ''.join(temp_str))).upper()
+            if not read_len:
+                read_len = len(read_seq)
+                slice_len = int(read_len * 0.9)
+            intseqs = [read_seq, Reverse_Complement_ACGT(read_seq)] # 加入反向互补序列
+            for x in intseqs:
+                slice_reads = Get_Middle_Fragment(x, slice_len)
+                if slice_reads in _reads_dict:
+                    _reads_dict[slice_reads] += 1
+                else:
+                    _reads_dict[slice_reads] = 1
+        infile.close()
     return slice_len
 
 def Median(x):
@@ -392,12 +252,6 @@ def Quartile(x):
     """ 
     lHalf, rHalf, q2 = Median(x)
     return Median(lHalf)[2], q2, Median(rHalf)[2], max(x) + 1
-
-def Median_Value(x):
-    if not x:
-        return 0
-
-    return Median(x)[2]
 
 def Get_Weight(_pos, new_pos, weight = 4):
     """
@@ -462,29 +316,7 @@ def find_position(dq, n):
             return i
     return -1
 
-def Locate_Read_Slices(seq, slice_len, reads_dict):
-    """Return matching read slices and their unique placement, if any.
-
-    Each dictionary key represents a collection of physical reads with the same
-    middle slice.  A key contributes to read support once per contig, regardless
-    of how many times the sequence occurs in a repeat.  Repeated placements are
-    recorded as ``None`` because they cannot define a supported coordinate.
-    """
-    if slice_len <= 0 or len(seq) < slice_len:
-        return {}
-
-    matches = {}
-    for pos in range(len(seq) - slice_len + 1):
-        slice_str = seq[pos:pos + slice_len]
-        if slice_str not in reads_dict:
-            continue
-        if slice_str in matches:
-            matches[slice_str] = None
-        else:
-            matches[slice_str] = pos
-    return matches
-
-def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 0, assembly_mode = 'reference'):
+def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 0):
     """
     通过将contigs与reads进行map，来检测contig的可靠性
     :param contigs: 拼接过程获取的contigs
@@ -493,246 +325,29 @@ def Process_Contigs(contigs, max_weight, slice_len, reads_dict, soft_boundary = 
     :param reads_dict: reads的高质量切片的词典
     :return: 按照map上的reads的数量倒序排序过后的contigs
     """ 
-    if assembly_mode == 'reference':
-        # 基于soft_boundary和四分位点切割序列两端
-        for i, contig in enumerate(contigs):
-            if len(contig[0]) > 2:
-                cut_value = Quartile(contig[0])[0]
-                cut_pos = find_position(contig[0], cut_value)
-                if cut_pos != -1 and cut_pos + soft_boundary + 1 < len(contig[0]):
-                    while len(contig[0]) > cut_pos + soft_boundary + 1:
-                        contig[0].pop()
-                        contig[1].pop()
+    # 基于soft_boundary和四分位点切割序列两端
+    for i, contig in enumerate(contigs):
+        if len(contig[0]) > 2:
+            cut_value = Quartile(contig[0])[0]
+            cut_pos = find_position(contig[0], cut_value)
+            if cut_pos != -1 and cut_pos + soft_boundary + 1 < len(contig[0]):
+                while len(contig[0]) > cut_pos + soft_boundary + 1:
+                    contig[0].pop()
+                    contig[1].pop()
 
-    min_weight = max_weight >> (2 if assembly_mode == 'uce' else 1)
-    processed_contigs = sorted([[''.join(ACGT_DICT[k] for k in x[1]), sum(x[0]), 0] for x in contigs if sum(x[0]) > min_weight], key=itemgetter(1), reverse=True)
+    processed_contigs = sorted([[''.join(ACGT_DICT[k] for k in x[1]), sum(x[0]), 0] for x in contigs if sum(x[0]) > max_weight >> 1], key=itemgetter(1), reverse=True)
     for x in processed_contigs:
-        matches = Locate_Read_Slices(x[0], slice_len, reads_dict)
-        x[2] = sum(reads_dict[slice_str] for slice_str in matches)
-    if assembly_mode == 'uce':
-        processed_contigs.sort(key=lambda x: (len(x[0]), x[2], x[1]), reverse=True)
-    else:
-        processed_contigs.sort(key=itemgetter(2), reverse=True)
+        contig_len = len(x[0])
+        for j in range(contig_len - slice_len):
+            if contig_len - slice_len - j >= 0:
+                slice_str = x[0][contig_len - slice_len - j:contig_len - j]
+                if slice_str in reads_dict:
+                    x[2] += reads_dict[slice_str]
+    processed_contigs.sort(key=itemgetter(2), reverse=True)
     return processed_contigs
 
 
-def Calculate_Read_Support(seq, slice_len, reads_dict):
-    """
-    Measure direct read-slice support for a candidate contig.
-
-    ``supported_extent`` preserves the historical leftmost-to-rightmost
-    statistic.  ``supported_bases`` is the union of uniquely placed slice
-    intervals and is therefore the quantity used for UCE scoring and quality
-    control.  Repetitively placed slices contribute to the total recruited
-    read count, but not to positional support.
-    """
-    contig_len = len(seq)
-    matches = Locate_Read_Slices(seq, slice_len, reads_dict)
-    total_read_count = sum(reads_dict[slice_str] for slice_str in matches)
-    unique_read_count = 0
-    multi_mapping_read_count = 0
-    intervals = []
-
-    for slice_str, pos in matches.items():
-        count = reads_dict[slice_str]
-        if pos is None:
-            multi_mapping_read_count += count
-            continue
-
-        unique_read_count += count
-        intervals.append((pos, min(pos + slice_len, contig_len)))
-
-    if not intervals:
-        return ReadSupport(
-            total_read_count, 0, multi_mapping_read_count, 0, 0, 0.0,
-            contig_len, 0.0, contig_len, 0)
-
-    intervals.sort()
-    merged = []
-    for start, end in intervals:
-        if not merged or start > merged[-1][1]:
-            merged.append([start, end])
-        else:
-            merged[-1][1] = max(merged[-1][1], end)
-
-    left_coord = merged[0][0]
-    right_coord = merged[-1][1]
-    supported_extent = right_coord - left_coord
-    supported_bases = sum(end - start for start, end in merged)
-    breadth = supported_bases / contig_len if contig_len else 0.0
-
-    gaps = [left_coord, contig_len - right_coord]
-    gaps.extend(merged[i + 1][0] - merged[i][1] for i in range(len(merged) - 1))
-    max_gap = max(gaps, default=0)
-
-    if supported_extent:
-        left_extension = left_coord
-        right_extension = contig_len - right_coord
-        if left_extension == 0 and right_extension == 0:
-            flank_balance = 1.0
-        else:
-            flank_balance = min(left_extension, right_extension) / max(left_extension, right_extension)
-    else:
-        flank_balance = 0.0
-
-    return ReadSupport(
-        total_read_count, unique_read_count, multi_mapping_read_count,
-        supported_extent, supported_bases, breadth, max_gap, flank_balance,
-        left_coord, right_coord)
-
-
-def Calculate_Kmer_Depth_Stats(seq, kmer_size, assemble_dict):
-    seq_str = seq.translate(FWD_TRANS)
-
-    if len(seq_str) < kmer_size:
-        return 0, 0, 0
-
-    mask_bin = (1 << (kmer_size << 1)) - 1
-    seq_int = int(seq_str, 4)
-    counts = []
-
-    for _ in range(0, len(seq_str) - kmer_size + 1):
-        kmer = seq_int & mask_bin
-        value = assemble_dict.get(kmer)
-        counts.append(value[0] if value else 0)
-        seq_int >>= 2
-
-    median_depth = Median_Value(counts)
-
-    if not counts or median_depth <= 0:
-        return median_depth, 0, 0
-
-    mean_depth = sum(counts) / len(counts)
-    if mean_depth <= 0:
-        depth_cv = 0
-    else:
-        variance = sum((x - mean_depth) ** 2 for x in counts) / len(counts)
-        depth_cv = math.sqrt(variance) / mean_depth
-
-    max_depth_ratio = max(counts) / median_depth
-    return median_depth, depth_cv, max_depth_ratio
-
-
-def Score_Contig(contig, assembly_mode):
-    """
-    Reference mode keeps the historical conservative ranking.
-    UCE mode prefers candidates that extend farther while retaining read support.
-    """
-    seq_len = len(contig[CONTIG_SEQ])
-    weight = contig[CONTIG_WEIGHT]
-    read_count = contig[CONTIG_READ_COUNT]
-    supported_span = contig[CONTIG_SUPPORTED_SPAN]
-    flank_balance = contig[CONTIG_FLANK_BALANCE]
-
-    if assembly_mode == 'uce':
-        unique_read_count = contig[CONTIG_UNIQUE_READ_COUNT]
-        supported_bases = contig[CONTIG_SUPPORTED_BASES]
-        support_breadth = contig[CONTIG_SUPPORT_BREADTH]
-        max_support_gap = contig[CONTIG_MAX_SUPPORT_GAP]
-        unique_read_density = unique_read_count / seq_len if seq_len else 0
-        depth_cv = contig[CONTIG_KMER_DEPTH_CV]
-        max_depth_ratio = contig[CONTIG_KMER_MAX_DEPTH_RATIO]
-        density_factor = min(unique_read_density / 0.01, 1.0)
-        continuity_factor = 1 / (1 + depth_cv)
-        repeat_factor = min(10 / max(max_depth_ratio, 1), 1.0)
-        effective_supported_bases = supported_bases * density_factor * continuity_factor * repeat_factor
-        gap_fraction = max_support_gap / seq_len if seq_len else 1.0
-        return (effective_supported_bases, support_breadth, unique_read_density,
-                -gap_fraction, seq_len, unique_read_count, read_count,
-                flank_balance, weight)
-
-    return (read_count, weight)
-
-
-def Build_Uce_Guardrails(args):
-    return {
-        'max_contig_length': args.uce_max_contig_length,
-        'min_read_density': args.uce_min_read_density,
-        'density_check_min_length': args.uce_density_check_min_length,
-        'max_depth_cv': args.uce_max_depth_cv,
-        'max_depth_ratio': args.uce_max_depth_ratio,
-    }
-
-
-def Get_Uce_Guardrail_Reasons(contig_len, read_density, depth_cv, max_depth_ratio, guardrails):
-    if not guardrails:
-        return []
-
-    reasons = []
-
-    if guardrails['max_contig_length'] > 0 and contig_len > guardrails['max_contig_length']:
-        reasons.append('contig_too_long')
-
-    if contig_len >= guardrails['density_check_min_length'] and read_density < guardrails['min_read_density']:
-        reasons.append('low_unique_read_density')
-
-    if guardrails['max_depth_cv'] > 0 and depth_cv > guardrails['max_depth_cv']:
-        reasons.append('high_depth_cv')
-
-    if guardrails['max_depth_ratio'] > 0 and max_depth_ratio > guardrails['max_depth_ratio']:
-        reasons.append('repeat_depth_peak')
-
-    return reasons
-
-
-def Pass_Uce_Guardrails(contig_len, read_density, depth_cv, max_depth_ratio, guardrails):
-    return not Get_Uce_Guardrail_Reasons(
-        contig_len, read_density, depth_cv, max_depth_ratio, guardrails)
-
-
-def Evaluate_Uce_Candidate(contig_len, unique_read_count, supported_bases,
-                           unique_read_density, depth_cv, max_depth_ratio,
-                           guardrails):
-    """Return an auditable UCE acceptance decision and rejection reasons."""
-    reasons = []
-
-    if unique_read_count <= 0:
-        reasons.append('no_unique_read_support')
-    if supported_bases <= 0:
-        reasons.append('no_positional_support')
-
-    reasons.extend(Get_Uce_Guardrail_Reasons(
-        contig_len, unique_read_density, depth_cv, max_depth_ratio, guardrails))
-
-    return not reasons, reasons
-
-
-def Build_Contig_Record(raw_contig, seed_count, contig_pos):
-    return [
-        raw_contig[RAW_SEQ],
-        seed_count,
-        contig_pos,
-        raw_contig[RAW_WEIGHT],
-        raw_contig[RAW_READ_COUNT],
-        raw_contig[RAW_SUPPORTED_SPAN],
-        raw_contig[RAW_FLANK_BALANCE],
-        raw_contig[RAW_READ_DENSITY],
-        raw_contig[RAW_SUPPORT_FRACTION],
-        raw_contig[RAW_KMER_MEDIAN_DEPTH],
-        raw_contig[RAW_KMER_DEPTH_CV],
-        raw_contig[RAW_KMER_MAX_DEPTH_RATIO],
-        raw_contig[RAW_UNIQUE_READ_COUNT],
-        raw_contig[RAW_MULTI_MAPPING_READ_COUNT],
-        raw_contig[RAW_SUPPORTED_BASES],
-        raw_contig[RAW_SUPPORT_BREADTH],
-        raw_contig[RAW_MAX_SUPPORT_GAP],
-        raw_contig[RAW_ACCEPTED],
-        raw_contig[RAW_REJECTION_REASON],
-    ]
-
-
-def Format_Contig_Header(contig, assembly_mode, prefix='contig'):
-    header = (
-        f'>{prefix}_{len(contig[CONTIG_SEQ])}_{contig[CONTIG_SEED_COUNT]}'
-        f'_{contig[CONTIG_POS]}_{contig[CONTIG_WEIGHT]}'
-        f'_{contig[CONTIG_READ_COUNT]}_span_{contig[CONTIG_SUPPORTED_SPAN]}'
-    )
-    if assembly_mode == 'uce':
-        header += f'_supported_{contig[CONTIG_SUPPORTED_BASES]}'
-    return header + f'_balance_{contig[CONTIG_FLANK_BALANCE]:.3f}'
-
-
-def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0, assembly_mode = 'reference', uce_side_candidates = 8, uce_guardrails = None):
+def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, iteration = 1024, soft_boundary = 0):
     """
     获取最优的contig
     :param _reads_dict: reads的高质量切片的词典
@@ -751,85 +366,67 @@ def Get_Contig_v6(_reads_dict, slice_len, _dict, seed, kmer_size, cov_min, itera
     # 获取位置中位数
     contig_pos = int(Quartile(pos_list)[1] if len(pos_list)>1 else -1)
     # 获取最可能的两侧的contig
-    contigs_1_16 = Process_Contigs(contigs_1, weight_1, slice_len, _reads_dict, soft_boundary, assembly_mode)
-    contigs_2_16 = Process_Contigs(contigs_2, weight_2, slice_len, _reads_dict, soft_boundary, assembly_mode)
+    contigs_1_16 = Process_Contigs(contigs_1, weight_1, slice_len, _reads_dict, soft_boundary)
+    contigs_2_16 = Process_Contigs(contigs_2, weight_2, slice_len, _reads_dict, soft_boundary)
     processed_contigs = []
     if not contigs_1_16: contigs_1_16.append(['',0,0])
     if not contigs_2_16: contigs_2_16.append(['',0,0])
-    candidate_limit = uce_side_candidates if assembly_mode == 'uce' else 3
-    for l in contigs_2_16[:candidate_limit]:
-        for r in contigs_1_16[:candidate_limit]:
+    # 对最多前9种组合计算数量
+    for l in contigs_2_16[:3]:
+        for r in contigs_1_16[:3]:
             c = Reverse_Complement_ACGT(l[0]) + Int_To_Seq(seed, kmer_size) + r[0]
             c_weight = l[1] + r[1]
             contig_len = len(c)
-            support = Calculate_Read_Support(c, slice_len, _reads_dict)
-            read_density = support.total_read_count / contig_len if contig_len else 0
-            support_fraction = support.supported_extent / contig_len if contig_len else 0
-            median_depth, depth_cv, max_depth_ratio = (0, 0, 0)
-            if assembly_mode == 'uce':
-                median_depth, depth_cv, max_depth_ratio = Calculate_Kmer_Depth_Stats(c, kmer_size, _dict)
-            positional_count = (support.unique_read_count
-                                if assembly_mode == 'uce' else support.total_read_count)
-            positional_span = (support.supported_bases
-                               if assembly_mode == 'uce' else support.supported_extent)
-            cov_dep = positional_count * slice_len / 0.9
+            r_count = 0
+            left_coord = contig_len
+            right_coord = 0
+            for j in range(contig_len - slice_len):
+                if contig_len - slice_len - j >= 0:
+                    slice_str = c[contig_len - slice_len - j:contig_len - j]
+                    if slice_str in _reads_dict:
+                        if contig_len - slice_len - j < left_coord:
+                            left_coord = contig_len - slice_len - j
+                        if contig_len - j > right_coord:
+                            right_coord = contig_len - j
+                        r_count += _reads_dict[slice_str]
+            cov_len = max(right_coord - left_coord, 0)
+            cov_dep = r_count * slice_len / 0.9
             if cov_min > 0:
-                if positional_span == 0 or cov_dep / positional_span < cov_min:
+                if cov_len == 0 or cov_dep / cov_len < cov_min:
                     continue
                 if cov_dep / contig_len < cov_min:
-                    c = c[support.left_coord:support.right_coord]
-                    contig_len = len(c)
-                    support = Calculate_Read_Support(c, slice_len, _reads_dict)
-                    read_density = support.total_read_count / contig_len if contig_len else 0
-                    support_fraction = support.supported_extent / contig_len if contig_len else 0
-                    if assembly_mode == 'uce':
-                        median_depth, depth_cv, max_depth_ratio = Calculate_Kmer_Depth_Stats(c, kmer_size, _dict)
-            accepted = True
-            rejection_reasons = []
-            if assembly_mode == 'uce':
-                unique_read_density = support.unique_read_count / contig_len if contig_len else 0
-                accepted, rejection_reasons = Evaluate_Uce_Candidate(
-                    contig_len, support.unique_read_count, support.supported_bases,
-                    unique_read_density, depth_cv, max_depth_ratio, uce_guardrails)
+                    c = c[left_coord:right_coord]
             # 序列，序列的拼接权重，切片数
-            processed_contigs.append([
-                c, c_weight, support.total_read_count, support.supported_extent,
-                support.flank_balance, read_density, support_fraction,
-                median_depth, depth_cv, max_depth_ratio,
-                support.unique_read_count, support.multi_mapping_read_count,
-                support.supported_bases, support.breadth, support.max_gap,
-                accepted, ';'.join(rejection_reasons),
-            ])
+            processed_contigs.append([c, c_weight, r_count])
     return processed_contigs, kmer_set_1 | kmer_set_2, contig_pos
 
 def Calculate_Kmer_Size(ref_path, reads, slice_len, k_min, k_max, error_limit):
-    if k_min % 2 == 0:
-        k_min += 1
-
-    if slice_len <= k_min:
-        return k_min
-
     mask_bin  = (1 << (k_min << 1)) - 1
     kmer_dict = Counter()
     trans = FWD_TRANS
     rtrans = REV_TRANS
 
+    if slice_len <= k_min:
+        return k_min
+
+    if k_min % 2 == 0:
+        k_min += 1
+
     for seq in reads:
-        for run in Valid_Sequence_Runs(seq):
-            seq_str   = run.translate(trans)
-            seq_str_r = run.translate(rtrans)[::-1]
+        seq_str   = seq.translate(trans)
+        seq_str_r = seq.translate(rtrans)[::-1]
 
-            if len(seq_str) < k_min:
-                continue
+        if not seq_str:
+            continue
 
-            seq_int   = int(seq_str, 4)
-            seq_int_r = int(seq_str_r, 4)
+        seq_int   = int(seq_str, 4)
+        seq_int_r = int(seq_str_r, 4)
 
-            for _ in range(0, len(seq_str) - k_min + 1):
-                kmer_dict[seq_int   & mask_bin] += 1
-                kmer_dict[seq_int_r & mask_bin] += 1
-                seq_int   >>= 2
-                seq_int_r >>= 2
+        for _ in range(0, len(seq_str) - k_min + 1):
+            kmer_dict[seq_int   & mask_bin] += 1
+            kmer_dict[seq_int_r & mask_bin] += 1
+            seq_int   >>= 2
+            seq_int_r >>= 2
 
     kmer_dict = {k for k, v in kmer_dict.items() if v > error_limit}
     run_length_stats = [0] * (k_max - k_min + 1)
@@ -838,37 +435,36 @@ def Calculate_Kmer_Size(ref_path, reads, slice_len, k_min, k_max, error_limit):
     with open(ref_path, 'r') as f:
         for _, seq in SimpleFastaParser(f):
             seq       = ''.join(filter(str.isalpha, seq)).upper()
-            for run in Valid_Sequence_Runs(seq):
-                seq_str = run.translate(trans)
+            seq_str   = seq.translate(trans)
 
-                if len(seq_str) < k_min:
+            if not seq_str:
+                continue
+
+            seq_int   = int(seq_str, 4)
+
+            run_length_list = [0]
+
+            for _ in range(0, len(seq_str) - k_min + 1):
+                if (seq_int & mask_bin) in kmer_dict:
+                    run_length_list[-1] += 1
+                    if run_length_list[-1] >= run_maximum:
+                        run_length_list.append(run_maximum // 2)
+                elif run_length_list[-1] != 0:
+                    run_length_list.append(0)
+                seq_int >>= 2
+
+            for k, v in Counter(run_length_list).items():
+                if k == 0:
                     continue
 
-                seq_int = int(seq_str, 4)
+                kp = k - 1
+                odd = kp % 2
+                kp = kp - odd
 
-                run_length_list = [0]
+                run_length_stats[kp] += v
 
-                for _ in range(0, len(seq_str) - k_min + 1):
-                    if (seq_int & mask_bin) in kmer_dict:
-                        run_length_list[-1] += 1
-                        if run_length_list[-1] >= run_maximum:
-                            run_length_list.append(run_maximum // 2)
-                    elif run_length_list[-1] != 0:
-                        run_length_list.append(0)
-                    seq_int >>= 2
-
-                for k, v in Counter(run_length_list).items():
-                    if k == 0:
-                        continue
-
-                    kp = k - 1
-                    odd = kp % 2
-                    kp = kp - odd
-
-                    run_length_stats[kp] += v
-
-                    for i in range(2, kp + 1, 2):
-                        run_length_stats[kp - i] += v
+                for i in range(2, kp + 1, 2):
+                    run_length_stats[kp - i] += v
 
     for k, n in reversed(tuple(enumerate(run_length_stats, k_min))):
         if n > 0:
@@ -904,65 +500,16 @@ def Write_Dict(_dict, file_name):
             else:
                 f.writelines([str(key), ",", str(value), ",", '\n'])
 
-def Read_Dict(file_name):
-    if not os.path.isfile(file_name):
-        return {}
-
-    result = {}
-    with open(file_name, newline='') as f:
-        for row in csv.reader(f):
-            if len(row) >= 3 and row[0]:
-                result[row[0]] = row[1:3]
-    return result
-
-def Read_Uce_Summary(file_name):
-    if not os.path.isfile(file_name):
-        return {}
-
-    with open(file_name, newline='') as f:
-        return {row['locus']: row for row in csv.DictReader(f) if row.get('locus')}
-
-def Write_Uce_Summary(rows, file_name):
-    fieldnames = [
-        'locus',
-        'status',
-        'accepted',
-        'rejection_reason',
-        'selected_contig_length',
-        'read_supported_span',
-        'slice_supported_bases',
-        'slice_support_breadth',
-        'max_slice_support_gap',
-        'read_count',
-        'unique_read_count',
-        'multi_mapping_read_count',
-        'read_density',
-        'unique_read_density',
-        'support_fraction',
-        'flank_balance',
-        'kmer_median_depth',
-        'kmer_depth_cv',
-        'kmer_max_depth_ratio',
-        'candidate_count',
-        'low_quality',
-    ]
-
-    with open(file_name, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({name: row.get(name, '') for name in fieldnames})
-
-def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, loop_count, total_count, completed_keys=None):
+def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, loop_count, total_count):
     contig_best_path = os.path.join(args.o, "results", key + ".fasta")
     contig_all_path = os.path.join(args.o, "contigs_all", key + ".fasta")
-    contig_low_path = os.path.join(args.o, "contigs_all_low", key + ".fasta")
     current_ka = args.ka
     limit = args.limit_count
 
-    completed_keys = set() if completed_keys is None else completed_keys
-    if key in completed_keys and os.path.isfile(contig_best_path) and os.path.getsize(contig_best_path) > 0:
+    if os.path.isfile(contig_best_path):
         return False, key, {"status": "skipped"}
+
+    open(contig_best_path, 'w').close()
 
     # 检查是哪种扩展名
     file_extensions = ['.fasta', '.fq']
@@ -979,7 +526,6 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if not os.path.isfile(os.path.join(args.o, 'filtered', key + Filted_File_Ext)):
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
-        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         return False, key, {"status": "no filtered file", "value": 0}
 
     # 获取种子列表
@@ -991,7 +537,6 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if not reads_dict:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
-        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o,  "log.txt"), "No reads were obtained for gene", key)
         return False, key, {"status": "no reads", "value": 0}
 
@@ -1007,7 +552,7 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     Write_Print(os.path.join(args.o,  "log.txt"), 'Assembling', key, loop_count, '/', total_count)
 
     # 制作参考序列的kmer字典
-    Load_Or_Make_Kmer_Dict(ref_dict, ref_path, current_ka, args.assembler_reference_cache_dir)
+    Make_Kmer_Dict(ref_dict, ref_path, current_ka)
     # 制作用于拼接的kmer字典
     Make_Assemble_Dict([filtered_file_path], current_ka, filtered_dict, ref_dict)
     # 缩减filtered_dict，保留大于limit和有深度信息的
@@ -1017,7 +562,6 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if len(filtered_dict) < 3:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
-        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o,  "log.txt"), 'Could not get enough reads from filter.')
         return False, key, {"status": "insufficient genomic kmers", "value": 0}
 
@@ -1039,7 +583,6 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     if not seed_list:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
-        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o,  "log.txt"), 'Could not get enough seeds.')
         return False, key, {"status": "no seed", "value": 0}
 
@@ -1051,102 +594,53 @@ def process_key_value(args, key, ref_path, ref_count, iteration, soft_boundary, 
     contigs_all = []
     contigs_all_low = []
     contigs_best = []
-    uce_guardrails = Build_Uce_Guardrails(args) if args.assembly_mode == 'uce' else None
 
     while len(seed_list) > seed_list_len * 0.5: # 已经耗费了大于一半的seed就没必要再做了 
         # org_contigs: 0序列 1序列的拼接权重 2切片数
-        org_contigs, kmer_set, contig_pos = Get_Contig_v6(
-            reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min,
-            iteration=iteration, soft_boundary=soft_boundary, assembly_mode=args.assembly_mode,
-            uce_side_candidates=args.uce_side_candidates, uce_guardrails=uce_guardrails)
+        org_contigs, kmer_set, contig_pos = Get_Contig_v6(reads_dict, slice_len, filtered_dict, seed_list[0][0], current_ka, args.cov_min, iteration=iteration, soft_boundary=soft_boundary)
         seed_list = [item for item in seed_list if (item[0] not in kmer_set) and (Reverse_Int(item[0], current_ka) not in kmer_set)]
         for contig in org_contigs:
-            contig_record = Build_Contig_Record(contig, len(seed_set & kmer_set), contig_pos)
-            if args.assembly_mode == 'uce':
-                if contig[RAW_ACCEPTED]:
-                    contigs_all.append(contig_record)
-                else:
-                    contigs_all_low.append(contig_record)
-            elif contig[RAW_READ_COUNT] * slice_len > len(contig[RAW_SEQ]): # 起码要有reads高质量切片能够覆盖contig，否则就是错误的拼接
-                contigs_all.append(contig_record)
+            if contig[2] * slice_len > len(contig[0]): # 起码要有reads高质量切片能够覆盖contig，否则就是错误的拼接
+                # contigs_all: 0序列 1使用的种子数量 2序列位置 3序列的拼接权重 4切片数
+                contigs_all.append([contig[0], len(seed_set & kmer_set), contig_pos, contig[1], contig[2]])
             else:
-                contigs_all_low.append(contig_record)
+                contigs_all_low.append([contig[0], len(seed_set & kmer_set), contig_pos, contig[1], contig[2]])
 
     low_qual = not contigs_all
-    if low_qual and args.assembly_mode != 'uce':
+    if low_qual:
         contigs_all = contigs_all_low
 
-    # Reference mode preserves the historical fallback.  UCE low-quality
-    # candidates remain diagnostic-only and never enter the primary results.
-    selection_pool = contigs_all if contigs_all else contigs_all_low
-    if selection_pool:
-        selection_pool.sort(key=lambda x: Score_Contig(x, args.assembly_mode), reverse=True)
-        contigs_best.append(selection_pool[0])
+    # 设计规则重新排序，此处使用切片数排序
+    # 排序第一位作为 best contig
+    if contigs_all:
+        contigs_all.sort(key=lambda x: (x[4], x[3]), reverse=True)
+        contigs_best.append(contigs_all[0])
     else:
         if os.path.isfile(contig_best_path): os.remove(contig_best_path)
         if os.path.isfile(contig_all_path): os.remove(contig_all_path)
-        if os.path.isfile(contig_low_path): os.remove(contig_low_path)
         Write_Print(os.path.join(args.o, "log.txt"), "Insufficient reads coverage, unable to build contigs.")
         return False, key, {"status": "no contigs", "value": 0}
 
-    write_primary = args.assembly_mode != 'uce' or not low_qual
-    if write_primary:
-        with open(contig_best_path, 'w') as out:
-            for x in contigs_best:
-                out.write(Format_Contig_Header(x, args.assembly_mode) + '\n')
-                out.write(x[CONTIG_SEQ] + '\n')
-        with open(contig_all_path, 'w') as out:
-            for x in contigs_all:
-                out.write(Format_Contig_Header(x, args.assembly_mode) + '\n')
-                out.write(x[CONTIG_SEQ] + '\n')
-    else:
-        if os.path.isfile(contig_best_path): os.remove(contig_best_path)
-        if os.path.isfile(contig_all_path): os.remove(contig_all_path)
+    with open(contig_best_path, 'w') as out:
+        for x in contigs_best:
+            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}\n')
+            out.write(x[0] + '\n')
+    with open(contig_all_path, 'w') as out:
+        for x in contigs_all:
+            out.write(f'>contig_{len(x[0])}_{x[1]}_{x[2]}_{x[3]}_{x[4]}\n')
+            out.write(x[0] + '\n')
 
-    if args.assembly_mode == 'uce' and contigs_all_low:
-        contigs_all_low.sort(key=lambda x: Score_Contig(x, args.assembly_mode), reverse=True)
-        with open(contig_low_path, 'w') as out:
-            for x in contigs_all_low:
-                out.write(Format_Contig_Header(x, args.assembly_mode, 'low_support_contig') + '\n')
-                out.write(x[CONTIG_SEQ] + '\n')
-    elif os.path.isfile(contig_low_path):
-        os.remove(contig_low_path)
-
-    best_contig = contigs_best[0]
     ref_dict, filtered_dict = None, None
     gc.collect()
-    accepted_locus = args.assembly_mode != 'uce' or not low_qual
-    return accepted_locus, key, {
-        "status": "low quality" if low_qual else "success",
-        "value": best_contig[CONTIG_READ_COUNT],
-        "accepted": int(not low_qual),
-        "rejection_reason": best_contig[CONTIG_REJECTION_REASON] if low_qual else "",
-        "selected_contig_length": len(best_contig[CONTIG_SEQ]),
-        "read_supported_span": best_contig[CONTIG_SUPPORTED_SPAN],
-        "slice_supported_bases": best_contig[CONTIG_SUPPORTED_BASES],
-        "slice_support_breadth": round(best_contig[CONTIG_SUPPORT_BREADTH], 6),
-        "max_slice_support_gap": best_contig[CONTIG_MAX_SUPPORT_GAP],
-        "read_count": best_contig[CONTIG_READ_COUNT],
-        "unique_read_count": best_contig[CONTIG_UNIQUE_READ_COUNT],
-        "multi_mapping_read_count": best_contig[CONTIG_MULTI_MAPPING_READ_COUNT],
-        "read_density": round(best_contig[CONTIG_READ_DENSITY], 6),
-        "unique_read_density": round(best_contig[CONTIG_UNIQUE_READ_COUNT] / len(best_contig[CONTIG_SEQ]), 6),
-        "support_fraction": round(best_contig[CONTIG_SUPPORT_FRACTION], 3),
-        "flank_balance": round(best_contig[CONTIG_FLANK_BALANCE], 3),
-        "kmer_median_depth": round(best_contig[CONTIG_KMER_MEDIAN_DEPTH], 3),
-        "kmer_depth_cv": round(best_contig[CONTIG_KMER_DEPTH_CV], 3),
-        "kmer_max_depth_ratio": round(best_contig[CONTIG_KMER_MAX_DEPTH_RATIO], 3),
-        "candidate_count": len(contigs_all) + len(contigs_all_low),
-        "low_quality": int(low_qual),
-    }
+    return True, key, {"status": "low quality" if low_qual else "success", "value": contigs_best[0][4]}
 
 if __name__ == '__main__':
     if sys.platform.startswith('win'):
         multiprocessing.freeze_support()
 
     pars = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description='''Assembler by YY 20230314''')
-    pars.add_argument('-r', metavar='<str>', type=str, help='''input ref file or dir''', required=True)
-    pars.add_argument('-o', metavar='<str>', type=str, help='''out dir''', required=True)
+    pars.add_argument('-r', metavar='<str>', type=str, help='''input ref file or dir''')
+    pars.add_argument('-o', metavar='<str>', type=str, help='''out dir''')
     pars.add_argument('-ka', metavar='<int>', type=int, help='''kmer of assemble''',  default=39)
     pars.add_argument('-k_max', metavar='<int>', type=int, help='''max kmer of assemble''',  default=39)
     pars.add_argument('-k_min', metavar='<int>', type=int, help='''max kmer of assemble''',  default=21)
@@ -1155,25 +649,7 @@ if __name__ == '__main__':
     pars.add_argument('-cov_min', metavar='<int>', type=int, help='''min coverage''', required=False, default=0)
     pars.add_argument('-sb', '--soft_boundary', metavar='<int>', type=int, help='''soft boundary，default = [0], -1时为切片长度的一半''', required=False, default=0)
     pars.add_argument('-p', '--processes', metavar='<int>', type=int, help='Number of processes for multiprocessing', default= 1)#max(multiprocessing.cpu_count()-1,2))
-    pars.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode')
-    pars.add_argument('--uce-side-candidates', dest='uce_side_candidates', metavar='<int>', type=int, default=8, help='''number of one-sided branch candidates to combine in UCE mode''')
-    pars.add_argument('--uce-max-contig-length', dest='uce_max_contig_length', metavar='<int>', type=int, default=5000, help='''maximum UCE contig length kept before scoring; 0 disables''')
-    pars.add_argument('--uce-min-read-density', dest='uce_min_read_density', metavar='<float>', type=float, default=0.003, help='''minimum uniquely placed read_count/length for long UCE contigs''')
-    pars.add_argument('--uce-density-check-min-length', dest='uce_density_check_min_length', metavar='<int>', type=int, default=1000, help='''minimum UCE contig length where read-density guardrail applies''')
-    pars.add_argument('--uce-max-depth-cv', dest='uce_max_depth_cv', metavar='<float>', type=float, default=0, help='''optional maximum kmer depth coefficient of variation for UCE contigs; 0 disables''')
-    pars.add_argument('--uce-max-depth-ratio', dest='uce_max_depth_ratio', metavar='<float>', type=float, default=0, help='''optional maximum kmer max/median depth ratio for UCE contigs; 0 disables''')
-    pars.add_argument('--assembler-reference-cache-dir', dest='assembler_reference_cache_dir', metavar='<str>', default=None, help='''optional directory for cached assembler reference k-mer dictionaries''')
     args = pars.parse_args()
-    args.uce_side_candidates = max(args.uce_side_candidates, 3)
-    args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
-    args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
-
-    if args.uce_min_read_density < 0:
-        pars.error('--uce-min-read-density must be greater than or equal to 0')
-    if args.uce_max_depth_cv < 0:
-        pars.error('--uce-max-depth-cv must be greater than or equal to 0')
-    if args.uce_max_depth_ratio < 0:
-        pars.error('--uce-max-depth-ratio must be greater than or equal to 0')
 
     try:
         # 初始化文件夹
@@ -1181,53 +657,35 @@ if __name__ == '__main__':
             os.mkdir(os.path.join(args.o, 'results'))
         if not os.path.isdir(os.path.join(args.o, 'contigs_all')):
             os.mkdir(os.path.join(args.o, 'contigs_all'))
-        if not os.path.isdir(os.path.join(args.o, 'contigs_all_low')):
-            os.mkdir(os.path.join(args.o, 'contigs_all_low'))
+        print("Do not close this window manually, please!")
         # 载入参考序列信息
         Get_Ref_Info(args.r, ref_path_dict, ref_count_dict)
         t0 = time.time()
     except Exception as e:
         Write_Print(os.path.join(args.o,  "log.txt"), "error:" , e)
-        sys.exit(1)
 
     try:
         Write_Print(os.path.join(args.o,  "log.txt"), '======================== Assemble =========================')
-
-        result_path = os.path.join(args.o, "result_dict.txt")
-        uce_summary_path = os.path.join(args.o, "uce_assembly_summary.csv")
-        valid_keys = set(ref_path_dict)
-        result_dict = {key: value for key, value in Read_Dict(result_path).items() if key in valid_keys}
-        uce_summary_by_locus = ({key: value
-                                 for key, value in Read_Uce_Summary(uce_summary_path).items()
-                                 if key in valid_keys}
-                                if args.assembly_mode == 'uce' else {})
-        completed_keys = set(result_dict)
-        if args.assembly_mode == 'uce':
-            completed_keys &= set(uce_summary_by_locus)
 
         results = []
         if args.processes > 1:
             pool = multiprocessing.Pool(args.processes)
             for loop_count, (key, ref_path) in enumerate(ref_path_dict.items(), start=1):
-                results.append(pool.apply_async(process_key_value, (args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict), completed_keys)))
+                results.append(pool.apply_async(process_key_value, (args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict))))
             pool.close()
             pool.join()
         else:
             for loop_count, (key, ref_path) in enumerate(ref_path_dict.items(), start=1):
-                results.append(process_key_value(args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict), completed_keys))
+                results.append(process_key_value(args, key, ref_path, ref_count_dict[key], args.iteration, args.soft_boundary, loop_count, len(ref_path_dict)))
 
+        result_dict = {}
         for result in results:
             success, key_update, result_dict_entry = result if type(result) == tuple else result.get()
             if result_dict_entry.get("status") != "skipped":
                 result_dict[key_update] = [result_dict_entry["status"], result_dict_entry["value"]]
-                if args.assembly_mode == 'uce':
-                    uce_summary_by_locus[key_update] = {'locus': key_update, **result_dict_entry}
 
-        Write_Dict(result_dict, result_path)
-        if args.assembly_mode == 'uce':
-            Write_Uce_Summary([uce_summary_by_locus[key] for key in sorted(uce_summary_by_locus)], uce_summary_path)
+        Write_Dict(result_dict, os.path.join(args.o, "result_dict.txt"))
         t1 = time.time()
         Write_Print(os.path.join(args.o,  "log.txt"), '\nTime cost:', t1 - t0, '\n') # 拼接所用的时间
     except Exception as e:
         Write_Print(os.path.join(args.o,  "log.txt"), "error:" , e)
-        sys.exit(1)

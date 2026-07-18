@@ -1,7 +1,10 @@
-PY_SRC := build_consensus unix_command
+PY_SRC := build_consensus its2_profile unix_command
 PY_BIN := $(patsubst %,cli/bin/%,$(PY_SRC))
 RUST_ASSEMBLER_BIN := cli/bin/main_assembler-rust
 ORIGINAL_ASSEMBLER_BIN := cli/bin/main_assembler-original
+ORIGINAL_RUST_ASSEMBLER_BIN := cli/bin/main_assembler-original-rust
+ORIGINAL_RUST_ASSEMBLER_MANIFEST := rust/main_assembler_original/Cargo.toml
+ORIGINAL_RUST_ASSEMBLER_SOURCES := $(ORIGINAL_RUST_ASSEMBLER_MANIFEST) $(wildcard rust/main_assembler_original/src/*.rs)
 ORIGINAL_ASSEMBLER_SOURCE := scripts/main_assembler_original.py
 ASSEMBLER_RUST_MANIFEST := rust/main_assembler/Cargo.toml
 ASSEMBLER_RUST_SOURCES := $(ASSEMBLER_RUST_MANIFEST) $(wildcard rust/main_assembler/src/*.rs)
@@ -21,15 +24,15 @@ FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp script
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(PY_BIN)
+build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(PY_BIN)
 	for target in $(PY_SRC); do cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/$$target/_internal; done
-	if command -v cargo >/dev/null 2>&1; then $(MAKE) $(RUST_ASSEMBLER_BIN); fi
 	cd cli && ln -f -r -s bin/unix_command geneminer2
 
 clean:
 	rm -f -r scripts/__pycache__
 	rm -f -r scripts/filter/bin
 	rm -f -r scripts/build
+	rm -f -r rust/main_assembler_original/target
 	rm -f -r scripts/dist
 	rm -f -r rust/main_filter_new/target
 	rm -f -r rust/main_refilter_new/target
@@ -59,6 +62,11 @@ haxe-filter: cli/bin/MainFilterNew-haxe
 cli/bin/MainFilterNew-haxe: $(FILTER_HAXE_SOURCES) | cli/bin
 	cd scripts/filter && haxe -cpp bin -dce full -D analyzer-optimize -D HXCPP_GC_BIG_BLOCKS -D HXCPP_GC_MOVING -D HXCPP_M64 -D HXCPP_OPTIMIZE_LINK -D HXCPP_SINGLE_THREADED_APP -D HXCPP_VISIT_ALLOCS -main MainFilterNew.hx
 	install scripts/filter/bin/MainFilterNew cli/bin/MainFilterNew-haxe
+$(ORIGINAL_RUST_ASSEMBLER_BIN): $(ORIGINAL_RUST_ASSEMBLER_SOURCES) | cli/bin
+	command -v cargo >/dev/null 2>&1 || { echo "Cargo is required for the Rust assembler" >&2; exit 1; }
+	cargo build --release --manifest-path $(ORIGINAL_RUST_ASSEMBLER_MANIFEST)
+	install rust/main_assembler_original/target/release/main_assembler_original $(ORIGINAL_RUST_ASSEMBLER_BIN)
+
 
 cython:
 	cd scripts && cythonize -i main_refilter_ext.pyx
@@ -79,10 +87,11 @@ $(ORIGINAL_ASSEMBLER_BIN): $(ORIGINAL_ASSEMBLER_SOURCE) | cython cli/bin
 	cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/main_assembler_original/_internal
 
 rust-assembler:
-	command -v cargo >/dev/null 2>&1 || { echo "Cargo is required for the optional Rust assembler" >&2; exit 1; }
+	command -v cargo >/dev/null 2>&1 || { echo "Cargo is required for the Rust assembler" >&2; exit 1; }
 	$(MAKE) $(RUST_ASSEMBLER_BIN)
 
 $(RUST_ASSEMBLER_BIN): $(ASSEMBLER_RUST_SOURCES) | cli/bin
+	command -v cargo >/dev/null 2>&1 || { echo "Cargo is required for the Rust assembler" >&2; exit 1; }
 	cargo build --release --manifest-path $(ASSEMBLER_RUST_MANIFEST)
 	install rust/main_assembler/target/release/main_assembler $(RUST_ASSEMBLER_BIN)
 

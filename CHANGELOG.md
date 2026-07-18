@@ -1,5 +1,16 @@
 # Changelog
 
+
+## Unreleased
+
+- Documented a fixed-parameter, 40-locus single-thread comparison between the upstream Python assembler and `main_assembler-original-rust`: identical locus status, 38/39 identical best-contig sequences, and a documented remaining difference at `v1__uce-1200`; reference mode continues to default to the upstream Python implementation.
+
+- Restored the byte-identical upstream GeneMiner2 Python assembler for reference-mode fallback and reproducibility.
+- Removed the UCE-aware Python fallback source, executable, CLI option, build target, and mode routing; UCE and ITS2 now fail directly when Rust assembly is unavailable or fails.
+- Made the upstream original assembler the direct default for reference mode; Rust reference assembly now requires explicit selection.
+- Added a Chinese algorithm note comparing the upstream and Rust GeneMiner2 assemblers and separating the contributions of MaSuRCA, SPAdes, and Sparrowhawk from features not adopted.
+- Added a versioned binary reference k-mer cache for `main_assembler-original-rust`, with reference identity validation, corrupt-cache rebuilds, and atomic replacement.
+
 ## v0.7.2 — Documentation structure and readable Rust internals
 
 - Reorganized the Chinese and English READMEs around mode selection, installation, quick start, and primary outputs.

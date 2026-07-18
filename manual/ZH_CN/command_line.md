@@ -146,6 +146,8 @@ cli/geneminer2 \
 
 该策略借鉴 MaSuRCA 的唯一线性延伸和 SPAdes 的局部 bulge 选择思路，但仍保留 GeneMiner2 的 read 支持与深度 guardrails。若需与旧算法做 A/B 对照，使用 `--uce-path-strategy search`；此时 `--uce-side-candidates` 才生效。
 
+详细算法对照、三个参考 assembler 的具体贡献及未采用部分见[新旧 Assembler 算法说明](../../docs/assembler-algorithm_ZH.md)。
+
 `--uce-rescue-reads` 在第一轮组装后，以初步 contig 和原始参考再次招募 raw reads，并只执行一轮 re-filtering 和 assembly。rescue 最多并行处理 4 个样本、每个样本最多使用 4 个线程，并受 `-p` 总量约束。
 
 建议在放宽 `-sb`、`-e` 或 assembly k-mer 范围后检查 `uce_assembly_summary.csv`、`uce_rescue_summary.csv` 和下游 alignment。详细输出见[输出文件说明](output.md)。
@@ -162,7 +164,7 @@ cli/geneminer2 filter refilter assemble \
   -p 8 --assembly-mode its2
 ```
 
-ITS2 模式不能使用 `--assembler-implementation original`，Rust assembler 不可用或失败时也不会回退。
+ITS2 模式不能使用 `--assembler-implementation original` 或 `original-rust`，Rust assembler 不可用或失败时也不会回退。
 
 ## 5. Population 群体遗传分析
 
@@ -259,7 +261,7 @@ cli/geneminer2 stats \
 | `-kf INT` | 过滤 k-mer 大小，默认 `31` |
 | `-s, --step-size INT` | reads 扫描步长，默认 `4` |
 | `--max-reads INT` | 每个文件最多处理的 reads 数，单位为百万；`0` 表示不限 |
-| `--reuse-reference-cache` | 复用带输入指纹的 reference k-mer index |
+| `--reuse-reference-cache` | 复用带输入指纹的 reference k-mer index；显式使用 `original-rust` 时也启用带版本和 k 校验的 assembler 二进制 cache |
 | `--reference-cache-dir DIR` | reference cache 目录；默认 `output/.gm2_reference_cache`，且必须与上一参数同时使用 |
 | `--depth-low-water-mark INT` | 低于该深度时尝试放宽条件招募更多 reads，默认 `50` |
 | `--depth-limit INT` | re-filtering 处理的最高深度，默认 `768` |
@@ -275,7 +277,7 @@ cli/geneminer2 stats \
 | `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
 | `-i, --search-depth INT` | 搜索深度，默认 `4096` |
 | `--min-coverage INT` | contig 最低 read depth，默认 `0` |
-| `--assembler-implementation MODE` | `auto`（默认）先运行 Rust，失败时回退未修改的原始版；`rust` 仅运行 Rust；`original` 直接运行原始版；ITS2 仅支持 Rust |
+| `--assembler-implementation MODE` | `auto`（默认）在 reference 模式直接使用上游原版，在 UCE 或 ITS2 模式只使用 Rust；`rust` 选择 UCE 定向的 Rust assembler；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 reference；UCE 和 ITS2 不再回退 Python |
 | `--assembler-read-chunk-size INT` | Rust assembler 每批读取的 reads 数，默认 `8192` |
 | `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
 | `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |

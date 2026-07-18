@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 from types import SimpleNamespace
 import csv
 import sys
@@ -78,10 +79,14 @@ class UceRescueAssemblerReferenceTests(unittest.TestCase):
 
         original_cmd = build_assembler_command(
             "main_assembler-original", args, "/tmp/out/sample",
-            "/tmp/out/sample/uce_rescue_refs", "10000", 4, original=True,
+            "/tmp/out/sample/uce_rescue_refs", "10000", 4, backend='original',
         )
         self.assertNotIn("--uce-path-strategy", original_cmd)
         self.assertNotIn("--uce-backbone-lookahead", original_cmd)
+        self.assertNotIn("--assembly-mode", original_cmd)
+        self.assertNotIn("--uce-side-candidates", original_cmd)
+        self.assertNotIn("--assembler-reference-cache-dir", original_cmd)
+
 
     def test_assembler_command_forwards_reference_cache_dir(self):
         args = SimpleNamespace(
@@ -146,6 +151,38 @@ class UceRescueAssemblerReferenceTests(unittest.TestCase):
 
         self.assertNotIn("--assembler-reference-cache-dir", cmd)
 
+
+    def test_original_rust_gets_cache_but_not_uce_options(self):
+        args = SimpleNamespace(
+            ka=31, min_ka=21, max_ka=39, error_threshold=2,
+            search_depth=8192, min_coverage=0,
+            assembler_reference_cache_dir="/tmp/cache/assembler", r="/tmp/ref",
+        )
+        cmd = build_assembler_command(
+            "main_assembler-original-rust", args, "/tmp/out/sample",
+            "/tmp/ref", "-1", 1, backend="original-rust",
+        )
+        self.assertEqual(
+            cmd[cmd.index("--assembler-reference-cache-dir") + 1],
+            "/tmp/cache/assembler",
+        )
+        self.assertNotIn("--assembly-mode", cmd)
+        self.assertNotIn("--uce-side-candidates", cmd)
+
+        rescue_cmd = build_assembler_command(
+            "main_assembler-original-rust", args, "/tmp/out/sample",
+            "/tmp/out/sample/uce_rescue_refs", "-1", 1,
+            backend="original-rust",
+        )
+        self.assertNotIn("--assembler-reference-cache-dir", rescue_cmd)
+
+    def test_original_assembler_matches_pinned_upstream_source(self):
+        source = ROOT / "scripts" / "main_assembler_original.py"
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        self.assertEqual(
+            digest,
+            "c6a2c74937a432e3edb3b66e023b8046530be9bcc0e2e753a95f6c05a74f4962",
+        )
 
 if __name__ == "__main__":
     unittest.main()

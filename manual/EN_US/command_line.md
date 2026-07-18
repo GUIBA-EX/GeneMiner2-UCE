@@ -162,7 +162,7 @@ cli/geneminer2 filter refilter assemble \
   -p 8 --assembly-mode its2
 ```
 
-ITS2 mode cannot use `--assembler-implementation original`, and it does not fall back when the Rust assembler is unavailable or fails.
+ITS2 mode cannot use `--assembler-implementation original` or `original-rust`, and it does not fall back when the Rust assembler is unavailable or fails.
 
 ## 5. Population-genetic analysis
 
@@ -259,7 +259,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-kf INT` | Filter k-mer size; default `31` |
 | `-s, --step-size INT` | Read-scanning step; default `4` |
 | `--max-reads INT` | Maximum million reads processed per file; `0` means unlimited |
-| `--reuse-reference-cache` | Reuse a fingerprinted reference k-mer index |
+| `--reuse-reference-cache` | Reuse a fingerprinted reference k-mer index; with explicit `original-rust`, also enable its versioned, k-validated binary assembler cache |
 | `--reference-cache-dir DIR` | Reference-cache directory; default `output/.gm2_reference_cache`; requires the preceding option |
 | `--depth-low-water-mark INT` | Below this depth, attempt relaxed read recruitment; default `50` |
 | `--depth-limit INT` | Maximum depth processed during refiltering; default `768` |
@@ -275,7 +275,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-sb, --soft-boundary VALUE` | Integer, `auto`, or `unlimited`; default `auto` |
 | `-i, --search-depth INT` | Search depth; default `4096` |
 | `--min-coverage INT` | Minimum contig read depth; default `0` |
-| `--assembler-implementation MODE` | `auto` (default) tries Rust then falls back to the unmodified original; `rust` is strict Rust-only; `original` skips Rust; ITS2 is Rust-only |
+| `--assembler-implementation MODE` | `auto` (default) directly uses the upstream original in reference mode and requires Rust in UCE or ITS2 mode; `rust` selects the UCE-oriented Rust assembler; `original` selects upstream Python; `original-rust` selects the deterministic single-thread Rust compatibility implementation; `original` and `original-rust` are reference-only; UCE and ITS2 never fall back to Python |
 | `--assembler-read-chunk-size INT` | Reads loaded per Rust assembler batch; default `8192` |
 | `--assembler-kmer-count-threads INT` | K-mer sorting/counting workers per locus; default `0` selects automatically |
 | `--assembler-graph-format MODE` | Optional graph output: `none` (default), `gfa`, `dot`, or `both` |

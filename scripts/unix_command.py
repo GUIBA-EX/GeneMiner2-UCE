@@ -644,13 +644,27 @@ def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1,
 
     return dict_cmd, reads_cmd
 
-def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, original=False):
-    """照当前参数把组装器命令拼妥，Rust 和原版都照顾着。"""
+def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, backend='rust'):
+    """照实现类型拼组装命令，老原版不掺 UCE 新参数。"""
     command = [
         assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
         '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
         '-limit_count', str(args.error_threshold), '-iteration', str(args.search_depth),
         '-sb', soft_boundary, '-cov_min', str(args.min_coverage), '-p', str(thr),
+    ]
+
+    # 原版算法后端只认老参数；Rust 复刻版额外认 reference cache，UCE 参数一概不塞。
+    if backend in ('original', 'original-rust'):
+        if backend == 'original-rust':
+            assembler_cache_dir = getattr(args, 'assembler_reference_cache_dir', None)
+            original_ref_dir = getattr(args, 'r', None)
+            if assembler_cache_dir and original_ref_dir and os.path.abspath(ref_dir) != os.path.abspath(original_ref_dir):
+                assembler_cache_dir = None
+            if assembler_cache_dir:
+                command.extend(['--assembler-reference-cache-dir', assembler_cache_dir])
+        return command
+
+    command.extend([
         '--assembly-mode', args.assembly_mode,
         '--uce-side-candidates', str(args.uce_side_candidates),
         '--uce-max-contig-length', str(args.uce_max_contig_length),
@@ -658,9 +672,9 @@ def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_bound
         '--uce-density-check-min-length', str(args.uce_density_check_min_length),
         '--uce-max-depth-cv', str(args.uce_max_depth_cv),
         '--uce-max-depth-ratio', str(args.uce_max_depth_ratio),
-    ]
+    ])
 
-    if not original:
+    if backend == 'rust':
         command.extend([
             '--uce-path-strategy', getattr(args, 'uce_path_strategy', 'backbone'),
             '--uce-backbone-lookahead', str(getattr(args, 'uce_backbone_lookahead', 24)),
@@ -737,7 +751,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
 
             params = [filter_bin, '-r', args.r, '-q1', q1, '-q2', q2, '-o', os.path.join(out_loc, name),
                       '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                      '-m', '5', '-lb', '-lkd', kmer_dict_path]
+                      '-m', '4' if args.assembly_mode == 'its2' else '5', '-lb', '-lkd', kmer_dict_path]
 
             if args.max_reads > 0:
                 params.extend(['-m_reads', str(args.max_reads)])
@@ -821,21 +835,26 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
     if do_assemble:
         assembler_implementation = getattr(args, 'assembler_implementation', 'auto')
         original_assembler_bin = None
+        original_rust_assembler_bin = None
         rust_assembler_bin = None
 
-        if assembler_implementation != 'rust' and args.assembly_mode != 'its2':
-            original_assembler_bin = find_executable('main_assembler-original', internal=True)
-
-        if assembler_implementation != 'original':
-            try:
+        # 普通模式默认用上游原版；original-rust 是可对照的新兼容实现，UCE 和 ITS2 仍只认 Rust。
+        if args.assembly_mode == 'reference':
+            if assembler_implementation == 'original-rust':
+                original_rust_assembler_bin = find_executable('main_assembler-original-rust', internal=True)
+            elif assembler_implementation != 'rust':
+                original_assembler_bin = find_executable('main_assembler-original', internal=True)
+            else:
                 rust_assembler_bin = find_executable('main_assembler-rust', internal=True)
-            except RuntimeError:
-                if assembler_implementation == 'rust':
-                    raise
-                print('Rust assembler is unavailable; using the original Python assembler.', file=sys.stderr)
+        elif args.assembly_mode == 'uce':
+            if assembler_implementation in ('original', 'original-rust'):
+                raise RuntimeError(
+                    f'{args.assembly_mode.upper()} mode requires the Rust UCE/ITS2 assembler'
+                )
+            rust_assembler_bin = find_executable('main_assembler-rust', internal=True)
 
         def run_assembler(name, thr=1, ref_dir=None):
-            """组装这个样本，Rust 不成时按设置换回原版。"""
+            """组装这个样本；普通模式用原版，UCE 和 ITS2 只认 Rust。"""
             sample_dir = os.path.join(out_loc, name)
             in_dir = os.path.join(sample_dir, 'filtered')
             out_dir = os.path.join(sample_dir, 'results')
@@ -845,6 +864,35 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
 
             if not os.path.isdir(in_dir):
                 raise RuntimeError('No successful filter run, cannot assemble')
+
+            if args.assembly_mode == 'its2':
+                ref_files = list(iter_reference_files(ref_dir))
+                if len(ref_files) != 1:
+                    raise RuntimeError(
+                        'ITS2 mode requires exactly one reference FASTA (the SymPortal post-MED database)'
+                    )
+                reads = [
+                    entry.path for entry in sorted(os.scandir(in_dir), key=lambda entry: entry.name)
+                    if entry.is_file() and get_sample_ext(entry.name) in ('.fq', '.fasta')
+                ]
+                if not reads:
+                    raise RuntimeError('No recruited ITS2 reads found for profiling')
+                profile_dir = os.path.join(sample_dir, 'its2_profile')
+                if os.path.isdir(profile_dir):
+                    shutil.rmtree(profile_dir, ignore_errors=True)
+                profiler_bin = find_executable('its2_profile', internal=True)
+                minimap2_bin = find_executable('minimap2')
+                command = [
+                    profiler_bin, '--reference', ref_files[0].path, '--reads', *reads,
+                    '--output', profile_dir, '--minimap2', minimap2_bin,
+                    '--threads', str(thr), '--score-delta', str(args.its2_score_delta),
+                    '--min-query-coverage', str(args.its2_min_query_coverage),
+                    '--min-clade-score-margin', str(args.its2_min_clade_score_margin),
+                ]
+                subprocess.run(command, check=True)
+                if not os.path.isfile(os.path.join(profile_dir, 'its2_profile.tsv')):
+                    raise RuntimeError('ITS2 profiling failed to produce its2_profile.tsv')
+                return
 
             def clear_assembly_outputs():
                 """开整前把旧组装产物清出去，省得串锅。"""
@@ -857,33 +905,22 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                     if os.path.isfile(path):
                         os.remove(path)
 
-            def execute_assembler(executable, original=False):
+            def execute_assembler(executable, backend='rust'):
                 """真把组装器跑起来，再瞅瞅结果落地没。"""
                 clear_assembly_outputs()
                 command = build_assembler_command(
-                    executable, args, sample_dir, ref_dir, soft_boundary, thr, original=original
+                    executable, args, sample_dir, ref_dir, soft_boundary, thr, backend=backend
                 )
                 subprocess.run(command, check=True)
                 if not os.path.isfile(result_path):
                     raise RuntimeError('Assembly failed to produce result_dict.txt')
 
-            if args.assembly_mode == 'its2':
-                if assembler_implementation == 'original' or rust_assembler_bin is None:
-                    raise RuntimeError('ITS2 mode requires the Rust assembler')
-                execute_assembler(rust_assembler_bin)
-            elif assembler_implementation == 'original' or rust_assembler_bin is None:
-                execute_assembler(original_assembler_bin, original=True)
-            elif assembler_implementation == 'rust':
-                execute_assembler(rust_assembler_bin)
+            if original_assembler_bin is not None:
+                execute_assembler(original_assembler_bin, backend='original')
+            elif original_rust_assembler_bin is not None:
+                execute_assembler(original_rust_assembler_bin, backend='original-rust')
             else:
-                try:
-                    execute_assembler(rust_assembler_bin)
-                except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
-                    print(
-                        f"Rust assembler failed for {name} ({error}); retrying with the original Python assembler.",
-                        file=sys.stderr,
-                    )
-                    execute_assembler(original_assembler_bin, original=True)
+                execute_assembler(rust_assembler_bin)
 
     else:
         run_assembler = ignore_hook
@@ -2114,11 +2151,14 @@ if __name__ == '__main__':
     group_assembly.add_argument('-sb', '--soft-boundary', default='auto', help='Soft boundary (default = auto)', metavar='{INT,auto,unlimited}', type=str)
     group_assembly.add_argument('-i', '--search-depth', default=4096, help='Search depth', metavar='INT', type=int)
     group_assembly.add_argument('--min-coverage', default=0, help='Minimum read depth required for contig generation', metavar='INT', type=int)
-    group_assembly.add_argument('--assembler-implementation', choices=('auto', 'rust', 'original'), default='auto', help='Assembler implementation: auto tries Rust first and falls back to the unmodified original Python assembler; rust is strict; original skips Rust')
+    group_assembly.add_argument('--assembler-implementation', choices=('auto', 'rust', 'original', 'original-rust'), default='auto', help='Assembler implementation: auto uses the upstream original in reference mode; original-rust is the deterministic Rust compatibility implementation for reference mode; rust selects the UCE-oriented Rust assembler; original and original-rust are unavailable in UCE or ITS2 mode')
     group_assembly.add_argument('--assembler-read-chunk-size', default=8192, help='Reads per bounded Rust assembler batch (default = 8192)', metavar='INT', type=int)
     group_assembly.add_argument('--assembler-kmer-count-threads', default=0, help='Rust k-mer sort/count workers per locus; 0 allocates automatically', metavar='INT', type=int)
     group_assembly.add_argument('--assembler-graph-format', choices=('none', 'gfa', 'dot', 'both'), default='none', help='Write compact per-locus Rust assembly graphs (default = none)')
-    group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce', 'its2'), default='reference', help='Assembly mode: reference keeps the default behavior; uce preserves UCE flanks; its2 preserves multiple ITS2 variants and paired-read evidence')
+    group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce', 'its2'), default='reference', help='Assembly mode: reference keeps the default behavior; uce preserves UCE flanks; its2 profiles recruited reads directly against one SymPortal post-MED FASTA without assembly')
+    group_assembly.add_argument('--its2-score-delta', default=5, help='ITS2: retain reference alignments within this score of the best alignment (default = 5)', metavar='INT', type=int)
+    group_assembly.add_argument('--its2-min-query-coverage', default=0.85, help='ITS2: minimum aligned fraction of a read retained for classification (default = 0.85)', metavar='FLOAT', type=float)
+    group_assembly.add_argument('--its2-min-clade-score-margin', default=10, help='ITS2: minimum alignment-score advantage over the nearest alternative clade for the specificity filter (default = 10)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path handling: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration (default = backbone)')
     group_assembly.add_argument('--uce-backbone-lookahead', default=24, help='Greedy look-ahead steps used to choose a UCE backbone edge at each bubble (default = 24)', metavar='INT', type=int)
@@ -2199,6 +2239,12 @@ if __name__ == '__main__':
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
     if args.assembly_mode == 'its2':
         args.kf = args.ka = args.min_ka = args.max_ka = 21
+        if args.its2_score_delta < 0:
+            parser.error('--its2-score-delta must be greater than or equal to 0')
+        if not 0 < args.its2_min_query_coverage <= 1:
+            parser.error('--its2-min-query-coverage must be in (0, 1]')
+        if args.its2_min_clade_score_margin < 0:
+            parser.error('--its2-min-clade-score-margin must be greater than or equal to 0')
     args.uce_backbone_lookahead = max(args.uce_backbone_lookahead, 1)
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
     args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)

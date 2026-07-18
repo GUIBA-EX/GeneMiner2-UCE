@@ -25,7 +25,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--assembly-mode", proc.stdout)
         self.assertIn("--assembler-implementation", proc.stdout)
-        self.assertIn("{auto,rust,original}", proc.stdout)
+        self.assertIn("{auto,rust,original,original-rust}", proc.stdout)
         self.assertIn("--uce-path-strategy", proc.stdout)
         self.assertIn("--uce-backbone-lookahead", proc.stdout)
         self.assertIn("--uce-rescue-reads", proc.stdout)
@@ -107,20 +107,16 @@ class CliSmokeTests(unittest.TestCase):
 
     @mock.patch.object(unix_command, "write_failed_samples")
     @mock.patch.object(unix_command.os.path, "isdir", return_value=True)
-    @mock.patch.object(
-        unix_command.subprocess,
-        "run",
-        side_effect=subprocess.CalledProcessError(1, ["main_assembler-rust"]),
-    )
-    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_assembler-rust")
-    def test_its2_rust_failure_does_not_fall_back_to_python(
-        self, _find, run, _isdir, _write_failures
+    @mock.patch.object(unix_command.subprocess, "run")
+    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_assembler-original")
+    def test_reference_auto_uses_upstream_original_by_default(
+        self, find, run, _isdir, _write_failures
     ):
         args = SimpleNamespace(
             o="out", r="refs", p=1, kf=21, step_size=4,
             reuse_reference_cache=False, reference_cache_dir=None,
-            uce_rescue_reads=False, assembly_mode="its2", soft_boundary="auto",
-            assembler_implementation="auto", ka=21, min_ka=21, max_ka=21,
+            uce_rescue_reads=False, assembly_mode="reference", soft_boundary="auto",
+            assembler_implementation="auto", ka=39, min_ka=21, max_ka=39,
             error_threshold=2, search_depth=4096, min_coverage=0,
             uce_side_candidates=8, uce_max_contig_length=0,
             uce_min_read_density=0.003, uce_density_check_min_length=1000,
@@ -132,8 +128,78 @@ class CliSmokeTests(unittest.TestCase):
                 args, {"1_A": ("r1.fq", "r2.fq")}, False, False, True
             )
 
-        self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0][0], "/gm2/main_assembler-rust")
+        find.assert_called_once_with("main_assembler-original", internal=True)
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/gm2/main_assembler-original")
+        self.assertNotIn("--assembly-mode", command)
+        self.assertNotIn("--uce-side-candidates", command)
+
+
+    @mock.patch.object(unix_command, "get_reference_kmer_dict_path", return_value="/cache/filter.dict")
+    @mock.patch.object(unix_command, "write_failed_samples")
+    @mock.patch.object(unix_command.os.path, "isdir", return_value=True)
+    @mock.patch.object(unix_command.subprocess, "run")
+    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_assembler-original-rust")
+    def test_reference_original_rust_receives_versioned_cache(self, find, run, _isdir, _write_failures, _filter_cache):
+        args = SimpleNamespace(
+            o="out", r="refs", p=1, kf=21, step_size=4,
+            reuse_reference_cache=True, reference_cache_dir="/cache",
+            uce_rescue_reads=False, assembly_mode="reference", soft_boundary="auto",
+            assembler_implementation="original-rust", ka=39, min_ka=21, max_ka=39,
+            error_threshold=2, search_depth=4096, min_coverage=0,
+            uce_side_candidates=8, uce_max_contig_length=0,
+            uce_min_read_density=0.003, uce_density_check_min_length=1000,
+            uce_max_depth_cv=0, uce_max_depth_ratio=0,
+        )
+        with self.assertRaises(RuntimeError):
+            unix_command.do_filter_assemble(
+                args, {"1_A": ("r1.fq", "r2.fq")}, False, False, True
+            )
+        find.assert_called_once_with("main_assembler-original-rust", internal=True)
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/gm2/main_assembler-original-rust")
+        self.assertEqual(
+            command[command.index("--assembler-reference-cache-dir") + 1],
+            "/cache/assembler",
+        )
+        self.assertNotIn("--assembly-mode", command)
+        self.assertNotIn("--uce-side-candidates", command)
+    @mock.patch.object(unix_command, "write_failed_samples")
+    @mock.patch.object(unix_command.os.path, "isdir", return_value=True)
+    @mock.patch.object(
+        unix_command.subprocess,
+        "run",
+        side_effect=subprocess.CalledProcessError(1, ["main_assembler-rust"]),
+    )
+    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_assembler-rust")
+    def test_uce_rust_failures_do_not_fall_back_to_python(
+        self, find, run, _isdir, _write_failures
+    ):
+        for assembly_mode in ("uce",):
+            with self.subTest(assembly_mode=assembly_mode):
+                find.reset_mock()
+                run.reset_mock()
+                args = SimpleNamespace(
+                    o="out", r="refs", p=1, kf=21, step_size=4,
+                    reuse_reference_cache=False, reference_cache_dir=None,
+                    uce_rescue_reads=False, assembly_mode=assembly_mode,
+                    soft_boundary="auto", assembler_implementation="auto",
+                    ka=21, min_ka=21, max_ka=21,
+                    error_threshold=2, search_depth=4096, min_coverage=0,
+                    uce_side_candidates=8, uce_max_contig_length=0,
+                    uce_min_read_density=0.003,
+                    uce_density_check_min_length=1000,
+                    uce_max_depth_cv=0, uce_max_depth_ratio=0,
+                )
+
+                with self.assertRaises(RuntimeError):
+                    unix_command.do_filter_assemble(
+                        args, {"1_A": ("r1.fq", "r2.fq")}, False, False, True
+                    )
+
+                find.assert_called_once_with("main_assembler-rust", internal=True)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.args[0][0], "/gm2/main_assembler-rust")
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,6 +39,8 @@ make
 cli/geneminer2
 ```
 
+- [新旧 Assembler 算法与三项参考来源](docs/assembler-algorithm_ZH.md)
+
 以后要是拉了带源码改动的新版本，记着再跑一遍 `make`，别拿旧程序硬对付。完整构建依赖和外部工具要求都写在[中文命令行指南](manual/ZH_CN/command_line.md)里了。
 
 ## 麻溜儿跑一遍
@@ -122,7 +124,7 @@ cli/geneminer2 population \
 
 ## 实现和文档都搁哪儿
 
-默认会构建 Rust MainFilter、Refilter、Assembler、Population 和 Rust 辅助工具。`--assembler-implementation auto` 先试 Rust，真整不动了再退回没改过的原始 Python assembler；ITS2 是例外，它只认 Rust。主 CLI 编排器和 consensus 程序还继续用 Python，这块儿没硬改。
+默认会构建 Rust MainFilter、Refilter、Assembler、Population、可选的 `main_assembler-original-rust` 兼容版，还有 Rust 辅助工具。`reference` 模式搁默认的 `auto` 下直接就用跟[上游 GeneMiner2 原版](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py)逐字儿一样的 assembler；普通基因恢复想试 UCE 那套 Rust，写 `--assembler-implementation rust`；想拿原版逻辑跑 Rust 对照，就写 `original-rust`，它单线程、专门留着验结果；再加 `--reuse-reference-cache` 时，它会复用带格式版本、实现版本、k 和参考文件指纹的二进制 k-mer cache，坏了或过期了就自动重建。`uce` 和 `its2` 模式只认 Rust，Rust 不可用或运行失败就直接报错，不再往 Python 回退。`original` 和 `original-rust` 都只给 `reference` 用。主 CLI 编排器和 consensus 程序还继续用 Python，这块儿没硬改。
 
 - [中文命令行指南](manual/ZH_CN/command_line.md)
 - [中文输出文件说明](manual/ZH_CN/output.md)
