@@ -378,6 +378,7 @@ fn real_main() -> Result<(), String> {
     run(args, read_dict, ref_dict)
 }
 
+// 参数先验明白，目录、深度和线程数都别让脏值混进来。
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {
     if argv.iter().any(|arg| arg == "-h" || arg == "--help") {
         print_help();
@@ -497,6 +498,7 @@ options:\n\
     );
 }
 
+// 只按支持的序列后缀收文件，旁的杂物一律不掺和。
 fn get_file_type(path: &Path) -> Option<FileType> {
     match path.extension().and_then(OsStr::to_str) {
         Some("fa" | "fas" | "fasta") => Some(FileType::Fasta),
@@ -510,6 +512,7 @@ fn get_read_dict(
     pe_dir: Option<&Path>,
     use_compressed: bool,
 ) -> Result<BTreeMap<String, Vec<PathBuf>>, String> {
+    // 按 locus 名把一对儿 reads 归堆，后面才能一位点一位点地复筛。
     let mut read_dict = BTreeMap::new();
 
     if let Some(dir) = se_dir {
@@ -576,6 +579,7 @@ fn get_read_dict(
     Ok(read_dict)
 }
 
+// 同名普通 read 和 GM2 同时在场时，优先 GM2，别重复算两份。
 fn insert_read_group(
     read_dict: &mut BTreeMap<String, Vec<PathBuf>>,
     name: String,
@@ -604,6 +608,7 @@ fn insert_read_group(
     Ok(())
 }
 
+// 参考和 reads 都用同一个 locus 名对号，撞名就立刻报出来。
 fn get_ref_dict(ref_dir: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut ref_dict = BTreeMap::new();
 
@@ -634,6 +639,7 @@ fn run(
     read_dict: BTreeMap<String, Vec<PathBuf>>,
     ref_dict: BTreeMap<String, PathBuf>,
 ) -> Result<(), String> {
+    // 任务队列按 locus 排好；线程再多也只从这儿领活，省得撞车。
     let mut tasks = VecDeque::new();
 
     for (name, ref_path) in ref_dict {
@@ -727,6 +733,7 @@ fn run(
 }
 
 fn filter_gene(task: Task) -> Result<(), String> {
+    // 先用连续命中段筛掉明显跑偏的 reads，再按深度做第二道把关。
     let file_type = task
         .read_paths
         .first()
@@ -794,6 +801,7 @@ fn filter_gene(task: Task) -> Result<(), String> {
     Ok(())
 }
 
+// 日志既能写文件也能打屏幕，出毛病时好找线索。
 fn print_log(log_path: Option<&Path>, message: &str) -> Result<(), String> {
     if let Some(path) = log_path {
         let mut out = OpenOptions::new()
@@ -809,6 +817,7 @@ fn print_log(log_path: Option<&Path>, message: &str) -> Result<(), String> {
 }
 
 fn load_reference(ref_path: &Path, kmer_size: usize) -> Result<(HashSet<String>, f64), String> {
+    // N 这种含糊碱基把窗口截开，硬拼 k-mer 容易整出假命中。
     let mut reader = RecordReader::from_path(ref_path, FileType::Fasta, false, String::new())
         .map_err(|e| e.to_string())?;
     let mut ref_set = HashSet::new();
@@ -828,6 +837,7 @@ fn load_reference(ref_path: &Path, kmer_size: usize) -> Result<(HashSet<String>,
     Ok((ref_set, effective_len))
 }
 
+// 四种正经碱基编成小数字，别的字符不硬解释。
 fn encode_base(base: u8) -> Option<u8> {
     match base {
         b'A' | b'a' => Some(b'0'),
@@ -838,6 +848,7 @@ fn encode_base(base: u8) -> Option<u8> {
     }
 }
 
+// 把有效碱基翻成紧凑编码，后面的滚动 k-mer 少费劲。
 fn translate_fwd(seq: &str) -> Vec<u8> {
     let mut encoded = Vec::with_capacity(seq.len());
 
@@ -852,6 +863,7 @@ fn translate_fwd(seq: &str) -> Vec<u8> {
     encoded
 }
 
+// N 会把参考切成几段，绝不跨着不确定碱基拼假窗口。
 fn reference_runs(seq: &str) -> Vec<Vec<u8>> {
     let mut runs = Vec::new();
     let mut run = Vec::new();
@@ -871,6 +883,7 @@ fn reference_runs(seq: &str) -> Vec<Vec<u8>> {
     runs
 }
 
+// 反向互补单独算一份，方向判定时两面都得瞅瞅。
 fn reverse_complement(encoded: &[u8]) -> Vec<u8> {
     encoded
         .iter()
@@ -880,6 +893,7 @@ fn reverse_complement(encoded: &[u8]) -> Vec<u8> {
 }
 
 fn build_kmer_dict(ref_set: &HashSet<String>, kmer_size: usize) -> HashMap<Vec<u8>, u8> {
+    // 正反链都记上方向；后头推断 read 朝向时心里就有数了。
     let mut kmer_dict = HashMap::new();
 
     for seq in ref_set {
@@ -893,6 +907,7 @@ fn build_kmer_dict(ref_set: &HashSet<String>, kmer_size: usize) -> HashMap<Vec<u
     kmer_dict
 }
 
+// 把一条参考的所有有效 k-mer 塞进表，并标注它来自哪条链。
 fn add_kmers(kmer_dict: &mut HashMap<Vec<u8>, u8>, seq: &[u8], kmer_size: usize, orient: u8) {
     if seq.len() < kmer_size {
         return;
@@ -904,6 +919,7 @@ fn add_kmers(kmer_dict: &mut HashMap<Vec<u8>, u8>, seq: &[u8], kmer_size: usize,
     }
 }
 
+// 统计连续命中段的长短和方向，为后头的保留判定攒证据。
 fn collect_runs_stats(
     read: &[u8],
     kmer_dict: &HashMap<Vec<u8>, u8>,
@@ -946,6 +962,7 @@ fn collect_runs_stats(
     results
 }
 
+// 单条 read 是否像参考，不靠一个点命中，得看整段跑得顺不顺。
 fn filter_read(read: &[u8], kmer_dict: &HashMap<Vec<u8>, u8>, kmer_size: usize) -> bool {
     read.len() >= kmer_size
         && read
@@ -958,6 +975,7 @@ fn is_close(a: f64, b: f64, abs_tol: f64) -> bool {
     (a - b).abs() <= abs_tol.max(rel_tol * a.abs().max(b.abs()))
 }
 
+// 正反链证据掰掰手腕，胜出的方向才算这条 read 的朝向。
 fn infer_orientation(stats: [usize; 13]) -> u8 {
     let fwd_l = stats[1] as f64;
     let rev_l = stats[2] as f64;
@@ -1031,6 +1049,7 @@ fn infer_orientation(stats: [usize; 13]) -> u8 {
     orient
 }
 
+// 多个 mate 打开成并排 reader，保证每次往下读还是成组的。
 fn make_readers(paths: &[PathBuf], file_type: FileType) -> Result<Vec<RecordReader>, String> {
     let gm2_format = paths
         .first()
@@ -1051,6 +1070,7 @@ fn make_readers(paths: &[PathBuf], file_type: FileType) -> Result<Vec<RecordRead
         .collect()
 }
 
+// 成对数据要么一块儿读到，要么一块儿结束，别把 mate 拆散喽。
 fn next_linked_read(readers: &mut [RecordReader]) -> Result<Option<Vec<Record>>, String> {
     let mut linked = Vec::with_capacity(readers.len());
     let mut ended = 0;
@@ -1079,6 +1099,7 @@ fn write_record<W: Write>(out: &mut W, record: &Record, file_type: FileType) -> 
     .map_err(|e| e.to_string())
 }
 
+// copy-only 模式不做判定，只把配对关系原样拢到输出里。
 fn copy_reads(
     name: &str,
     out_dir: &Path,
@@ -1107,6 +1128,7 @@ fn run_length_filter(
     kmer_size: usize,
     keep_linked_mates: bool,
 ) -> Result<PathBuf, String> {
+    // 这步专看连续命中跑得顺不顺，先把大半噪声挡在门外。
     let output_path =
         out_dir
             .join("large_files")
@@ -1164,6 +1186,7 @@ fn next_temp_group(
     Ok(Some(vec![first, second]))
 }
 
+// 先算临时文件总碱基数，深度阈值才有靠谱的分母。
 fn count_total_length_from_path(
     path: &Path,
     file_type: FileType,
@@ -1206,6 +1229,7 @@ fn kmer_filter(
     max_size: i64,
     keep_linked_mates: bool,
 ) -> Result<(), String> {
+    // 临时 read 过第二遍：深度够的留下，不够的就别硬塞进结果里。
     let output_path = out_dir.join(format!("{}{}", name, file_type.output_ext()));
     let mut total_length =
         count_total_length_from_path(temp_path, file_type, keep_linked_mates, None, kmer_size)?;

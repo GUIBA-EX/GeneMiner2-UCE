@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 pub fn add_read_slices(reads: &mut HashMap<Vec<u8>, u64>, sequences: &[Vec<u8>], slice_len: usize) {
+    // 从 read 中间掐一段当身份证，正反两面都备着，后面核验 contig 用。
     for sequence in sequences {
         if sequence.len() < slice_len {
             continue;
@@ -32,6 +33,7 @@ pub fn add_assemble_chunk_parallel(
     reference: &HashMap<u128, RefKmer>,
     threads: usize,
 ) {
+    // 每个 read 内同一个 k-mer 只算一回，免得重复片段把深度虚抬老高。
     let workers = threads.max(1).min(sequences.len().max(1));
     let width = sequences.len().div_ceil(workers);
     let mut partials: Vec<Vec<(u128, i64)>> = Vec::new();
@@ -153,6 +155,7 @@ pub fn filter_and_weight_graph(
     error_limit: u32,
     reference_count: usize,
 ) {
+    // 低频毛刺先踢掉；参考上的节点留个权重，走岔路时优先认熟路。
     if error_limit > 0 {
         graph.retain(|_, value| value.depth > error_limit as i64 || value.reference_weight > 0);
     }
@@ -177,6 +180,7 @@ pub fn filter_and_weight_graph(
     }
 }
 
+// 从当前 k-mer 找能接上的下一跳，再按证据排个先后。
 fn outgoing(
     graph: &HashMap<u128, KmerInfo>,
     current: u128,
@@ -221,6 +225,7 @@ pub fn walk_backbone(
     iteration: usize,
     lookahead: usize,
 ) -> (Vec<PathContig>, HashSet<u128>, Vec<i32>, i64) {
+    // UCE 默认就认一条最靠谱的主干，岔路看几步再定，别在气泡里来回磨叽。
     let lookahead = lookahead.max(1);
     let mut path = vec![seed];
     let mut visited = HashSet::from([seed]);
@@ -287,7 +292,7 @@ pub fn walk_backbone(
         result.weights.push(chosen.weight);
         result.bases.push((chosen.kmer & 3) as u8);
 
-        // Unitig fast path: consume an entire non-branching chain in one decision.
+        // 后头没岔路就一口气走完，直道还一步一停那可太磨叽了。
         loop {
             let linear = outgoing(
                 graph,
@@ -319,6 +324,7 @@ pub fn walk_search(
     k: usize,
     mut iteration: usize,
 ) -> (Vec<PathContig>, HashSet<u128>, Vec<i32>, i64) {
+    // 兼容旧策略：遇岔路就压栈回溯，多找几条候选，不是 UCE 默认路子。
     let mut path = vec![seed];
     let mut path_set = HashSet::from([seed]);
     let mut all_visited = HashSet::from([seed]);
@@ -375,6 +381,7 @@ pub fn walk_search(
     (contigs, all_visited, positions, best_weight)
 }
 
+// 在 contig 里找 read 身份片段，命中位置给支持度计算当凭据。
 fn locate_read_slices<'a>(
     sequence: &'a [u8],
     slice_len: usize,
@@ -398,6 +405,7 @@ fn locate_read_slices<'a>(
     matches
 }
 
+// 左右延伸分别核验，别一头靠谱另一头跑飞还硬拼成整条。
 fn process_sides(
     mut contigs: Vec<PathContig>,
     max_weight: i64,
@@ -461,6 +469,7 @@ fn process_sides(
     processed
 }
 
+// 读段支持、唯一支持和覆盖比例一块儿算，候选高低不能只看长度。
 pub fn calculate_read_support(
     sequence: &[u8],
     slice_len: usize,
@@ -543,6 +552,7 @@ pub fn calculate_read_support(
     }
 }
 
+// 深度的中位数和离散度用来揪重复区，别让高拷贝把结果忽悠了。
 fn depth_stats(sequence: &[u8], k: usize, graph: &HashMap<u128, KmerInfo>) -> (f64, f64, f64) {
     if sequence.len() < k {
         return (0.0, 0.0, 0.0);
@@ -570,6 +580,7 @@ fn depth_stats(sequence: &[u8], k: usize, graph: &HashMap<u128, KmerInfo>) -> (f
     (median_depth, cv, maximum / median_depth)
 }
 
+// UCE 护栏集中在这儿：太长、太稀、深度乱，都得给出退货理由。
 fn rejection_reasons(
     args: &Args,
     length: usize,
@@ -610,6 +621,7 @@ pub fn assemble_seed(
     k: usize,
     soft_boundary: usize,
 ) -> (Vec<ContigRecord>, HashSet<u128>, i32) {
+    // 从一个 seed 往两边接，组装成候选 contig；成不成得靠后面的证据说话。
     let reverse_seed = reverse_complement_kmer(seed, k);
     let (right_paths, right_kmers, right_positions, right_weight) = if args.assembly_mode
         == AssemblyMode::Uce
@@ -781,6 +793,7 @@ pub fn assemble_seed(
     (candidates, all_kmers, contig_position)
 }
 
+// 候选排序按模式办事；UCE 更看证据和稳当，不是单纯挑最长。
 pub fn compare_contigs(left: &ContigRecord, right: &ContigRecord, mode: AssemblyMode) -> Ordering {
     if mode == AssemblyMode::Reference {
         return left

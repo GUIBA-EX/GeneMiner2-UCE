@@ -64,6 +64,7 @@ Other:
   -V, --version                   Show version
 ";
 
+// 命令行参数一个萝卜一个坑，缺值就别往下凑合。
 fn next_value(arguments: &[String], index: &mut usize, flag: &str) -> Result<String, String> {
     *index += 1;
     arguments
@@ -72,6 +73,7 @@ fn next_value(arguments: &[String], index: &mut usize, flag: &str) -> Result<Str
         .ok_or_else(|| format!("{flag} requires a value"))
 }
 
+// 数值开关在入口统一验，免得组装跑半道才发现参数不对。
 fn parse_number<T: std::str::FromStr>(
     arguments: &[String],
     index: &mut usize,
@@ -83,6 +85,7 @@ fn parse_number<T: std::str::FromStr>(
         .map_err(|_| format!("invalid value for {flag}: {value}"))
 }
 
+// 把 CLI 配置归到 Args，默认走 UCE backbone，用户指定才换路子。
 fn parse_args() -> Result<Args, String> {
     let arguments: Vec<String> = env::args().collect();
     let mut reference = None;
@@ -221,6 +224,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(args)
 }
 
+// 发现全部 locus 后分派工人；每个 locus 独立干活儿，结果再统一汇总。
 fn run(mut args: Args) -> io::Result<()> {
     std::fs::create_dir_all(args.output.join("results"))?;
     std::fs::create_dir_all(args.output.join("contigs_all"))?;
@@ -311,6 +315,7 @@ fn run(mut args: Args) -> io::Result<()> {
     Ok(())
 }
 
+// 主程序只管报错和退出码，真正的活儿交给 run。
 fn main() {
     let args = match parse_args() {
         Ok(args) => args,

@@ -58,6 +58,7 @@ impl Default for Args {
     }
 }
 
+// 把能用的开关一次说明白，用户别靠猜参数整活儿。
 fn print_help() {
     println!(
         "MainFilterNew (Rust implementation)\n\
@@ -78,6 +79,7 @@ fn print_help() {
     );
 }
 
+// 取紧跟在开关后头的值；少了就当场吱声，别往下带病跑。
 fn take_value(argv: &[String], index: &mut usize, option: &str) -> AppResult<String> {
     *index += 1;
     argv.get(*index)
@@ -85,6 +87,7 @@ fn take_value(argv: &[String], index: &mut usize, option: &str) -> AppResult<Str
         .ok_or_else(|| format!("option {option} requires an argument"))
 }
 
+// 数字参数统一在这儿验，免得各处转来转去整乱套。
 fn parse_usize(value: String, option: &str) -> AppResult<usize> {
     value
         .parse::<usize>()
@@ -92,6 +95,7 @@ fn parse_usize(value: String, option: &str) -> AppResult<usize> {
 }
 
 fn parse_args(argv: Vec<String>) -> AppResult<Args> {
+    // 先把参数归拢明白，后面干活儿就不抓瞎了。
     if argv.iter().any(|arg| arg == "-h" || arg == "--help") {
         print_help();
         process::exit(0);
@@ -226,6 +230,7 @@ impl Drop for GzipReader {
     }
 }
 
+// 看文件头认 gzip，比光瞅后缀靠谱点儿。
 fn is_gzip(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
@@ -243,6 +248,7 @@ fn sequence_extension(path: &Path) -> Option<String> {
         .map(|value| value.to_ascii_lowercase())
 }
 
+// 先认清是 FASTA 还是 FASTQ，后面读法才不能串台。
 fn detect_kind(path: &Path) -> AppResult<FileKind> {
     match sequence_extension(path).as_deref() {
         Some("fa" | "fas" | "fasta") => Ok(FileKind::Fasta),
@@ -255,6 +261,7 @@ fn detect_kind(path: &Path) -> AppResult<FileKind> {
     }
 }
 
+// gzip 和普通文件都包成同一种读口，后头不用分两套流程。
 fn open_input(path: &Path) -> io::Result<BufReader<Box<dyn Read>>> {
     let input: Box<dyn Read> = if is_gzip(path) {
         Box::new(GzipReader::open(path)?)
@@ -403,6 +410,7 @@ const fn build_base_code_table() -> [u8; 256] {
 const BASE_CODE_TABLE: [u8; 256] = build_base_code_table();
 
 #[inline(always)]
+// 碱基压成 2-bit；碰上 N 就返回空，窗口从这儿断开。
 fn base_code(base: u8) -> Option<u8> {
     match BASE_CODE_TABLE[base as usize] {
         INVALID_BASE_CODE => None,
@@ -543,6 +551,7 @@ impl KmerIndex {
     }
 
     fn add_reference_sequence(&mut self, sequence: &[u8], reference: u32) {
+        // 参考序列滚着编码进索引，短 k-mer 不整 Vec，省内存老鼻子了。
         if sequence.len() < self.k {
             return;
         }
@@ -588,6 +597,7 @@ impl KmerIndex {
         scan_reverse: bool,
         collector: &mut HitCollector,
     ) {
+        // read 从头趟一遍，按步长挑窗口；最后那个窗口也捎上，别漏了尾巴。
         if sequence.len() < self.k {
             return;
         }
@@ -690,6 +700,7 @@ impl KmerIndex {
     }
 }
 
+// k 太长塞不进 u64 时，老老实实造正反链字符串键。
 fn long_kmer(sequence: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut forward = Vec::with_capacity(sequence.len());
     let mut reverse = Vec::with_capacity(sequence.len());
@@ -720,6 +731,7 @@ impl HitCollector {
     }
 
     fn begin(&mut self) {
+        // 换个批次号就当清空了，省得每条 read 都把整张表擦一遍。
         self.generation = self.generation.wrapping_add(1);
         if self.generation == 0 {
             self.seen.fill(0);
@@ -736,6 +748,7 @@ impl HitCollector {
     }
 }
 
+// 文件名就是 locus 名，去掉 .gz 和序列后缀，别把扩展名带进结果。
 fn reference_basename(path: &Path) -> AppResult<String> {
     let without_gzip = if is_gzip(path) {
         path.file_stem()
@@ -751,6 +764,7 @@ fn reference_basename(path: &Path) -> AppResult<String> {
         .ok_or_else(|| format!("invalid reference name: {}", path.display()))
 }
 
+// 参考既能给一个文件，也能给一摞文件；这儿统一排好队。
 fn reference_paths(reference: &Path) -> AppResult<Vec<PathBuf>> {
     let mut paths = Vec::new();
     if reference.is_dir() {
@@ -771,6 +785,7 @@ fn reference_paths(reference: &Path) -> AppResult<Vec<PathBuf>> {
 }
 
 fn build_index(reference: &Path, k: usize, reverse_indexed: bool) -> AppResult<KmerIndex> {
+    // 各 locus 共用这一份索引，别让每个样品都重复现搓一遍。
     let paths = reference_paths(reference)?;
     let names: Vec<String> = paths
         .iter()
@@ -803,6 +818,7 @@ fn write_u64(out: &mut impl Write, value: u64) -> io::Result<()> {
 }
 
 fn write_dictionary(index: &KmerIndex, path: &Path) -> AppResult<()> {
+    // 先写临时文件再改名，半道断了也不至于把老缓存整坏喽。
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -918,6 +934,7 @@ fn read_nul_string(input: &mut impl BufRead) -> AppResult<String> {
     String::from_utf8(bytes).map_err(|_| "reference name is not UTF-8".to_string())
 }
 
+// 优先尝试捡现成字典；格式和参数对不上就拒绝，不能瞎凑合。
 fn load_dictionary(
     path: &Path,
     requested_k: usize,
@@ -938,6 +955,7 @@ fn load_dictionary(
     }
 }
 
+// 读取 Rust 新缓存，顺带核对 k 和反向链策略，省得拿错家伙。
 fn load_v2_dictionary(input: &mut impl BufRead, requested_k: usize) -> AppResult<KmerIndex> {
     if read_u16(input)? != CACHE_VERSION {
         return Err("unsupported k-mer dictionary version".to_string());
@@ -1062,6 +1080,7 @@ fn decode_legacy_hits(bytes: &[u8], reference_count: usize) -> AppResult<Vec<u32
     Ok(hits)
 }
 
+// 老 Haxe 缓存也照顾着，保证升级后原来的流程还能接着跑。
 fn load_legacy_dictionary(
     input: &mut impl BufRead,
     k: usize,
@@ -1265,6 +1284,7 @@ impl OutputManager {
     }
 }
 
+// 文本输出保留原样，方便人眼复查。
 fn encode_text(record: &Record) -> Vec<u8> {
     let mut output = Vec::new();
     for line in &record.lines {
@@ -1303,6 +1323,7 @@ fn append_gm2_sequence_chunk(output: &mut Vec<u8>, last_chunk: &mut u8, chunk: u
     *last_chunk = chunk;
 }
 
+// GM2 把序列压紧，磁盘慢的时候少搬点儿字节就挺顶用。
 fn encode_gm2(record: &Record) -> AppResult<Vec<u8>> {
     if record.sequence.is_empty() {
         return Ok(Vec::new());
@@ -1402,6 +1423,7 @@ impl Logger {
     }
 }
 
+// 每个 locus 最后留个计数单子，方便看过滤到底捞着多少 reads。
 fn write_read_counts(output: &Path, names: &[String], counts: &[u64]) -> AppResult<()> {
     let mut out =
         File::create(output.join("ref_reads_count_dict.txt")).map_err(|e| e.to_string())?;
@@ -1414,6 +1436,7 @@ fn write_read_counts(output: &Path, names: &[String], counts: &[u64]) -> AppResu
 }
 
 fn run(args: Args) -> AppResult<()> {
+    // 索引只建一次，随后按输入 read 逐条分到命中的 locus。
     fs::create_dir_all(&args.output).map_err(|e| e.to_string())?;
     let mut logger = Logger::new(&args.output)?;
     logger.log("Getting information from references...");

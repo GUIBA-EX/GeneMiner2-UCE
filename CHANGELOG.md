@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.7.2 — Documentation structure and readable Rust internals
+
+- Reorganized the Chinese and English READMEs around mode selection, installation, quick start, and primary outputs.
+- Added synchronized UCE and Population workflow guides covering assembly guardrails, rescue fallback, pseudo-reference validation, staged execution, and required QC.
+- Added concise Chinese Northeast-dialect comments throughout the Rust MainFilter, Refilter, and Assembler without changing behavior.
+
 ## v0.7.1 — Repository cleanup
 
 - Removed the unreferenced population pseudo-reference comparison helper.

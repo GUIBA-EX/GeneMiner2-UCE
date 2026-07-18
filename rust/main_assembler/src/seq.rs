@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+// DNA 四个字母压成 2-bit；碰到含糊字符就停，别往图里掺水。
 pub fn base_bits(base: u8) -> Option<u8> {
     match base.to_ascii_uppercase() {
         b'A' => Some(0),
@@ -22,6 +23,7 @@ pub fn kmer_mask(k: usize) -> u128 {
     }
 }
 
+// 一个 k-mer 塞进 u128，k 不超过 63 时既快又省地儿。
 pub fn encode_kmer(sequence: &[u8]) -> Option<u128> {
     let mut encoded = 0_u128;
     for &base in sequence {
@@ -39,6 +41,7 @@ pub fn decode_kmer(mut encoded: u128, k: usize) -> Vec<u8> {
     sequence
 }
 
+// 不解码成字符串，直接在位上翻正反链，热循环里能省不少功夫。
 pub fn reverse_complement_kmer(mut encoded: u128, k: usize) -> u128 {
     let mut reverse = 0_u128;
     for _ in 0..k {
@@ -62,6 +65,7 @@ pub fn reverse_complement(sequence: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+// 含糊碱基会切断连续区段，k-mer 只能在干净区段里滚。
 pub fn valid_runs(sequence: &[u8]) -> Vec<(usize, &[u8])> {
     let mut runs = Vec::new();
     let mut start = None;
@@ -78,6 +82,7 @@ pub fn valid_runs(sequence: &[u8]) -> Vec<(usize, &[u8])> {
     runs
 }
 
+// 滚动更新正反两个编码，别每挪一步都重新切片算一遍。
 pub fn for_each_kmer<F>(run: &[u8], k: usize, mut visit: F)
 where
     F: FnMut(usize, u128, u128),

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static CACHE_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 const CACHE_MAGIC: &[u8; 8] = b"GM2RK001";
 
+// 序列统一大写并去空白，后头比较时别让格式小毛病搅和。
 fn clean_sequence(sequence: &[u8]) -> Vec<u8> {
     sequence
         .iter()
@@ -18,6 +19,7 @@ fn clean_sequence(sequence: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+// 小参考文件一次读透，保留标题和序列给后面的 locus 逻辑用。
 pub fn read_fasta(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
     let text = fs::read_to_string(path)?;
     let mut records = Vec::new();
@@ -41,6 +43,7 @@ pub fn read_fasta(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
     Ok(records)
 }
 
+// 大 read 文件分块过，内存别一口吞得太猛。
 pub fn for_each_sequence_chunk<F>(
     path: &Path,
     fasta: bool,
@@ -115,6 +118,7 @@ where
     Ok(())
 }
 
+// ITS2 才需要保留 mate 关系，普通 UCE 不额外背这份包袱。
 pub fn read_linked_fragments(path: &Path, fasta: bool) -> io::Result<Vec<Vec<Vec<u8>>>> {
     let mut reads = Vec::new();
     for_each_sequence_chunk(path, fasta, 8192, |chunk| {
@@ -140,6 +144,7 @@ pub fn minimum_sequence_length(
 }
 
 pub fn discover_references(reference: &Path) -> io::Result<Vec<LocusTask>> {
+    // 把参考拆成有顺序的 locus 任务，日志和结果才能对得上号。
     let mut paths = Vec::new();
     if reference.is_dir() {
         for entry in fs::read_dir(reference)? {
@@ -173,6 +178,7 @@ pub fn discover_references(reference: &Path) -> io::Result<Vec<LocusTask>> {
     Ok(tasks)
 }
 
+// 后缀大小写都认，免得参考文件因为写法不同被漏掉。
 pub fn is_fasta(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
@@ -184,6 +190,7 @@ pub fn is_fasta(path: &Path) -> bool {
         })
 }
 
+// 按 locus 找过滤产物，FASTA 优先；找不着就让该位点正常失败。
 pub fn find_filtered(output: &Path, key: &str) -> Option<(PathBuf, bool)> {
     let fasta = output.join("filtered").join(format!("{key}.fasta"));
     if fasta.is_file() {
@@ -197,6 +204,7 @@ pub fn find_filtered(output: &Path, key: &str) -> Option<(PathBuf, bool)> {
 }
 
 pub fn build_reference_kmers(records: &[(String, Vec<u8>)], k: usize) -> HashMap<u128, RefKmer> {
+    // 参考 k-mer 连位置和方向一块儿记住，组装走路时才知道往哪边拐。
     let mut kmers = HashMap::new();
     for (_, sequence) in records {
         let total_kmers = sequence.len().saturating_sub(k) + 1;
@@ -230,6 +238,7 @@ pub fn build_reference_kmers(records: &[(String, Vec<u8>)], k: usize) -> HashMap
     kmers
 }
 
+// 同一个参考 k-mer 出现多次就累积深度，位置保留第一次的坐标。
 fn insert_reference(
     kmers: &mut HashMap<u128, RefKmer>,
     kmer: u128,
@@ -250,6 +259,7 @@ fn insert_reference(
     }
 }
 
+// 缓存名带上参考路径、大小、时间和 k，参考一变就自动换新缓存。
 fn cache_path(cache_dir: &Path, reference: &Path, k: usize) -> io::Result<PathBuf> {
     let metadata = fs::metadata(reference)?;
     let modified = metadata
@@ -279,6 +289,7 @@ pub fn load_or_build_reference_kmers(
     k: usize,
     cache_dir: Option<&Path>,
 ) -> io::Result<HashMap<u128, RefKmer>> {
+    // 缓存对上就直接用，没对上才重建，别每回都从头搓参考索引。
     let Some(cache_dir) = cache_dir else {
         return Ok(build_reference_kmers(records, k));
     };
@@ -302,6 +313,7 @@ fn read_exact_array<const N: usize>(reader: &mut impl Read) -> io::Result<[u8; N
     Ok(bytes)
 }
 
+// 读缓存时逐项核验魔数和 k，旧文件或坏文件宁可不用。
 fn read_reference_cache(path: &Path, expected_k: usize) -> io::Result<HashMap<u128, RefKmer>> {
     let mut reader = File::open(path)?;
     if &read_exact_array::<8>(&mut reader)? != CACHE_MAGIC {
@@ -336,6 +348,7 @@ fn read_reference_cache(path: &Path, expected_k: usize) -> io::Result<HashMap<u1
     Ok(kmers)
 }
 
+// 缓存写成定长二进制记录，后下次启动能麻溜儿读回来。
 fn write_reference_cache(path: &Path, k: usize, kmers: &HashMap<u128, RefKmer>) -> io::Result<()> {
     let mut writer = BufWriter::new(File::create(path)?);
     writer.write_all(CACHE_MAGIC)?;

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 pub const SUMMARY_HEADER: &str = "locus,status,accepted,rejection_reason,selected_contig_length,read_supported_span,slice_supported_bases,slice_support_breadth,max_slice_support_gap,read_count,unique_read_count,multi_mapping_read_count,read_density,unique_read_density,support_fraction,flank_balance,kmer_median_depth,kmer_depth_cv,kmer_max_depth_ratio,candidate_count,low_quality";
 
+// 多线程写同一个日志得排队，不然字儿搅一块就没法看了。
 pub fn log_line(output: &Path, lock: &Mutex<()>, message: &str) {
     let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Ok(mut log) = OpenOptions::new()
@@ -35,6 +36,7 @@ fn remove_if_exists(path: &Path) {
     }
 }
 
+// 某个位点重跑或失败时，只扫它自己的旧产物，别误伤邻居。
 fn clean_locus_outputs(args: &Args, key: &str) {
     remove_if_exists(&args.output.join("results").join(format!("{key}.fasta")));
     remove_if_exists(
@@ -82,6 +84,7 @@ fn format_header(contig: &ContigRecord, mode: AssemblyMode, prefix: &str) -> Str
     header
 }
 
+// 把候选按等级落盘，标题里带够指标，后续人工复核不抓瞎。
 fn write_contigs(
     path: &Path,
     contigs: &[ContigRecord],
@@ -96,6 +99,7 @@ fn write_contigs(
     writer.flush()
 }
 
+// ITS2 的 mate 能不能落在同一候选上，是区分真支持和瞎碰的重要证据。
 fn mate_matches_candidate(mate: &[u8], candidate: &[u8], slice_len: usize) -> bool {
     if mate.is_empty() || candidate.is_empty() {
         return false;
@@ -131,6 +135,7 @@ fn prefer_its2_candidate(
     compare_contigs(existing, candidate, mode).is_lt()
 }
 
+// ITS2 候选分组、配对支持和 EM 丰度都在这里补齐。
 fn annotate_its2_candidates(
     candidates: &mut [ContigRecord],
     fragments: &[Vec<Vec<u8>>],
@@ -217,6 +222,7 @@ fn its2_status(contig: &ContigRecord) -> &'static str {
     }
 }
 
+// 把 ITS2 的支持证据另存表，主 FASTA 不塞得乱七八糟。
 fn write_its2_support(path: &Path, contigs: &[ContigRecord]) -> io::Result<()> {
     let mut writer = BufWriter::new(File::create(path)?);
     writeln!(writer, "variant,equivalence_members,length,fragment_support,paired_fragment_support,diagnostic_fragment_support,em_fragment_support,em_abundance,status")?;
@@ -253,6 +259,7 @@ pub fn process_locus(
     completed: &HashSet<String>,
     log_lock: &Arc<Mutex<()>>,
 ) -> LocusResult {
+    // 单个位点出岔子就收拾它自己的输出，别把整批组装拖下水。
     match process_locus_inner(args, task, completed, log_lock) {
         Ok(result) => result,
         Err(error) => {
@@ -273,6 +280,7 @@ fn process_locus_inner(
     completed: &HashSet<String>,
     log_lock: &Arc<Mutex<()>>,
 ) -> io::Result<LocusResult> {
+    // 一个 locus 从过滤 reads 到结果文件，全流程在这旮沓串起来。
     let best_path = args
         .output
         .join("results")
@@ -330,6 +338,7 @@ fn process_locus_inner(
         .map(|(_, sequence)| sequence.clone())
         .collect();
     let current_k = if args.kmer_size == 0 {
+        // 用户没指定 k 就按 reads 和参考自动挑，别死抱默认值。
         calculate_auto_k(
             &reference_sequences,
             &reads,
@@ -734,6 +743,7 @@ fn rounded_float(value: f64, decimals: usize) -> String {
     text
 }
 
+// 汇总行把状态和关键指标压成一条，统计脚本拿来就能用。
 pub fn summary_line(result: &LocusResult) -> String {
     format!(
         "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -761,6 +771,7 @@ pub fn summary_line(result: &LocusResult) -> String {
     )
 }
 
+// 汇总按 locus 名排序再写，重复运行也不至于顺序乱飘。
 pub fn write_summary(path: &Path, rows: &HashMap<String, String>) -> io::Result<()> {
     let mut keys: Vec<&String> = rows.keys().collect();
     keys.sort();
