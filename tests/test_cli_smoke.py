@@ -25,7 +25,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--assembly-mode", proc.stdout)
         self.assertIn("--assembler-implementation", proc.stdout)
-        self.assertIn("{auto,rust,original,original-rust}", proc.stdout)
+        self.assertIn("{auto,uce-rust,original,original-rust}", proc.stdout)
         self.assertIn("--uce-path-strategy", proc.stdout)
         self.assertIn("--uce-backbone-lookahead", proc.stdout)
         self.assertIn("--uce-rescue-reads", proc.stdout)
@@ -108,8 +108,8 @@ class CliSmokeTests(unittest.TestCase):
     @mock.patch.object(unix_command, "write_failed_samples")
     @mock.patch.object(unix_command.os.path, "isdir", return_value=True)
     @mock.patch.object(unix_command.subprocess, "run")
-    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_assembler-original")
-    def test_reference_auto_uses_upstream_original_by_default(
+    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_assembler-original-rust")
+    def test_reference_auto_uses_original_rust_by_default(
         self, find, run, _isdir, _write_failures
     ):
         args = SimpleNamespace(
@@ -128,9 +128,9 @@ class CliSmokeTests(unittest.TestCase):
                 args, {"1_A": ("r1.fq", "r2.fq")}, False, False, True
             )
 
-        find.assert_called_once_with("main_assembler-original", internal=True)
+        find.assert_called_once_with("main_assembler-original-rust", internal=True)
         command = run.call_args.args[0]
-        self.assertEqual(command[0], "/gm2/main_assembler-original")
+        self.assertEqual(command[0], "/gm2/main_assembler-original-rust")
         self.assertNotIn("--assembly-mode", command)
         self.assertNotIn("--uce-side-candidates", command)
 

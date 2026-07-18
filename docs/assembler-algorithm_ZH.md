@@ -8,9 +8,9 @@
 
 | 实现 | 可执行文件 | 主要用途 | 分支策略 | 当前默认规则 |
 |---|---|---|---|---|
-| 上游原版 Python | `main_assembler-original` | genome skimming、普通基因恢复 | 深度优先枚举分支，遇到死路后 backtrack | `reference + auto` 直接使用 |
-| Rust 新版 | `main_assembler-rust` | UCE 主组装、ITS2 多候选组装；也可显式测试普通模式 | UCE 默认 bounded-lookahead backbone；另保留 `search` 兼容策略 | `uce + auto` 优先使用；ITS2 强制使用 |
-| Rust 原版兼容版 | `main_assembler-original-rust` | reference 模式的性能 A/B 与兼容性验证 | 保留原版的 seed、权重、候选组合和 backtrack；单线程 | 仅 `reference + original-rust` 显式使用，默认不变 |
+| 上游原版 Python | `main_assembler-original` | genome skimming、普通基因恢复 | 深度优先枚举分支，遇到死路后 backtrack | `reference + original` 显式使用 |
+| Rust 新版（`uce-rust`） | `main_assembler-rust` | UCE 主组装、ITS2 多候选组装；也可显式测试普通模式 | UCE 默认 bounded-lookahead backbone；另保留 `search` 兼容策略 | `uce + auto` 使用；ITS2 采用 Rust 流程 |
+| Rust 原版兼容版（`original-rust`） | `main_assembler-original-rust` | reference 模式默认、性能 A/B 与兼容性验证 | 保留原版的 seed、权重、候选组合和 backtrack；单线程 | `reference + auto` 使用 |
 
 这里的“原版”是固定到上游 GeneMiner2 提交 `36e06feeb99654bdb87f45d4cde225d8c3e311d0` 的逐字节副本，不含 GeneMiner2-UCE 后来加入的参数或判断。
 
@@ -108,10 +108,11 @@ Rust 原版兼容版在启用 `--reuse-reference-cache` 时，会为每个参考
 
 因此当前策略是：
 
-- `reference + auto`：直接使用上游原版，保证普通模式行为稳定；
-- `reference + rust`：仅在用户显式要求 A/B 测试时使用 Rust；
-- `reference + original-rust`：可选的单线程 Rust 原版兼容后端；保留原版回溯逻辑，用于速度与结果 A/B。它不属于 UCE backbone，不会取代默认原版；在并列 k-mer 的极端重复序列中，容器遍历顺序可能选到同权重的另一 seed，因此应先在目标数据上比较。
-- `uce + auto`：只使用 Rust backbone；Rust 不可用或失败时直接报错；
+- `reference + auto`：使用 `original-rust`，兼顾原版逻辑与运行效率；
+- `reference + original`：显式使用固定的上游 Python 原版，供严格对照；
+- `reference + uce-rust`：仅在用户显式要求时使用 UCE 定向 Rust assembler 做 A/B；
+- `reference + original-rust`：默认的单线程 Rust 原版兼容后端；保留原版回溯逻辑。在并列 k-mer 的极端重复序列中，容器遍历顺序可能选到同权重的另一 seed，因此应先在目标数据上比较。
+- `uce + auto`：使用 `uce-rust` backbone；Rust 不可用或失败时直接报错；
 - `its2`：强制 Rust，因为多候选 fragment 统计没有 Python 等价实现。
 
 ### 7.1 已完成的 Python 与 `original-rust` 对照
@@ -131,7 +132,7 @@ Rust 原版兼容版在启用 `--reuse-reference-cache` 时，会为每个参考
 
 同一轮还验证了 `original-rust` 的参考 k-mer 二进制 cache：无 cache、首次建 cache、热 cache 的 39 个最佳 FASTA 均逐字节一致。40 个 locus 的小参考集中，首次建 cache 为 0.07 s、热 cache 为 0.05 s；热 cache 与无 cache 都约 0.05 s，说明这个规模不足以证明稳定的性能收益。更大的参考集或重复样本运行时，仍应重新计时。
 
-这次验证支持将 `original-rust` 保留为高效的 A/B 后端，但**不支持**把它替代 `reference + auto` 的上游 Python 原版。若要进一步追求逐字节兼容，应优先追踪 `v1__uce-1200` 的 seed 选择、分叉候选排序和 support 累计。
+这次验证支持将 `original-rust` 作为 reference 的默认后端；但由于仍有一个 locus 的序列差异，`original` 上游 Python 仍保留为严格对照选项。若要进一步追求逐字节兼容，应优先追踪 `v1__uce-1200` 的 seed 选择、分叉候选排序和 support 累计。
 
 ## 8. 应怎样验证这些改动
 

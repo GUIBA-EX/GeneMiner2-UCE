@@ -277,7 +277,7 @@ cli/geneminer2 stats \
 | `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
 | `-i, --search-depth INT` | 搜索深度，默认 `4096` |
 | `--min-coverage INT` | contig 最低 read depth，默认 `0` |
-| `--assembler-implementation MODE` | `auto`（默认）在 reference 模式直接使用上游原版，在 UCE 或 ITS2 模式只使用 Rust；`rust` 选择 UCE 定向的 Rust assembler；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 reference；UCE 和 ITS2 不再回退 Python |
+| `--assembler-implementation MODE` | `auto`（默认）在 reference 模式使用 `original-rust`，在 UCE 模式使用 `uce-rust`；ITS2 使用专用 Rust profiling 流程；`uce-rust` 选择 UCE 定向的 Rust assembler；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 reference；UCE 和 ITS2 不再回退 Python |
 | `--assembler-read-chunk-size INT` | Rust assembler 每批读取的 reads 数，默认 `8192` |
 | `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
 | `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |

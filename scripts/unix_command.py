@@ -644,7 +644,7 @@ def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1,
 
     return dict_cmd, reads_cmd
 
-def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, backend='rust'):
+def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, backend='uce-rust'):
     """照实现类型拼组装命令，老原版不掺 UCE 新参数。"""
     command = [
         assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
@@ -674,7 +674,7 @@ def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_bound
         '--uce-max-depth-ratio', str(args.uce_max_depth_ratio),
     ])
 
-    if backend == 'rust':
+    if backend == 'uce-rust':
         command.extend([
             '--uce-path-strategy', getattr(args, 'uce_path_strategy', 'backbone'),
             '--uce-backbone-lookahead', str(getattr(args, 'uce_backbone_lookahead', 24)),
@@ -838,11 +838,11 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         original_rust_assembler_bin = None
         rust_assembler_bin = None
 
-        # 普通模式默认用上游原版；original-rust 是可对照的新兼容实现，UCE 和 ITS2 仍只认 Rust。
+        # reference 默认用 original-rust；UCE 和 ITS2 默认用 uce-rust，original 仍保留给上游 Python 对照。
         if args.assembly_mode == 'reference':
-            if assembler_implementation == 'original-rust':
+            if assembler_implementation in ('auto', 'original-rust'):
                 original_rust_assembler_bin = find_executable('main_assembler-original-rust', internal=True)
-            elif assembler_implementation != 'rust':
+            elif assembler_implementation != 'uce-rust':
                 original_assembler_bin = find_executable('main_assembler-original', internal=True)
             else:
                 rust_assembler_bin = find_executable('main_assembler-rust', internal=True)
@@ -854,7 +854,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             rust_assembler_bin = find_executable('main_assembler-rust', internal=True)
 
         def run_assembler(name, thr=1, ref_dir=None):
-            """组装这个样本；普通模式用原版，UCE 和 ITS2 只认 Rust。"""
+            """组装这个样本；reference 默认 original-rust，UCE 和 ITS2 默认 uce-rust。"""
             sample_dir = os.path.join(out_loc, name)
             in_dir = os.path.join(sample_dir, 'filtered')
             out_dir = os.path.join(sample_dir, 'results')
@@ -905,7 +905,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                     if os.path.isfile(path):
                         os.remove(path)
 
-            def execute_assembler(executable, backend='rust'):
+            def execute_assembler(executable, backend='uce-rust'):
                 """真把组装器跑起来，再瞅瞅结果落地没。"""
                 clear_assembly_outputs()
                 command = build_assembler_command(
@@ -920,7 +920,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             elif original_rust_assembler_bin is not None:
                 execute_assembler(original_rust_assembler_bin, backend='original-rust')
             else:
-                execute_assembler(rust_assembler_bin)
+                execute_assembler(rust_assembler_bin, backend='uce-rust')
 
     else:
         run_assembler = ignore_hook
@@ -2151,7 +2151,7 @@ if __name__ == '__main__':
     group_assembly.add_argument('-sb', '--soft-boundary', default='auto', help='Soft boundary (default = auto)', metavar='{INT,auto,unlimited}', type=str)
     group_assembly.add_argument('-i', '--search-depth', default=4096, help='Search depth', metavar='INT', type=int)
     group_assembly.add_argument('--min-coverage', default=0, help='Minimum read depth required for contig generation', metavar='INT', type=int)
-    group_assembly.add_argument('--assembler-implementation', choices=('auto', 'rust', 'original', 'original-rust'), default='auto', help='Assembler implementation: auto uses the upstream original in reference mode; original-rust is the deterministic Rust compatibility implementation for reference mode; rust selects the UCE-oriented Rust assembler; original and original-rust are unavailable in UCE or ITS2 mode')
+    group_assembly.add_argument('--assembler-implementation', choices=('auto', 'uce-rust', 'original', 'original-rust'), default='auto', help='Assembler implementation: auto uses original-rust in reference mode and uce-rust in UCE mode; ITS2 runs its dedicated Rust profiling workflow; original-rust is the deterministic Rust compatibility implementation for reference mode; uce-rust selects the UCE-oriented Rust assembler; original and original-rust are unavailable in UCE or ITS2 mode')
     group_assembly.add_argument('--assembler-read-chunk-size', default=8192, help='Reads per bounded Rust assembler batch (default = 8192)', metavar='INT', type=int)
     group_assembly.add_argument('--assembler-kmer-count-threads', default=0, help='Rust k-mer sort/count workers per locus; 0 allocates automatically', metavar='INT', type=int)
     group_assembly.add_argument('--assembler-graph-format', choices=('none', 'gfa', 'dot', 'both'), default='none', help='Write compact per-locus Rust assembly graphs (default = none)')

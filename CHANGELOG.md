@@ -3,7 +3,9 @@
 
 ## Unreleased
 
-- Documented a fixed-parameter, 40-locus single-thread comparison between the upstream Python assembler and `main_assembler-original-rust`: identical locus status, 38/39 identical best-contig sequences, and a documented remaining difference at `v1__uce-1200`; reference mode continues to default to the upstream Python implementation.
+- Made `original-rust` the `reference + auto` default and renamed the user-facing UCE Rust implementation selector from `rust` to `uce-rust`.
+
+- Documented a fixed-parameter, 40-locus single-thread comparison between the upstream Python assembler and `main_assembler-original-rust`: identical locus status, 38/39 identical best-contig sequences, and a documented remaining difference at `v1__uce-1200`; reference mode now defaults to `original-rust`, while the upstream Python implementation remains available as `original` for strict comparison.
 
 - Restored the byte-identical upstream GeneMiner2 Python assembler for reference-mode fallback and reproducibility.
 - Removed the UCE-aware Python fallback source, executable, CLI option, build target, and mode routing; UCE and ITS2 now fail directly when Rust assembly is unavailable or fails.
@@ -46,7 +48,7 @@
 
 - Added the high-performance Rust UCE assembler with compact rolling k-mers, a bounded non-backtracking backbone path strategy, reference caching, and parallel per-locus assembly.
 - Made Rust assembly the default via `--assembler-implementation auto`; failed or unavailable Rust runs now clean incomplete outputs and retry the unmodified Git-baseline Python assembler.
-- Retained strict `rust` and direct `original` assembler modes for reproducibility and diagnosis.
+- Retained strict `uce-rust` and direct `original` assembler modes for reproducibility and diagnosis.
 - Added fixed external cohort-reference support, checked resume stages (`mapping`, `calling`, and `selection`), and per-stage variant-count QC to the population workflow.
 - Added reusable tools for summarizing UCE validation runs and comparing a population pseudo-reference with an external reference.
 - Updated Chinese and English command-line/output documentation and regression coverage.

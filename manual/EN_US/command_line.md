@@ -275,7 +275,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-sb, --soft-boundary VALUE` | Integer, `auto`, or `unlimited`; default `auto` |
 | `-i, --search-depth INT` | Search depth; default `4096` |
 | `--min-coverage INT` | Minimum contig read depth; default `0` |
-| `--assembler-implementation MODE` | `auto` (default) directly uses the upstream original in reference mode and requires Rust in UCE or ITS2 mode; `rust` selects the UCE-oriented Rust assembler; `original` selects upstream Python; `original-rust` selects the deterministic single-thread Rust compatibility implementation; `original` and `original-rust` are reference-only; UCE and ITS2 never fall back to Python |
+| `--assembler-implementation MODE` | `auto` (default) uses `original-rust` in reference mode and `uce-rust` in UCE mode; ITS2 uses its dedicated Rust profiling workflow; `uce-rust` selects the UCE-oriented Rust assembler; `original` selects upstream Python; `original-rust` selects the deterministic single-thread Rust compatibility implementation; `original` and `original-rust` are reference-only; UCE and ITS2 never fall back to Python |
 | `--assembler-read-chunk-size INT` | Reads loaded per Rust assembler batch; default `8192` |
 | `--assembler-kmer-count-threads INT` | K-mer sorting/counting workers per locus; default `0` selects automatically |
 | `--assembler-graph-format MODE` | Optional graph output: `none` (default), `gfa`, `dot`, or `both` |
