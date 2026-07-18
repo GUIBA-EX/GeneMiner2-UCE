@@ -25,15 +25,15 @@ GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 ta
 | `--assembly-mode its2` | 同一个 locus 里可能有多个真 ITS2 变体 | 多条候选序列和 fragment-level 支持 |
 | `population` 子命令 | 二倍体 UCE 群体重测序或 target capture | 公共伪参考、联合 SNP、PCA 和 ADMIXTURE 面板 |
 
-## 咋安装
+## 咋整进你那系统里？
 
-GeneMiner2-UCE 现在得从源码构建。进到仓库根目录，敲：
+GeneMiner2-UCE 现在得从源码构建。进到仓库根目录，bash螚（make）一下就成了：
 
 ```bash
 make
 ```
 
-整完以后，入口搁这儿：
+螚完以后，入口搁这儿：
 
 ```bash
 cli/geneminer2
@@ -50,7 +50,7 @@ Sample_A\t/path/to/Sample_A_R1.fq.gz\t/path/to/Sample_A_R2.fq.gz
 Sample_B\t/path/to/Sample_B_R1.fq.gz
 ```
 
-参考目录里，一个 locus 单独搁一个 FASTA 文件，文件主名就当 locus 名，别整串了：
+参考目录里，一个 locus 单独搁一个 FASTA 文件（FASTA内可以有复数参考），文件主名就当 locus 名，别整串了：
 
 ```text
 references/
