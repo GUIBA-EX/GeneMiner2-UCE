@@ -6,15 +6,10 @@ import hashlib
 import math
 import os
 import shutil
-import statistics
 import subprocess
 import sys
 import threading
 
-import build_trimed
-import fix_alignment
-import gm2_stats
-import muscle_wrapper
 
 COMMAND_HELP = '''
 filter    Reference-based filtering of raw reads
@@ -50,9 +45,11 @@ SCRIPT_ROOT = os.path.join(sys._MEIPASS, os.pardir) if hasattr(sys, '_MEIPASS') 
 REFERENCE_EXTENSIONS = ('.fa', '.fas', '.fasta')
 
 def is_reference_file_name(name):
+    """瞅瞅这文件名儿是不是咱认的参考序列。"""
     return os.path.splitext(name)[1].lower() in REFERENCE_EXTENSIONS
 
 def find_executable(prog, internal=False):
+    """把要用的程序划拉出来，找不着就麻溜儿报错。"""
     bin_path = os.path.join(SCRIPT_ROOT, prog)
 
     if not shutil.which(bin_path):
@@ -67,6 +64,7 @@ def find_executable(prog, internal=False):
     return bin_path
 
 def get_ref_genes(ref_dir):
+    """把参考目录里的基因名和后缀都归拢出来。"""
     genes = set()
 
     for entry in iter_reference_files(ref_dir):
@@ -75,6 +73,7 @@ def get_ref_genes(ref_dir):
     return genes
 
 def get_sample_ext(data_path):
+    """瞅一眼样本文件，整明白该用 FASTQ 还是 FASTA 后缀。"""
     data_name, data_ext = os.path.splitext(data_path)
 
     if data_ext == '.gz':
@@ -86,6 +85,7 @@ def get_sample_ext(data_path):
         return '.fasta'
 
 def iter_reference_files(ref_dir):
+    """按名儿顺溜地把参考序列文件一个个递出来。"""
     with os.scandir(ref_dir) as entries:
         for entry in sorted(entries, key=lambda x: x.name):
             if not entry.is_file():
@@ -95,6 +95,7 @@ def iter_reference_files(ref_dir):
                 yield entry
 
 def reference_cache_key(ref_dir, kmer_size, step_size):
+    """给参考数据和参数摁个指纹，省得缓存整串了。"""
     digest = hashlib.sha256()
     digest.update(os.path.abspath(ref_dir).encode())
     digest.update(b'\0')
@@ -114,6 +115,7 @@ def reference_cache_key(ref_dir, kmer_size, step_size):
     return digest.hexdigest()[:16]
 
 def get_reference_kmer_dict_path(args, out_loc):
+    """把参考 k-mer 字典该搁哪儿算明白。"""
     if not args.reuse_reference_cache:
         return os.path.join(out_loc, f'kmer_dict_k{args.kf}.dict')
 
@@ -122,12 +124,14 @@ def get_reference_kmer_dict_path(args, out_loc):
     return os.path.join(cache_dir, cache_name)
 
 def get_assembler_reference_cache_dir(args, out_loc):
+    """瞅瞅要不要复用组装参考缓存，再把地方定下来。"""
     if not args.reuse_reference_cache:
         return None
 
     return os.path.join(args.reference_cache_dir or os.path.join(out_loc, '.gm2_reference_cache'), 'assembler')
 
 def prepare_workdir(args):
+    """读样本表、收拾样本名，再把干活目录都支棱起来。"""
     samples = {}
     tsv_loc = args.f
 
@@ -179,6 +183,7 @@ def prepare_workdir(args):
     return samples
 
 def write_fasta_record(out, header, sequence, line_width=80):
+    """把一条序列规规矩矩写成 FASTA，空的咱可不写。"""
     sequence = ''.join(sequence.split()).upper()
 
     if not sequence:
@@ -192,6 +197,7 @@ def write_fasta_record(out, header, sequence, line_width=80):
     return True
 
 def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
+    """拿原参考和靠谱 contig 拼一套 UCE 救援参考。"""
     results_dir = os.path.join(sample_dir, 'results')
     summary_rows = read_uce_summary(os.path.join(sample_dir, 'uce_assembly_summary.csv'))
     added_contigs = 0
@@ -240,6 +246,7 @@ def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
     return added_contigs
 
 def read_uce_summary(summary_path):
+    """把 UCE 汇总表按 locus 收拢成一摞，后头好查。"""
     rows = {}
 
     if not os.path.isfile(summary_path):
@@ -256,7 +263,7 @@ def read_uce_summary(summary_path):
 
 
 def uce_summary_row_is_accepted(row):
-    """Read new acceptance decisions while remaining compatible with old summaries."""
+    """瞅瞅这条 locus 收没收，老版汇总表也照样认。"""
     if not row:
         return False
 
@@ -268,6 +275,7 @@ def uce_summary_row_is_accepted(row):
     return row.get('status') == 'success' and low_quality not in {'1', 'true', 'yes'}
 
 def int_or_blank(value):
+    """能整成整数就整，整不了就撂空白。"""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -275,12 +283,14 @@ def int_or_blank(value):
 
 
 def float_or_blank(value):
+    """能整成小数就整，整不了就撂空白。"""
     try:
         return float(value)
     except (TypeError, ValueError):
         return ''
 
 def delta_or_blank(after, before):
+    """前后数值能对上就算差，对不上咱就留空。"""
     after_value = int_or_blank(after)
     before_value = int_or_blank(before)
 
@@ -290,6 +300,7 @@ def delta_or_blank(after, before):
     return after_value - before_value
 
 def read_density_or_blank(row):
+    """从汇总行里把读段密度掰扯明白，没数就留空。"""
     length = int_or_blank(row.get('selected_contig_length'))
     read_count = int_or_blank(row.get('unique_read_count'))
     if length != '' and length > 0 and read_count != '':
@@ -306,6 +317,7 @@ def read_density_or_blank(row):
     return read_count / length
 
 def density_ratio_or_blank(before, after):
+    """算救援前后的密度倍数，底数不靠谱就甭硬算。"""
     before_density = read_density_or_blank(before)
     after_density = read_density_or_blank(after)
 
@@ -318,6 +330,7 @@ def density_ratio_or_blank(before, after):
     return after_density / before_density
 
 def rescue_density_below_ratio(before, after, min_density_ratio):
+    """瞅瞅救援后的密度掉没掉过警戒线。"""
     density_ratio = density_ratio_or_blank(before, after)
 
     if density_ratio == '':
@@ -381,6 +394,7 @@ SAMPLE_STATE_BACKUP_ITEMS = [
 ]
 
 def write_uce_assembly_summary_rows(summary_path, rows):
+    """把 UCE 组装汇总按固定列、固定顺序写利索。"""
     with open(summary_path, 'w', newline='') as out:
         writer = csv.DictWriter(out, fieldnames=UCE_ASSEMBLY_SUMMARY_FIELDS)
         writer.writeheader()
@@ -390,6 +404,7 @@ def write_uce_assembly_summary_rows(summary_path, rows):
             writer.writerow({field: row.get(field, '') for field in UCE_ASSEMBLY_SUMMARY_FIELDS})
 
 def write_result_dict_from_uce_summary(sample_dir, rows):
+    """照 UCE 汇总重整 result_dict，跳过的 locus 不往里塞。"""
     result_path = os.path.join(sample_dir, 'result_dict.txt')
 
     with open(result_path, 'w') as out:
@@ -402,6 +417,7 @@ def write_result_dict_from_uce_summary(sample_dir, rows):
             out.write(f"{locus},{row.get('status', '')},{row.get('read_count', '')},\n")
 
 def restore_locus_file(sample_dir, backup_dir, subdir, locus):
+    """把单个 locus 的结果文件从备份里原样倒腾回来。"""
     rel_path = os.path.join(subdir, f'{locus}.fasta')
     src = os.path.join(backup_dir, rel_path)
     dest = os.path.join(sample_dir, rel_path)
@@ -413,13 +429,14 @@ def restore_locus_file(sample_dir, backup_dir, subdir, locus):
         os.remove(dest)
 
 def locus_file_name_matches(name, locus, paired=False):
+    """瞅瞅文件名跟这个 locus 对不对号，双端名儿也管。"""
     stem = os.path.splitext(name)[0]
     if paired:
         return stem in (f'{locus}_1', f'{locus}_2')
     return stem == locus
 
 def restore_locus_directory_files(sample_dir, backup_dir, subdir, locus):
-    """Restore only one locus's read files while keeping accepted rescue loci."""
+    """只还原这个 locus 的读段文件，救成的那些咱不碰。"""
     source_dir = os.path.join(backup_dir, subdir)
     destination_dir = os.path.join(sample_dir, subdir)
     names = set()
@@ -441,11 +458,13 @@ def restore_locus_directory_files(sample_dir, backup_dir, subdir, locus):
             os.remove(destination)
 
 def restore_locus_read_count(sample_dir, backup_dir, locus):
+    """把这个 locus 原先的读段计数塞回当前计数表。"""
     filename = 'ref_reads_count_dict.txt'
     source = os.path.join(backup_dir, filename)
     destination = os.path.join(sample_dir, filename)
 
     def read_rows(path):
+        """把非空计数行都划拉出来，文件没有就算了。"""
         if not os.path.isfile(path):
             return []
         with open(path) as handle:
@@ -464,12 +483,14 @@ def restore_locus_read_count(sample_dir, backup_dir, locus):
         os.remove(destination)
 
 def format_float_or_blank(value, digits=6):
+    """小数收拾利索再输出，空值还让它空着。"""
     if value == '':
         return ''
 
     return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
 
 def revert_invalid_rescue_loci(sample_dir, backup_dir, before_rows, rescue_rows, min_density_ratio):
+    """救援后变孬的 locus 给它退回原样，别硬留着。"""
     reverted = {}
     final_rows = {locus: row.copy() for locus, row in rescue_rows.items()}
 
@@ -501,6 +522,7 @@ def revert_invalid_rescue_loci(sample_dir, backup_dir, before_rows, rescue_rows,
     return reverted
 
 def write_sample_uce_rescue_summary(sample_dir, sample, before_rows, after_rows, rescue_status, error='', status_by_locus=None, error_by_locus=None):
+    """把一个样本救援前后的变化明明白白写进表里。"""
     out_path = os.path.join(sample_dir, 'uce_rescue_summary.csv')
     loci = sorted(set(before_rows) | set(after_rows))
     status_by_locus = {} if status_by_locus is None else status_by_locus
@@ -541,6 +563,7 @@ def write_sample_uce_rescue_summary(sample_dir, sample, before_rows, after_rows,
             })
 
 def backup_sample_state(sample_dir):
+    """救援前先把样本现场挪走备份，留条后路。"""
     backup_dir = os.path.join(sample_dir, '.uce_rescue_backup')
 
     if os.path.isdir(backup_dir):
@@ -557,6 +580,7 @@ def backup_sample_state(sample_dir):
     return backup_dir
 
 def restore_sample_state(sample_dir, backup_dir):
+    """救援整岔劈了，就把样本现场从备份还原回来。"""
     if not os.path.isdir(backup_dir):
         return
 
@@ -576,10 +600,12 @@ def restore_sample_state(sample_dir, backup_dir):
     shutil.rmtree(backup_dir, ignore_errors=True)
 
 def discard_sample_state_backup(backup_dir):
+    """救援稳当了就把临时备份收拾掉，别占地方。"""
     if os.path.isdir(backup_dir):
         shutil.rmtree(backup_dir, ignore_errors=True)
 
 def write_failed_samples(out_loc, failures):
+    """把失败样本单列出来；一个没有就把旧表撤了。"""
     out_path = os.path.join(out_loc, 'failed_samples.tsv')
 
     if not failures:
@@ -593,12 +619,20 @@ def write_failed_samples(out_loc, failures):
         writer.writerow(['sample', 'stage', 'error'])
         writer.writerows(failures)
 
+def get_rescue_sample_names(samples, failures):
+    """前头没整成的样本挑出去，剩下的再进救援。"""
+    # 前头都失败了就别硬救了，省得越整越乱。
+    failed = {sample for sample, _, _ in failures}
+    return [name for name in samples if name not in failed]
+
 def get_uce_rescue_parallelism(total_threads, sample_count):
+    """按总线程和样本数掂量救援咋分工最合适。"""
     rescue_threads = max(1, min(4, total_threads))
     rescue_workers = max(1, min(4, sample_count, total_threads // rescue_threads))
     return rescue_workers, rescue_threads
 
 def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1, q2, args, rescue_kmer_dict_path):
+    """把 UCE 救援过滤要跑的两趟命令整齐备好。"""
     dict_cmd = [filter_bin, '-r', rescue_ref_dir, '-o', sample_dir, '-kf', str(args.kf),
                 '-s', str(args.step_size), '-gr', '-lkd', rescue_kmer_dict_path, '-m', '2']
     reads_cmd = [filter_bin, '-r', rescue_ref_dir, '-q1', q1, '-q2', q2, '-o', sample_dir,
@@ -611,6 +645,7 @@ def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1,
     return dict_cmd, reads_cmd
 
 def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, original=False):
+    """照当前参数把组装器命令拼妥，Rust 和原版都照顾着。"""
     command = [
         assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
         '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
@@ -645,6 +680,7 @@ def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_bound
     return command
 
 def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignore_hook=lambda *_, **__: None):
+    """把过滤、再过滤、组装和救援这一大趟活儿串起来。"""
     out_loc = args.o.strip()
     kmer_dict_path = get_reference_kmer_dict_path(args, out_loc)
     args.assembler_reference_cache_dir = get_assembler_reference_cache_dir(args, out_loc)
@@ -688,6 +724,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 raise RuntimeError(f"Unable to build k-mer dictionary: {e}")
 
         def run_filter(name):
+            """给这个样本捞参考相关读段，再把输出归拢好。"""
             q1, q2 = samples[name]
             read_count_path = os.path.join(out_loc, name, 'ref_reads_count_dict.txt')
             out_dir = os.path.join(out_loc, name, 'filtered_pe')
@@ -754,6 +791,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         refilter_bin = find_executable('main_refilter_new', internal=True)
 
         def run_refilter(name, thr=1, ref_dir=None):
+            """把样本读段再筛一遍，杂的赖的往外挑。"""
             in_dir  = os.path.join(out_loc, name, 'filtered_pe')
             out_dir = os.path.join(out_loc, name, 'filtered')
             ref_dir = args.r if ref_dir is None else ref_dir
@@ -769,7 +807,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                       '--min-depth', str(args.depth_low_water_mark), '--max-depth', str(args.depth_limit),
                       '--max-size', str(args.file_size_limit), '--use-gm2-format']
 
-            if args.assembly_mode == 'uce':
+            if args.assembly_mode in ('uce', 'its2'):
                 params.append('--keep-linked-mates')
 
             subprocess.run(params, check=True)
@@ -785,7 +823,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         original_assembler_bin = None
         rust_assembler_bin = None
 
-        if assembler_implementation != 'rust':
+        if assembler_implementation != 'rust' and args.assembly_mode != 'its2':
             original_assembler_bin = find_executable('main_assembler-original', internal=True)
 
         if assembler_implementation != 'original':
@@ -797,6 +835,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 print('Rust assembler is unavailable; using the original Python assembler.', file=sys.stderr)
 
         def run_assembler(name, thr=1, ref_dir=None):
+            """组装这个样本，Rust 不成时按设置换回原版。"""
             sample_dir = os.path.join(out_loc, name)
             in_dir = os.path.join(sample_dir, 'filtered')
             out_dir = os.path.join(sample_dir, 'results')
@@ -808,16 +847,18 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 raise RuntimeError('No successful filter run, cannot assemble')
 
             def clear_assembly_outputs():
+                """开整前把旧组装产物清出去，省得串锅。"""
                 if os.path.isdir(out_dir):
                     shutil.rmtree(out_dir, ignore_errors=True)
                 graph_dir = os.path.join(sample_dir, 'assembly_graphs')
                 if os.path.isdir(graph_dir):
                     shutil.rmtree(graph_dir, ignore_errors=True)
-                for path in (result_path, uce_summary_path):
+                for path in (result_path, uce_summary_path, os.path.join(sample_dir, 'its2_assembly_summary.csv')):
                     if os.path.isfile(path):
                         os.remove(path)
 
             def execute_assembler(executable, original=False):
+                """真把组装器跑起来，再瞅瞅结果落地没。"""
                 clear_assembly_outputs()
                 command = build_assembler_command(
                     executable, args, sample_dir, ref_dir, soft_boundary, thr, original=original
@@ -826,7 +867,11 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 if not os.path.isfile(result_path):
                     raise RuntimeError('Assembly failed to produce result_dict.txt')
 
-            if assembler_implementation == 'original' or rust_assembler_bin is None:
+            if args.assembly_mode == 'its2':
+                if assembler_implementation == 'original' or rust_assembler_bin is None:
+                    raise RuntimeError('ITS2 mode requires the Rust assembler')
+                execute_assembler(rust_assembler_bin)
+            elif assembler_implementation == 'original' or rust_assembler_bin is None:
                 execute_assembler(original_assembler_bin, original=True)
             elif assembler_implementation == 'rust':
                 execute_assembler(rust_assembler_bin)
@@ -845,6 +890,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
 
     if rescue_enabled:
         def run_uce_rescue(name, thr=1):
+            """拿初组装结果再捞一轮读段，救救这个 UCE 样本。"""
             sample_dir = os.path.join(out_loc, name)
             rescue_ref_dir = os.path.join(sample_dir, 'uce_rescue_refs')
             rescue_kmer_dict_path = os.path.join(sample_dir, f'uce_rescue_kmer_dict_k{args.kf}.dict')
@@ -935,6 +981,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         filt_thr  = 1 if args.p < 4 else 2
 
         def calc_task_thr():
+            """瞅着手头空闲 CPU，给下个任务匀点线程。"""
             min_thr = min(asm_thr, filt_thr) if filter_list else asm_thr
             return avail_cpu if avail_cpu - asm_thr < min_thr else asm_thr
 
@@ -1026,13 +1073,14 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 continue
 
     if rescue_enabled:
+        rescue_samples = get_rescue_sample_names(samples, failed_samples)
         print(f'Running UCE raw-read rescue with up to {rescue_workers} sample(s) in parallel and {rescue_threads} thread(s) per sample.')
 
         if rescue_workers > 1:
             with ThreadPoolExecutor(max_workers=rescue_workers) as executor:
                 running_rescues = {
                     executor.submit(run_uce_rescue, name, thr=rescue_threads): name
-                    for name in samples.keys()
+                    for name in rescue_samples
                 }
 
                 for task in as_completed(running_rescues):
@@ -1044,7 +1092,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                         print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
                         failed_samples.append((name, 'uce_rescue', str(e)))
         else:
-            for name in samples.keys():
+            for name in rescue_samples:
                 try:
                     run_uce_rescue(name, thr=rescue_threads)
                 except Exception as e:
@@ -1058,6 +1106,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         raise RuntimeError(f'{len(failed_samples)} sample task(s) failed; see {os.path.join(out_loc, "failed_samples.tsv")}')
 
 def make_phyluce_sample_name(sample):
+    """把样本名收拾成 PHYLUCE 能认、还不犯膈应的样儿。"""
     name = ''.join(c if ord(c) < 128 and (c.isalnum() or c == '_') else '_' for c in sample).strip('_')
 
     if not name:
@@ -1069,6 +1118,7 @@ def make_phyluce_sample_name(sample):
     return name
 
 def get_contig_read_count(header):
+    """从 contig 标题里抠出读段数，抠不着就按零算。"""
     parts = header.split('_')
 
     if len(parts) >= 6 and parts[0] == 'contig' and parts[5].isdigit():
@@ -1080,6 +1130,7 @@ def get_contig_read_count(header):
     return '0'
 
 def write_uce_contigs_for_phyluce(args, samples):
+    """把收下的 UCE contig 改好名儿，整成 PHYLUCE 能接的文件。"""
     out_loc = args.o.strip()
     uce_dir = os.path.join(out_loc, 'uce_contigs')
 
@@ -1135,6 +1186,7 @@ def write_uce_contigs_for_phyluce(args, samples):
             writer.writerow([sample, phyluce_sample, out_path, contig_count])
 
 def write_uce_assembly_summary(args, samples):
+    """把各样本 UCE 组装表拢成一张总表。"""
     out_loc = args.o.strip()
     out_path = os.path.join(out_loc, 'uce_assembly_summary.csv')
     fieldnames = ['sample', *UCE_ASSEMBLY_SUMMARY_FIELDS]
@@ -1155,6 +1207,7 @@ def write_uce_assembly_summary(args, samples):
                     writer.writerow({name: row.get(name, '') for name in fieldnames})
 
 def write_uce_rescue_summary(args, samples):
+    """把各样本救援记录并成总表，没记录就不留空壳。"""
     out_loc = args.o.strip()
     out_path = os.path.join(out_loc, 'uce_rescue_summary.csv')
     wrote_any = False
@@ -1178,6 +1231,7 @@ def write_uce_rescue_summary(args, samples):
         os.remove(out_path)
 
 def write_uce_outputs(args, samples):
+    """把 UCE 后续要用的 contig 和汇总产物一气儿写全。"""
     write_uce_contigs_for_phyluce(args, samples)
     write_uce_assembly_summary(args, samples)
 
@@ -1185,6 +1239,7 @@ def write_uce_outputs(args, samples):
         write_uce_rescue_summary(args, samples)
 
 def run_population(args):
+    """把 population 模式参数攒齐，交给主程序开整。"""
     population_bin = find_executable('main_population', internal=True)
     command = [
         population_bin,
@@ -1228,7 +1283,22 @@ def run_population(args):
 
     subprocess.run(command, check=True)
 
+def run_stats(args, samples):
+    """归拢样本读段和参考信息，跑 UCE 恢复统计。"""
+    stats_bin = find_executable('gm2_stats', internal=True)
+    command = [stats_bin, '--output', args.o.strip(), '--reference', args.r]
+    for name, reads in samples.items():
+        # 单端别算两遍，整重了可不行。
+        second_read = '' if reads[1] == reads[0] else reads[1]
+        command.extend(['--sample', name, reads[0], second_read])
+    if args.stats_count_input_reads:
+        command.append('--count-input-reads')
+    if args.stats_no_heatmap:
+        command.append('--no-heatmap')
+    subprocess.run(command, check=True)
+
 def generate_consensus(args, samples):
+    """把读段贴回组装结果，给每个基因整出一致序列。"""
     out_loc = args.o.strip()
 
     consensus_bin = find_executable('build_consensus', internal=True)
@@ -1240,6 +1310,7 @@ def generate_consensus(args, samples):
     genes = get_ref_genes(args.r)
 
     def iterate_gene(sample):
+        """把这个样本里能接着干的基因任务挨个递出来。"""
         in_dir = os.path.join(out_loc, sample, 'results')
 
         if not os.path.isdir(in_dir):
@@ -1263,6 +1334,7 @@ def generate_consensus(args, samples):
                 yield (name, asm_path, read_path, sam_path)
 
     def process_gene(task):
+        """接过一个基因任务，把眼前这道工序跑利索。"""
         gene, asm_path, read_path, sam_path = task
 
         subprocess.run([minimap2_bin, '-ax', 'sr', '-t', '1', '--sam-hit-only', '--secondary=no',
@@ -1289,38 +1361,36 @@ def generate_consensus(args, samples):
                 process_gene(task)
 
 def blast_trim(args, samples):
+    """拿 BLAST 对照参考，把组装序列两边收拾利索。"""
     out_loc = args.o.strip()
+    trim_bin = find_executable('build_trimed', internal=True)
 
     makeblastdb_bin = find_executable('makeblastdb')
 
     if args.trim_mode == 'isoform':
         blast_bin = find_executable('magicblast')
-        blast_iter = build_trimed.execute_magicblast
     else:
         blast_bin = find_executable('blastn')
-        blast_iter = build_trimed.execute_blastn
 
     if args.trim_retention < 0 or args.trim_retention > 1:
         raise RuntimeError(f"Invalid trim retention threshold {args.trim_retention} (must be between 0.0 and 1.0)")
 
-    if args.trim_mode == 'longest' or args.trim_mode == 'isoform':
-        criterion = 'longest'
-    elif args.trim_mode == 'terminal':
-        criterion = 'terminal'
-    else:
-        criterion = 'all'
+    trim_modes = {'all': '0', 'longest': '1', 'terminal': '2', 'isoform': '3'}
+    trim_mode = trim_modes[args.trim_mode]
 
     genes = get_ref_genes(args.r)
 
     os.makedirs(os.path.join(out_loc, 'blast_db'), exist_ok=True)
 
     def build_blast_db(name_tup):
+        """给一个参考基因建 BLAST 库，后头查着快。"""
         name, ext = name_tup
         subprocess.run([makeblastdb_bin, "-in", os.path.realpath(os.path.join(args.r, name + ext)),
                         "-dbtype", "nucl", "-out", name],
                        cwd=os.path.join(out_loc, 'blast_db'), check=True)
 
     def iterate_gene(sample):
+        """把这个样本里能接着干的基因任务挨个递出来。"""
         if args.trim_source == 'consensus':
             in_dir = os.path.join(out_loc, sample, 'consensus')
         else:
@@ -1345,9 +1415,18 @@ def blast_trim(args, samples):
                 yield (name, asm_path, ref_path, os.path.join(blast_dir, name + '.fasta'))
 
     def process_gene(task):
+        """接过一个基因任务，把眼前这道工序跑利索。"""
         name, asm_path, ref_path, out_path = task
-        blast_output = blast_iter(asm_path, os.path.join(out_loc, 'blast_db', name), executable_path=blast_bin)
-        build_trimed.process_file(asm_path, ref_path, blast_output, out_path, args.trim_retention * 100, criterion)
+        subprocess.run([
+            trim_bin,
+            '-i', asm_path,
+            '-r', ref_path,
+            '-o', out_path,
+            '-b', os.path.join(out_loc, 'blast_db', name),
+            '-m', trim_mode,
+            '-p', str(args.trim_retention * 100),
+            '--executable', blast_bin,
+        ], check=True)
 
     gene_count = len(genes) * len(samples)
     trimmed_count = 0
@@ -1381,6 +1460,7 @@ def blast_trim(args, samples):
     print('\n')
 
 def combine_genes(args, samples):
+    """按 locus 合样本、做比对再清理，整出能拼接的结果。"""
     out_loc = args.o.strip()
     alignment_filter = get_alignment_filter(args)
 
@@ -1395,8 +1475,6 @@ def combine_genes(args, samples):
 
         if args.msa_program == 'clustalo':
             msa_bin = find_executable('clustalo')
-        elif args.msa_program == 'muscle':
-            msa_bin = find_executable('muscle')
         else:
             msa_bin = find_executable('mafft')
 
@@ -1411,6 +1489,7 @@ def combine_genes(args, samples):
             alifilter_bin = None
 
         merge_seq_bin = find_executable('merge_seq', internal=True)
+        alignment_cleaner_bin = find_executable('fix_alignment', internal=True)
 
         if args.clean_difference < 0 or args.clean_difference > 1:
             raise RuntimeError(f"Invalid maximum difference {args.clean_difference} (must be between 0.0 and 1.0)")
@@ -1464,6 +1543,7 @@ def combine_genes(args, samples):
             }
 
     def merge_gene(gene):
+        """把各样本这个基因的序列归到一个 FASTA 里。"""
         out_path = os.path.join(combine_dir, gene + '.fasta')
         written  = False
 
@@ -1492,6 +1572,7 @@ def combine_genes(args, samples):
             os.remove(out_path)
 
     def handle_locus_failure(gene, stage, exc=None, output_path=None):
+        """单个 locus 整失败了就收拾残局，再按严格模式处理。"""
         if output_path and os.path.isfile(output_path):
             os.remove(output_path)
 
@@ -1507,6 +1588,7 @@ def combine_genes(args, samples):
         return False
 
     def align_gene(gene):
+        """给这个基因跑多序列比对，整不成就稳当报错。"""
         in_path = os.path.join(combine_dir, gene + '.fasta')
         out_path = os.path.join(alignment_dir, gene + '.fasta')
 
@@ -1518,11 +1600,6 @@ def combine_genes(args, samples):
                 subprocess.run([msa_bin, '-i', in_path, '-o', out_path, '--auto', '--force',
                                 '--seqtype=DNA', f'--threads={msa_threads}'],
                                stderr=subprocess.DEVNULL, check=True)
-            elif args.msa_program == 'muscle':
-                subprocess.run([msa_bin, '-align', in_path, '-output', out_path, '-quiet',
-                                '-nt', '-threads', str(msa_threads)],
-                               stderr=subprocess.DEVNULL, check=True)
-                muscle_wrapper.reorder_sequences(in_path, out_path)
             else:
                 with open(out_path, 'w') as out:
                     subprocess.run([msa_bin, '--auto', '--quiet', '--nuc',
@@ -1534,17 +1611,24 @@ def combine_genes(args, samples):
         return os.path.isfile(out_path)
 
     def clean_gene(gene):
+        """把比对里差得太离谱的序列挑出去。"""
         gene_path = os.path.join(alignment_dir, gene + '.fasta')
 
         if os.path.isfile(gene_path):
             try:
-                fix_alignment.clean_file(gene_path, args.clean_sequences, args.clean_difference)
-            except (OSError, RuntimeError, ValueError) as e:
+                subprocess.run([
+                    alignment_cleaner_bin,
+                    '-f', gene_path,
+                    '-n', str(args.clean_sequences),
+                    '-p', str(args.clean_difference),
+                ], check=True)
+            except (OSError, subprocess.CalledProcessError) as e:
                 return handle_locus_failure(gene, 'alignment cleanup', e, gene_path)
 
         return os.path.isfile(gene_path)
 
     def filter_gene(gene):
+        """拿选定工具把不靠谱的比对位点修剪掉。"""
         in_path = os.path.join(alignment_dir, gene + '.fasta')
         out_path = os.path.join(trim_dir, gene + '.fasta')
 
@@ -1579,6 +1663,7 @@ def combine_genes(args, samples):
         filter_semaphore = threading.Semaphore(filter_processes)
 
         def process_gene(gene):
+            """这个基因从合并到比对、清理、修剪一趟整完。"""
             merge_gene(gene)
 
             with msa_semaphore:
@@ -1632,12 +1717,14 @@ def combine_genes(args, samples):
                            check=True)
 
 def get_alignment_filter(args):
+    """瞅参数定下比对过滤工具，老参数也给它兜着。"""
     if getattr(args, 'no_trimal', False):
         return 'none'
 
     return getattr(args, 'alignment_filter', None) or 'trimal'
 
 def get_alifilter_model(args):
+    """把 AliFilter 模型名儿收拾明白，默认模型就不额外传。"""
     model = getattr(args, 'alifilter_model', None)
 
     if not model:
@@ -1651,9 +1738,11 @@ def get_alifilter_model(args):
     return model
 
 def get_msa_threads(args):
+    """把每个多序列比对该用几条线程定下来。"""
     return max(1, getattr(args, 'msa_threads', 1))
 
 def get_filter_processes(args):
+    """算明白比对过滤最多能同时跑几个。"""
     filter_processes = getattr(args, 'filter_processes', None)
 
     if filter_processes is None:
@@ -1662,6 +1751,7 @@ def get_filter_processes(args):
     return max(1, filter_processes)
 
 def get_locus_alignment_dir(args):
+    """按过滤设置找准单 locus 比对结果搁的地方。"""
     out_loc = args.o.strip()
 
     if get_alignment_filter(args) == 'none':
@@ -1670,6 +1760,7 @@ def get_locus_alignment_dir(args):
     return os.path.join(out_loc, 'combined_trimed')
 
 def get_concatenated_alignment_path(args):
+    """按过滤设置找准拼接比对文件搁的地方。"""
     out_loc = args.o.strip()
 
     if get_alignment_filter(args) == 'none':
@@ -1678,6 +1769,7 @@ def get_concatenated_alignment_path(args):
     return os.path.join(out_loc, 'combined_trimed.fasta')
 
 def build_single_tree(prog_name, prog_bin, in_path, bootstrap=0, quiet=False, threads=1):
+    """照选定的建树程序给一份比对整出一棵树。"""
     if prog_name == 'raxmlng':
         out_path = in_path + ".raxml.bestTree"
         params = [prog_bin, '--msa', in_path, '--msa-format', 'FASTA',
@@ -1768,6 +1860,7 @@ def build_single_tree(prog_name, prog_bin, in_path, bootstrap=0, quiet=False, th
         return out_path
 
 def run_gene_tree_job(gene, alignment_dir, make_gene_tree):
+    """给单个基因跑树任务，成败都规整地交回来。"""
     in_path = os.path.join(alignment_dir, f'{gene}.fasta')
 
     try:
@@ -1776,6 +1869,7 @@ def run_gene_tree_job(gene, alignment_dir, make_gene_tree):
         return gene, in_path, None, str(e)
 
 def write_failed_gene_trees(out_loc, failures):
+    """把没整成的基因树记下来，没失败就撤掉旧表。"""
     out_path = os.path.join(out_loc, 'failed_gene_trees.tsv')
 
     if not failures:
@@ -1790,6 +1884,7 @@ def write_failed_gene_trees(out_loc, failures):
         writer.writerows(failures)
 
 def build_coalescent_tree(args):
+    """先逐基因建树，再用 ASTRAL 拢成共祖树。"""
     out_loc = args.o.strip()
 
     if args.phylo_program == 'raxmlng':
@@ -1804,6 +1899,7 @@ def build_coalescent_tree(args):
     astral_bin = find_executable('astral')
 
     def find_genes(path):
+        """到指定目录瞅瞅现成比对里都有啥基因。"""
         try:
             with os.scandir(path) as it:
                 return {os.path.splitext(entry.name)[0] for entry in it if entry.is_file() and is_reference_file_name(entry.name)}
@@ -1819,6 +1915,7 @@ def build_coalescent_tree(args):
         raise RuntimeError(f"No gene alignments found under '{alignment_dir}'")
 
     def make_gene_tree(gene):
+        """给这个基因悄默声地跑出一棵树。"""
         return build_single_tree(args.phylo_program, phylo_bin, os.path.join(alignment_dir, f'{gene}.fasta'), quiet=True)
 
     tree_files = set()
@@ -1826,6 +1923,7 @@ def build_coalescent_tree(args):
     failed_gene_trees = []
 
     def handle_gene_tree_result(result):
+        """把基因树结果分成成功和失败两摞，别整混了。"""
         gene, alignment_path, tree_path, error = result
 
         if error:
@@ -1842,13 +1940,13 @@ def build_coalescent_tree(args):
 
     if args.p > 1:
         with ThreadPoolExecutor(max_workers=args.p) as executor:
-            futures = [executor.submit(run_gene_tree_job, gene, alignment_dir, make_gene_tree) for gene in genes]
+            futures = [executor.submit(run_gene_tree_job, gene, alignment_dir, make_gene_tree) for gene in sorted(genes)]
 
             for task in as_completed(futures):
                 handle_gene_tree_result(task.result())
 
     else:
-        for gene in genes:
+        for gene in sorted(genes):
             handle_gene_tree_result(run_gene_tree_job(gene, alignment_dir, make_gene_tree))
 
     print('\n')
@@ -1859,7 +1957,8 @@ def build_coalescent_tree(args):
     written = False
 
     with open(coal_trees_path, 'w') as f:
-        for path in tree_files:
+        # 顺序排明白，回回生成都一个样。
+        for path in sorted(tree_files):
             if os.path.getsize(path) <= 2: # Empty tree
                 continue
 
@@ -1882,6 +1981,7 @@ def build_coalescent_tree(args):
     subprocess.run([astral_bin, '-i', coal_trees_path, '-o', coal_out_path, '-t', str(args.p)], check=True)
 
 def build_concatenation_tree(args):
+    """拿拼接好的全套比对直接整一棵物种树。"""
     out_loc = args.o.strip()
 
     if args.phylo_program == 'raxmlng':
@@ -1912,6 +2012,7 @@ def build_concatenation_tree(args):
     shutil.copyfile(out_path, final_tree_path)
 
 def execute_tasks(args, samples):
+    """照命令顺序调度整条流程，哪步出岔子都稳当收口。"""
     if not os.path.isdir(args.r):
         print(f"Reference directory '{args.r}' does not exist")
         return 2
@@ -1968,9 +2069,10 @@ def execute_tasks(args, samples):
                 build_concatenation_tree(args)
 
         if do_stats:
-            gm2_stats.run(args, samples)
+            run_stats(args, samples)
 
-    except (RuntimeError, subprocess.SubprocessError) as e:
+    # 文件和外部工具报错都兜住，别甩一屏 traceback。
+    except (OSError, ValueError, csv.Error, RuntimeError, subprocess.SubprocessError) as e:
         print(f'Error: {e}')
         return 1
 
@@ -1981,7 +2083,7 @@ if __name__ == '__main__':
                                      description='GeneMiner2-UCE extracts phylogenetic marker loci for UCE workflows.',
                                      epilog=HELP_EPILOG)
     parser.add_argument('command',
-                        choices=('filter', 'refilter', 'assemble', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats', []),
+                        choices=('filter', 'refilter', 'assemble', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats'),
                         help='One or several of the following actions, separated by space:' + COMMAND_HELP,
                         metavar='command',
                         nargs='*')
@@ -2016,7 +2118,7 @@ if __name__ == '__main__':
     group_assembly.add_argument('--assembler-read-chunk-size', default=8192, help='Reads per bounded Rust assembler batch (default = 8192)', metavar='INT', type=int)
     group_assembly.add_argument('--assembler-kmer-count-threads', default=0, help='Rust k-mer sort/count workers per locus; 0 allocates automatically', metavar='INT', type=int)
     group_assembly.add_argument('--assembler-graph-format', choices=('none', 'gfa', 'dot', 'both'), default='none', help='Write compact per-locus Rust assembly graphs (default = none)')
-    group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode: reference keeps the default reference-guided behavior; uce preserves read-supported flanks around conserved cores')
+    group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce', 'its2'), default='reference', help='Assembly mode: reference keeps the default behavior; uce preserves UCE flanks; its2 preserves multiple ITS2 variants and paired-read evidence')
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path handling: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration (default = backbone)')
     group_assembly.add_argument('--uce-backbone-lookahead', default=24, help='Greedy look-ahead steps used to choose a UCE backbone edge at each bubble (default = 24)', metavar='INT', type=int)
@@ -2068,7 +2170,7 @@ if __name__ == '__main__':
     group_combine.add_argument('-cs', '--combine-source', choices=('assembly', 'consensus', 'trimmed'), default=None, help='Whether to combine the primary assembly, the consensus sequences or the trimmed sequences (default = output of last step, assembly if no other command given)')
     group_combine.add_argument('-cd', '--clean-difference', default=1, help='Maximum acceptable pairwise difference in an alignment (default = 1.0)', metavar='FLOAT', type=float)
     group_combine.add_argument('-cn', '--clean-sequences', default=0, help='Number of sequences required in an alignment (default = 0)', metavar='INT', type=int)
-    group_combine.add_argument('--msa-program', choices=('clustalo', 'mafft', 'muscle'), default='mafft', help='Program for multiple sequence alignment', type=str)
+    group_combine.add_argument('--msa-program', choices=('clustalo', 'mafft'), default='mafft', help='Program for multiple sequence alignment', type=str)
     group_combine.add_argument('--msa-threads', default=1, help='Threads used by each multiple-sequence-alignment job (default = 1)', metavar='INT', type=int)
     group_combine.add_argument('--alignment-filter', choices=('trimal', 'alifilter', 'none'), default=None, help='Program for filtering aligned loci before tree reconstruction (default = trimal)', type=str)
     group_combine.add_argument('--filter-processes', default=None, help='Maximum number of concurrent alignment filtering jobs (default = -p)', metavar='INT', type=int)
@@ -2095,6 +2197,8 @@ if __name__ == '__main__':
         parser.error('--reference-cache-dir requires --reuse-reference-cache')
 
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
+    if args.assembly_mode == 'its2':
+        args.kf = args.ka = args.min_ka = args.max_ka = 21
     args.uce_backbone_lookahead = max(args.uce_backbone_lookahead, 1)
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
     args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)

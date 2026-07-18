@@ -1732,8 +1732,6 @@ class MainFilterNew {
             return 2;
         }
 
-        Sys.println("Do not close this window manually, please!");
-
 #if cpp
         cpp.vm.Gc.setTargetFreeSpacePercentage(90);
 #end

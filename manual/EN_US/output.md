@@ -12,7 +12,7 @@ Each sample listed in the input table gets a folder under the output directory.
 
 **large_files**: Reads that exceed the configured depth or file-size limits during re-filtering. This folder appears only when such files are produced.
 
-**results**: Primary assembled contigs. For each locus, GeneMiner2 writes the selected contig as `<locus>.fasta`.
+**results**: Primary assembled contigs. Reference and UCE modes write one selected contig per locus; in ITS2 mode, `<locus>.fasta` may contain multiple accepted variants.
 
 **contigs_all**: Candidate assembly contigs considered by the assembler.
 
@@ -31,6 +31,18 @@ Each sample listed in the input table gets a folder under the output directory.
 **uce_assembly_summary.csv**: UCE-mode per-locus assembly summary. It records status, selected contig length, read-supported span, read count, read density, support fraction, flank balance, k-mer depth metrics, candidate count, and low-quality flag.
 
 **uce_rescue_summary.csv**: Per-sample raw-read rescue summary generated when `--assembly-mode uce --uce-rescue-reads` is used.
+
+**assembly_graphs**: Per-locus compact assembly graphs generated only with `--assembler-graph-format gfa`, `dot`, or `both`; no graphs are written by default.
+
+## ITS2-specific outputs
+
+**its2_assembly_summary.csv**: Per-locus ITS2 summary recording assembly and acceptance status, representative length, read support, depth metrics, and candidate count.
+
+**results/<locus>.fasta**: Every accepted ITS2 variant for the locus rather than only one best sequence. Headers include fragment, paired-fragment, diagnostic-fragment, EM support, and abundance fields.
+
+**results/<locus>.its2_support.tsv**: Accepted and low-support candidate details, including equivalence members, total fragment support, paired support, diagnostic support, EM support, EM abundance, and `PASS`, `EQUIVALENCE_GROUP`, or `LOW_SUPPORT` status.
+
+**contigs_all/<locus>.fasta**: All accepted ITS2 variants; `contigs_all_low/<locus>.fasta` retains candidates below the fragment-support threshold.
 
 ## Combined outputs
 

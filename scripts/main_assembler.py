@@ -1278,7 +1278,6 @@ if __name__ == '__main__':
             os.mkdir(os.path.join(args.o, 'contigs_all'))
         if not os.path.isdir(os.path.join(args.o, 'contigs_all_low')):
             os.mkdir(os.path.join(args.o, 'contigs_all_low'))
-        print("Do not close this window manually, please!")
         # 载入参考序列信息
         Get_Ref_Info(args.r, ref_path_dict, ref_count_dict)
         t0 = time.time()

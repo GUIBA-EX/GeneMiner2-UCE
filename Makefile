@@ -1,4 +1,4 @@
-PY_SRC := build_consensus merge_seq unix_command
+PY_SRC := build_consensus unix_command
 PY_BIN := $(patsubst %,cli/bin/%,$(PY_SRC))
 RUST_ASSEMBLER_BIN := cli/bin/main_assembler-rust
 ORIGINAL_ASSEMBLER_BIN := cli/bin/main_assembler-original
@@ -11,11 +11,17 @@ FILTER_RUST_SOURCES := $(FILTER_RUST_MANIFEST) rust/main_filter_new/src/main.rs
 POPULATION_BIN := cli/bin/main_population
 POPULATION_RUST_MANIFEST := rust/main_population/Cargo.toml
 POPULATION_RUST_SOURCES := $(POPULATION_RUST_MANIFEST) rust/main_population/src/main.rs
+TOOLS_RUST_MANIFEST := rust/gm2_tools/Cargo.toml
+TOOLS_RUST_SOURCES := $(TOOLS_RUST_MANIFEST) $(wildcard rust/gm2_tools/src/*.rs) $(wildcard rust/gm2_tools/src/bin/*.rs)
+ALIGNMENT_CLEAN_BIN := cli/bin/fix_alignment
+MERGE_SEQ_BIN := cli/bin/merge_seq
+BUILD_TRIMED_BIN := cli/bin/build_trimed
+GM2_STATS_BIN := cli/bin/gm2_stats
 FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(POPULATION_BIN) $(PY_BIN)
+build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(PY_BIN)
 	for target in $(PY_SRC); do cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/$$target/_internal; done
 	if command -v cargo >/dev/null 2>&1; then $(MAKE) $(RUST_ASSEMBLER_BIN); fi
 	cd cli && ln -f -r -s bin/unix_command geneminer2
@@ -28,6 +34,7 @@ clean:
 	rm -f -r rust/main_refilter_new/target
 	rm -f -r rust/main_assembler/target
 	rm -f -r rust/main_population/target
+	rm -f -r rust/gm2_tools/target
 
 distclean: clean
 	for target in $(PY_SRC); do rm -f scripts/$$target.spec; done
@@ -80,11 +87,26 @@ $(RUST_ASSEMBLER_BIN): $(ASSEMBLER_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(ASSEMBLER_RUST_MANIFEST)
 	install rust/main_assembler/target/release/main_assembler $(RUST_ASSEMBLER_BIN)
 
-cli/bin/unix_command: scripts/gm2_stats.py
 
 $(POPULATION_BIN): $(POPULATION_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(POPULATION_RUST_MANIFEST)
 	install rust/main_population/target/release/main_population $(POPULATION_BIN)
+
+$(ALIGNMENT_CLEAN_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin fix_alignment
+	install rust/gm2_tools/target/release/fix_alignment $(ALIGNMENT_CLEAN_BIN)
+
+$(MERGE_SEQ_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin merge_seq
+	install rust/gm2_tools/target/release/merge_seq $(MERGE_SEQ_BIN)
+
+$(BUILD_TRIMED_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin build_trimed
+	install rust/gm2_tools/target/release/build_trimed $(BUILD_TRIMED_BIN)
+
+$(GM2_STATS_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin gm2_stats
+	install rust/gm2_tools/target/release/gm2_stats $(GM2_STATS_BIN)
 
 $(PY_BIN): cli/bin/%: scripts/%.py | cython
 	cd scripts && pyinstaller -D -y --optimize 2 $(notdir $<)

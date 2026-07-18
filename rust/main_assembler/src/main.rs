@@ -39,7 +39,8 @@ Assembly:
   -p, --processes INT             Parallel locus workers (default: 1)
 
 UCE:
-  --assembly-mode reference|uce   Assembly mode (default: reference)
+  --assembly-mode reference|uce|its2
+                                   Assembly mode (default: reference)
   --uce-path-strategy search|backbone
                                    UCE path handling (default: backbone)
   --uce-backbone-lookahead INT    Bounded branch look-ahead (default: 24)
@@ -121,7 +122,7 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("main_assembler 0.6.0");
+                println!("main_assembler 0.7.0");
                 std::process::exit(0);
             }
             "-r" => reference = Some(PathBuf::from(next_value(&arguments, &mut index, flag)?)),
@@ -140,6 +141,7 @@ fn parse_args() -> Result<Args, String> {
                 args.assembly_mode = match next_value(&arguments, &mut index, flag)?.as_str() {
                     "reference" => AssemblyMode::Reference,
                     "uce" => AssemblyMode::Uce,
+                    "its2" => AssemblyMode::Its2,
                     value => return Err(format!("invalid --assembly-mode: {value}")),
                 }
             }
@@ -201,6 +203,12 @@ fn parse_args() -> Result<Args, String> {
     args.density_check_min_length = args.density_check_min_length.max(1);
     args.read_chunk_size = args.read_chunk_size.max(1);
 
+    if args.assembly_mode == AssemblyMode::Its2 {
+        args.kmer_size = 21;
+        args.kmer_min = 21;
+        args.kmer_max = 21;
+    }
+
     if args.kmer_size > 63 || args.kmer_min > 63 || args.kmer_max > 63 {
         return Err("Rust u128 assembler supports k-mer sizes up to 63".to_string());
     }
@@ -217,7 +225,6 @@ fn run(mut args: Args) -> io::Result<()> {
     std::fs::create_dir_all(args.output.join("results"))?;
     std::fs::create_dir_all(args.output.join("contigs_all"))?;
     std::fs::create_dir_all(args.output.join("contigs_all_low"))?;
-    println!("Do not close this window manually, please!");
 
     let log_lock = Arc::new(Mutex::new(()));
     log_line(
@@ -230,10 +237,16 @@ fn run(mut args: Args) -> io::Result<()> {
     let valid_keys: HashSet<String> = tasks.iter().map(|task| task.key.clone()).collect();
 
     let result_path = args.output.join("result_dict.txt");
-    let summary_path = args.output.join("uce_assembly_summary.csv");
+    let summary_path = args
+        .output
+        .join(if args.assembly_mode == AssemblyMode::Its2 {
+            "its2_assembly_summary.csv"
+        } else {
+            "uce_assembly_summary.csv"
+        });
     let mut result_dict = read_result_dict(&result_path)?;
     result_dict.retain(|key, _| valid_keys.contains(key));
-    let mut summary_rows = if args.assembly_mode == AssemblyMode::Uce {
+    let mut summary_rows = if matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) {
         read_summary_lines(&summary_path)?
     } else {
         Default::default()
@@ -241,7 +254,7 @@ fn run(mut args: Args) -> io::Result<()> {
     summary_rows.retain(|key, _| valid_keys.contains(key));
 
     let mut completed: HashSet<String> = result_dict.keys().cloned().collect();
-    if args.assembly_mode == AssemblyMode::Uce {
+    if matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) {
         completed.retain(|key| summary_rows.contains_key(key));
     }
 
@@ -281,13 +294,13 @@ fn run(mut args: Args) -> io::Result<()> {
             continue;
         }
         result_dict.insert(result.key.clone(), (result.status.clone(), result.value));
-        if args.assembly_mode == AssemblyMode::Uce {
+        if matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) {
             summary_rows.insert(result.key.clone(), summary_line(&result));
         }
     }
 
     write_result_dict(&result_path, &result_dict)?;
-    if args.assembly_mode == AssemblyMode::Uce {
+    if matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) {
         write_summary(&summary_path, &summary_rows)?;
     }
     log_line(

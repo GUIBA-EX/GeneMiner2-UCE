@@ -12,11 +12,12 @@ GeneMiner2-UCE 是 GeneMiner2 的命令行分支，面向 target-enrichment 和 
 
 - 从二代测序 reads 中参考引导恢复目标分子标记。
 - 通过 `--assembly-mode uce` 保留有 reads 支持的 UCE 侧翼序列。
+- 通过 `--assembly-mode its2` 保留多个 ITS2 候选，并统计 paired-read、诊断片段和 EM 丰度支持。
 - 通过 `--uce-rescue-reads` 执行一轮受控的 raw-read rescue。
 - 根据唯一定位 reads、连续覆盖和深度指标筛除弱支持 contig。
 - 导出 PHYLUCE 兼容的 UCE contig，并生成样本和 locus 层面的恢复统计。
 - 通过 Rust `population` 流程构建公共 UCE 参考、统一 mapping 和联合 VCF，并输出 PCA 与 ADMIXTURE 遗传成分分析所需面板。
-- 支持 MAFFT、MUSCLE、Clustal Omega、trimAl、AliFilter 及多种系统发育树程序。
+- 支持 MAFFT、Clustal Omega、trimAl、AliFilter 及多种系统发育树程序。
 
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
@@ -148,6 +149,10 @@ cli/geneminer2 stats \
 
 该命令输出 `uce_stats.tsv`、`uce_locus_stats.tsv`、`uce_seq_lengths.tsv`、`uce_read_counts.tsv` 和 `uce_filtered_read_counts.tsv`。如果环境中安装了 `pandas`、`seaborn` 和 `matplotlib`，且未使用 `--stats-no-heatmap`，还会生成恢复率和 read-count heatmap。
 
+## ITS2 模式
+
+`--assembly-mode its2` 使用 Rust assembler，以固定的 21-mer 保留同一 locus 的多个 ITS2 候选。流程用成对 reads 判断候选兼容性，将无法由 reads 区分的序列归入等价组，并报告 fragment support、paired support、diagnostic support 与 EM abundance。ITS2 模式不支持 Python assembler 回退。为避免常规 `combine` 只读取每个 locus 第一条序列，建议显式运行 `filter refilter assemble`，再从每个样本的 `results/` 和 `its2_assembly_summary.csv` 读取结果。详细文件含义见[输出文件说明](manual/ZH_CN/output.md)。
+
 ## Population 模式
 
 `population` 面向二倍体 UCE 重测序或 target-enrichment 数据中的 PCA、ADMIXTURE 和物种界定。它不要求单倍型定相，而是从每个样本的已接受 UCE contig 和原始 reads 构建一致的二倍体基因型矩阵：
@@ -174,13 +179,14 @@ cli/geneminer2 population \
 
 ## 实现说明
 
-默认构建 Rust 过滤器、refilter 和 assembler；参数与原流程兼容。装配器默认使用 Rust，`--assembler-implementation auto` 失败时会自动重试未修改的 Python 基线实现。
+默认构建 Rust 过滤器、refilter、assembler、population 以及 alignment cleanup、sequence merge、reference trimming 和 UCE statistics 工具；参数与原流程兼容。装配器默认使用 Rust，`--assembler-implementation auto` 失败时会自动重试未修改的 Python 基线实现。主 CLI 编排器和 consensus 程序继续使用 Python。
 
 Rust `MainFilterNew` 的短 k-mer 路径采用 DNA 查表、无取模采样扫描和 `AHashMap` 索引；这些改动不改变筛选规则、字典格式或输出格式。实现边界、DK40 target-capture 基准和逐字节输出验证见 [MainFilter 性能优化与兼容性说明](docs/mainfilter-performance.md)。
 
-Rust UCE 装配按块读取 reads（`--assembler-read-chunk-size`，默认 8192），并行统计 k-mer（`--assembler-kmer-count-threads 0` 自动分配），并将无分叉图链压缩为 unitig。需要排查组装时，可用 `--assembler-graph-format gfa|dot|both` 在样本目录的 `assembly_graphs/` 输出图；默认不输出。
+Rust UCE 装配按块读取 reads（`--assembler-read-chunk-size`，默认 8192），并行统计 k-mer（`--assembler-kmer-count-threads 0` 自动分配），并将无分叉图链压缩为 unitig。如需导出组装图，可用 `--assembler-graph-format gfa|dot|both` 在样本目录的 `assembly_graphs/` 输出图；默认不输出。
 
 `population` 由 Rust 驱动；minibwa、samtools、bcftools、PLINK 和 ADMIXTURE 仍为外部依赖。完整参数和工具要求请见命令行文档。
+
 ## 文档
 
 - [中文命令行说明](manual/ZH_CN/command_line.md)

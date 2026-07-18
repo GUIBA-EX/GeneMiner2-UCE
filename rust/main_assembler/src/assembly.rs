@@ -425,7 +425,11 @@ fn process_sides(
         }
     }
 
-    let minimum = max_weight >> if mode == AssemblyMode::Uce { 2 } else { 1 };
+    let minimum = match mode {
+        AssemblyMode::Reference => max_weight >> 1,
+        AssemblyMode::Uce => max_weight >> 2,
+        AssemblyMode::Its2 => 1,
+    };
     let mut processed = Vec::new();
     for contig in contigs {
         let weight: i64 = contig.weights.iter().sum();
@@ -671,6 +675,8 @@ pub fn assemble_seed(
         1
     } else if args.assembly_mode == AssemblyMode::Uce {
         args.side_candidates
+    } else if args.assembly_mode == AssemblyMode::Its2 {
+        16
     } else {
         3
     };

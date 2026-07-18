@@ -1,10 +1,15 @@
 [package]
-name = "main_assembler"
+name = "gm2_tools"
 version = "0.7.0"
 edition = "2021"
 
 [profile.release]
 codegen-units = 1
-lto = "fat"
+lto = true
 strip = true
-panic = "abort"
+
+
+[dependencies]
+csv = "1.3"
+flate2 = "1.0"
+png = "0.17"

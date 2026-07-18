@@ -12,11 +12,12 @@ Use of this version must cite the [GeneMiner2-UCE GitHub repository](https://git
 
 - Reference-guided recovery of target markers from short-read sequencing data.
 - UCE assembly mode that retains read-supported flanking sequence.
+- ITS2 assembly mode that retains multiple candidates and reports paired-read, diagnostic-fragment, and EM abundance support.
 - One controlled raw-read rescue round through `--uce-rescue-reads`.
 - Rejection of weakly supported contigs using unique-read, positional-support, and depth metrics.
 - PHYLUCE-compatible UCE exports and sample- and locus-level recovery statistics.
 - A Rust `population` workflow for cohort-reference construction, uniform mapping, joint VCF calling, PCA, and ADMIXTURE ancestry analysis.
-- Support for MAFFT, MUSCLE, Clustal Omega, trimAl, AliFilter, and several phylogenetic tree programs.
+- Support for MAFFT, Clustal Omega, trimAl, AliFilter, and several phylogenetic tree programs.
 
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
 
@@ -148,6 +149,10 @@ cli/geneminer2 stats \
 
 This command writes `uce_stats.tsv`, `uce_locus_stats.tsv`, `uce_seq_lengths.tsv`, `uce_read_counts.tsv`, and `uce_filtered_read_counts.tsv`. If `pandas`, `seaborn`, and `matplotlib` are available and `--stats-no-heatmap` is omitted, it also generates recovery and read-count heatmaps.
 
+## ITS2 mode
+
+`--assembly-mode its2` uses the Rust assembler with a fixed 21-mer and retains multiple candidates per locus. Paired reads define candidate compatibility; sequences that the reads cannot distinguish remain in equivalence groups. The output reports fragment, paired-fragment, diagnostic-fragment, and EM abundance support. ITS2 mode does not fall back to the Python assembler. Because the standard `combine` stage reads only the first sequence of each locus, run `filter refilter assemble` explicitly and consume each sample’s `results/` and `its2_assembly_summary.csv` outputs. See the [output guide](manual/EN_US/output.md) for file details.
+
 ## Population mode
 
 The `population` workflow targets PCA, ADMIXTURE, and species-delimitation analyses of diploid UCE resequencing or target-enrichment data. It does not require haplotype phasing. Instead, it derives a consistent diploid genotype matrix from accepted UCE contigs and the original reads of every sample:
@@ -174,13 +179,14 @@ cli/geneminer2 population \
 
 ## Implementation Notes
 
-The default build uses Rust filters, refiltering, and assembly while retaining compatible command lines. The assembler runs in Rust by default; `--assembler-implementation auto` retries the unmodified Python baseline if Rust fails.
+The default build uses Rust for filtering, refiltering, assembly, population analysis, alignment cleanup, sequence merging, reference trimming, and UCE statistics while retaining compatible command lines. The assembler runs in Rust by default; `--assembler-implementation auto` retries the unmodified Python baseline if Rust fails. The main CLI orchestrator and consensus program remain in Python.
 
 The short-k-mer path in Rust `MainFilterNew` uses a DNA lookup table, modulo-free probe scheduling, and an `AHashMap` index without changing filtering rules, dictionary format, or output format. The implementation boundary, DK40 target-capture benchmark, and byte-level output verification are recorded in [the MainFilter performance and compatibility note](docs/mainfilter-performance.md).
 
-Rust UCE assembly streams reads in batches (`--assembler-read-chunk-size`, default 8192), counts k-mers in parallel (`--assembler-kmer-count-threads 0` chooses workers automatically), and compresses non-branching graph chains into unitigs. For diagnosis, `--assembler-graph-format gfa|dot|both` writes graphs to `assembly_graphs/` in each sample directory; by default it writes none.
+Rust UCE assembly streams reads in batches (`--assembler-read-chunk-size`, default 8192), counts k-mers in parallel (`--assembler-kmer-count-threads 0` chooses workers automatically), and compresses non-branching graph chains into unitigs. Optional `--assembler-graph-format gfa|dot|both` writes graphs to `assembly_graphs/` in each sample directory; by default it writes none.
 
 The `population` driver is Rust-based; minibwa, samtools, bcftools, PLINK, and ADMIXTURE remain external dependencies. See the command-line manual for complete options and requirements.
+
 ## Documentation
 
 - [Command-line usage](manual/EN_US/command_line.md)

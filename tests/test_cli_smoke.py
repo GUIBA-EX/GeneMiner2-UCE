@@ -80,5 +80,60 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("--skip-plink", command)
         self.assertTrue(run.call_args.kwargs["check"])
 
+    @mock.patch.object(unix_command.subprocess, "run")
+    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/gm2_stats")
+    def test_single_end_stats_path_is_not_counted_twice(self, _find, run):
+        args = SimpleNamespace(
+            o="out", r="refs", stats_count_input_reads=True, stats_no_heatmap=True
+        )
+        unix_command.run_stats(args, {"1_A": ("reads.fq.gz", "reads.fq.gz")})
+        command = run.call_args.args[0]
+        sample = command.index("--sample")
+        self.assertEqual(command[sample + 1:sample + 4], ["1_A", "reads.fq.gz", ""])
+
+    def test_failed_samples_are_excluded_from_rescue(self):
+        samples = {"1_A": (), "2_B": (), "3_C": ()}
+        failures = [("2_B", "assemble", "failed")]
+        self.assertEqual(
+            unix_command.get_rescue_sample_names(samples, failures),
+            ["1_A", "3_C"],
+        )
+
+    @mock.patch.object(unix_command, "run_stats", side_effect=OSError("broken file"))
+    @mock.patch.object(unix_command.os.path, "isdir", return_value=True)
+    def test_execute_tasks_handles_file_errors(self, _isdir, _stats):
+        args = SimpleNamespace(r="refs", command=("stats",))
+        self.assertEqual(unix_command.execute_tasks(args, {"1_A": ()}), 1)
+
+    @mock.patch.object(unix_command, "write_failed_samples")
+    @mock.patch.object(unix_command.os.path, "isdir", return_value=True)
+    @mock.patch.object(
+        unix_command.subprocess,
+        "run",
+        side_effect=subprocess.CalledProcessError(1, ["main_assembler-rust"]),
+    )
+    @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_assembler-rust")
+    def test_its2_rust_failure_does_not_fall_back_to_python(
+        self, _find, run, _isdir, _write_failures
+    ):
+        args = SimpleNamespace(
+            o="out", r="refs", p=1, kf=21, step_size=4,
+            reuse_reference_cache=False, reference_cache_dir=None,
+            uce_rescue_reads=False, assembly_mode="its2", soft_boundary="auto",
+            assembler_implementation="auto", ka=21, min_ka=21, max_ka=21,
+            error_threshold=2, search_depth=4096, min_coverage=0,
+            uce_side_candidates=8, uce_max_contig_length=0,
+            uce_min_read_density=0.003, uce_density_check_min_length=1000,
+            uce_max_depth_cv=0, uce_max_depth_ratio=0,
+        )
+
+        with self.assertRaises(RuntimeError):
+            unix_command.do_filter_assemble(
+                args, {"1_A": ("r1.fq", "r2.fq")}, False, False, True
+            )
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][0], "/gm2/main_assembler-rust")
+
 if __name__ == "__main__":
     unittest.main()

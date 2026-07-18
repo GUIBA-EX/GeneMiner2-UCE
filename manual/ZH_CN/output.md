@@ -32,6 +32,18 @@
 
 **uce_rescue_summary.csv**：使用 `--assembly-mode uce --uce-rescue-reads` 时生成的单样本 raw-read rescue 摘要。
 
+**assembly_graphs**：仅在使用 `--assembler-graph-format gfa`、`dot` 或 `both` 时生成的逐 locus 压缩组装图；默认不生成。
+
+## ITS2 专用输出
+
+**its2_assembly_summary.csv**：ITS2 模式的逐 locus 汇总表，记录组装状态、接受状态、代表序列长度、reads 支持、深度指标和候选数。
+
+**results/<locus>.fasta**：该 locus 所有已接受 ITS2 变体，而不只是单条最佳序列。标题包含 fragment、paired-fragment、diagnostic-fragment、EM support 和 abundance。
+
+**results/<locus>.its2_support.tsv**：已接受和低支持候选的明细表，包含 equivalence members、总 fragment support、paired support、diagnostic support、EM support、EM abundance 和 `PASS`、`EQUIVALENCE_GROUP` 或 `LOW_SUPPORT` 状态。
+
+**contigs_all/<locus>.fasta**：所有已接受 ITS2 变体；`contigs_all_low/<locus>.fasta` 保存未达到 fragment support 标准的候选。
+
 ## 合并输出
 
 **combined_results**：按 locus 合并不同样本恢复序列后的文件。

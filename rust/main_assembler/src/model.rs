@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub enum AssemblyMode {
     Reference,
     Uce,
+    Its2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,6 +99,8 @@ pub struct ReadSupport {
 
 #[derive(Clone, Debug, Default)]
 pub struct ContigRecord {
+    pub label: String,
+    pub equivalence_members: String,
     pub sequence: Vec<u8>,
     pub seed_count: usize,
     pub position: i32,
@@ -115,6 +118,11 @@ pub struct ContigRecord {
     pub supported_bases: usize,
     pub support_breadth: f64,
     pub max_support_gap: usize,
+    pub fragment_support: u64,
+    pub paired_fragment_support: u64,
+    pub diagnostic_fragment_support: u64,
+    pub em_fragment_support: f64,
+    pub em_abundance: f64,
     pub accepted: bool,
     pub rejection_reason: String,
 }

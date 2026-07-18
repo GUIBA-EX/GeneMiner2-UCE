@@ -11,7 +11,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 
-import build_trimed
 import main_assembler
 import main_refilter_new
 import unix_command
@@ -175,20 +174,6 @@ class DataIntegrityFixTests(unittest.TestCase):
                 unix_command.generate_consensus(args, {'1_A': ('reads.fq', 'reads.fq')})
 
             self.assertIn('--secondary=no', commands[0])
-
-    def test_reverse_blast_coordinates_are_normalized(self):
-        match = build_trimed.SequenceMatch.from_line(['q', 's', '99', '9', '0', '0', '10', '2', '1', '9', '0', '10'])
-        self.assertEqual((match.qstart, match.qend, match.length, match.reverse), (2, 10, 9, True))
-
-        with tempfile.TemporaryDirectory() as tmp:
-            query = Path(tmp) / 'query.fasta'
-            reference = Path(tmp) / 'reference.fasta'
-            output = Path(tmp) / 'output.fasta'
-            query.write_text('>query\nAACCGGTT\n')
-            reference.write_text('>reference\nAACCGGTT\n')
-            blast_line = 'q\ts\t100\t4\t0\t0\t8\t5\t1\t4\t0\t100\n'
-            build_trimed.process_file(str(query), str(reference), iter([blast_line]), str(output), 0, 'longest')
-            self.assertIn('\nAACC\n', output.read_text())
 
     def test_sam_padding_does_not_advance_reference(self):
         consensus = load_build_consensus()

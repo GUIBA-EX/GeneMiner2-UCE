@@ -12,7 +12,7 @@ GeneMiner2-UCE 是面向 UCE 和其他系统发育标记的命令行流程。本
 - [Rust 和 Cargo](https://www.rust-lang.org/tools/install/)；
 - Python 3.11、Cython、PyInstaller、Biopython、NumPy、SciPy、pandas、matplotlib 和 seaborn。
 
-Rust/Cargo 是当前完整构建的必需依赖，用于编译主 reads 过滤器、二次过滤器和 population 流程。Haxe 源码仅作为主过滤器的兼容实现保留，不能替代完整 Rust 构建。
+Rust/Cargo 是当前完整构建的必需依赖，用于编译主 reads 过滤器、二次过滤器、assembler、population 以及 alignment cleanup、sequence merge、reference trimming 和 UCE statistics 工具。Haxe 源码仅作为主过滤器的兼容实现保留，不能替代完整 Rust 构建。
 
 Ubuntu 可先安装系统依赖：
 
@@ -35,8 +35,7 @@ conda activate geneminer
 
 ```bash
 conda install -c bioconda \
-  aster blast clustalo fasttree iqtree mafft magicblast minimap2 \
-  muscle raxml-ng trimal veryfasttree
+  aster blast clustalo fasttree iqtree mafft magicblast minimap2 raxml-ng trimal veryfasttree
 ```
 
 可选工具：
@@ -112,7 +111,8 @@ references/
 不显式指定子命令时：
 
 - `--assembly-mode reference`（默认）运行 `filter refilter assemble trim combine tree`；
-- `--assembly-mode uce` 运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围。
+- `--assembly-mode uce` 运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围；
+- `--assembly-mode its2` 当前仍沿用 reference 的默认命令链。由于常规 `combine` 只读取每个 locus 的第一条序列，ITS2 分析应显式指定 `filter refilter assemble`，保留全部候选。
 
 默认参考模式示例：
 
@@ -124,7 +124,9 @@ cli/geneminer2 \
   -p 8
 ```
 
-## 4. UCE 组装
+## 4. UCE 与 ITS2 组装
+
+### 4.1 UCE
 
 UCE 模式放宽短 probe 的参考边界限制，优先保留更长且仍有 reads 支持的侧翼序列。在 refilter 阶段，只要任一 mate 通过 locus 过滤，整对 paired-end reads 都会保留。
 
@@ -147,6 +149,20 @@ cli/geneminer2 \
 `--uce-rescue-reads` 在第一轮组装后，以初步 contig 和原始参考再次招募 raw reads，并只执行一轮 re-filtering 和 assembly。rescue 最多并行处理 4 个样本、每个样本最多使用 4 个线程，并受 `-p` 总量约束。
 
 建议在放宽 `-sb`、`-e` 或 assembly k-mer 范围后检查 `uce_assembly_summary.csv`、`uce_rescue_summary.csv` 和下游 alignment。详细输出见[输出文件说明](output.md)。
+
+### 4.2 ITS2
+
+ITS2 模式用于同一 locus 可能存在多个真实变体的 target-capture 数据。它只使用 Rust assembler，并将 filter、refilter 和 assembly k-mer 固定为 `21`。refilter 会保留成对 reads；assembler 再根据每个 fragment 与候选序列的兼容性统计总 fragment support、双端同时支持、仅支持单一候选的 diagnostic support，以及 EM 估计的相对丰度。
+
+无法由 reads 区分的序列保留为 equivalence group，而不是强行选成一个变体。每个样本会生成 `its2_assembly_summary.csv`，并在 `results/` 中为每个 locus 写入多条已接受序列和 `<locus>.its2_support.tsv`。当前 `combine` 面向每 locus 单序列的系统发育流程，不会保留这些多变体，因此建议这样运行：
+
+```bash
+cli/geneminer2 filter refilter assemble \
+  -f samples.tsv -r references -o output \
+  -p 8 --assembly-mode its2
+```
+
+ITS2 模式不能使用 `--assembler-implementation original`，Rust assembler 不可用或失败时也不会回退。
 
 ## 5. Population 群体遗传分析
 
@@ -212,7 +228,7 @@ cli/geneminer2 tree \
 cli/geneminer2 consensus trim combine \
   -f samples.tsv -r references -o output \
   -c 0.75 -ts consensus -tm all -tr 0.5 \
-  -cs trimmed --msa-program muscle
+  -cs trimmed
 ```
 
 从已有 UCE 结果生成统计表但不绘图：
@@ -259,8 +275,11 @@ cli/geneminer2 stats \
 | `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
 | `-i, --search-depth INT` | 搜索深度，默认 `4096` |
 | `--min-coverage INT` | contig 最低 read depth，默认 `0` |
-| `--assembler-implementation MODE` | `auto`（默认）先运行 Rust，失败时回退未修改的原始版；`rust` 仅运行 Rust；`original` 直接运行原始版 |
-| `--assembly-mode MODE` | `reference` 或 `uce`；默认 `reference` |
+| `--assembler-implementation MODE` | `auto`（默认）先运行 Rust，失败时回退未修改的原始版；`rust` 仅运行 Rust；`original` 直接运行原始版；ITS2 仅支持 Rust |
+| `--assembler-read-chunk-size INT` | Rust assembler 每批读取的 reads 数，默认 `8192` |
+| `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
+| `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |
+| `--assembly-mode MODE` | `reference`、`uce` 或 `its2`；默认 `reference`；ITS2 固定使用 21-mer 并保留多个候选 |
 | `--uce-path-strategy MODE` | `backbone`（默认）在气泡处提交单一路径且不回溯；`search` 保留旧的分支枚举 |
 | `--uce-backbone-lookahead INT` | backbone 在每个气泡处的线性前瞻步数，默认 `24`，最小为 `1` |
 | `--uce-side-candidates INT` | 仅在 `--uce-path-strategy search` 下使用；每侧候选数默认 `8`，最小为 `3` |
@@ -310,7 +329,7 @@ cli/geneminer2 stats \
 | `-cs, --combine-source SOURCE` | `assembly`、`consensus` 或 `trimmed`；默认使用上一步结果 |
 | `-cd, --clean-difference FLOAT` | alignment 最大可接受成对差异，默认 `1.0` |
 | `-cn, --clean-sequences INT` | alignment 最少序列数，默认 `0` |
-| `--msa-program PROGRAM` | `clustalo`、`mafft` 或 `muscle`；默认 `mafft` |
+| `--msa-program PROGRAM` | `clustalo` 或 `mafft`；默认 `mafft` |
 | `--msa-threads INT` | 每个 MSA 任务的线程数，默认 `1`，且不能大于 `-p` |
 | `--alignment-filter PROGRAM` | `trimal`、`alifilter` 或 `none`；默认 `trimal` |
 | `--filter-processes INT` | 并行 alignment-filter 任务上限，默认等于 `-p` |

@@ -12,7 +12,7 @@ A complete build requires:
 - [Rust and Cargo](https://www.rust-lang.org/tools/install/);
 - Python 3.11, Cython, PyInstaller, Biopython, NumPy, SciPy, pandas, matplotlib, and seaborn.
 
-Rust/Cargo is required for the complete current build, including the primary read filter, secondary filter, and population workflow. The Haxe source remains available only as a compatible implementation of the primary filter; it does not replace the complete Rust build.
+Rust/Cargo is required for the complete current build, including the primary read filter, secondary filter, assembler, population workflow, alignment cleanup, sequence merging, reference trimming, and UCE statistics. The Haxe source remains available only as a compatible implementation of the primary filter; it does not replace the complete Rust build.
 
 On Ubuntu, first install the system dependencies:
 
@@ -35,8 +35,7 @@ The phylogenetic workflow calls a subset of the following external programs, dep
 
 ```bash
 conda install -c bioconda \
-  aster blast clustalo fasttree iqtree mafft magicblast minimap2 \
-  muscle raxml-ng trimal veryfasttree
+  aster blast clustalo fasttree iqtree mafft magicblast minimap2 raxml-ng trimal veryfasttree
 ```
 
 Optional and population-specific tools:
@@ -112,7 +111,8 @@ One or more subcommands can be listed in execution order:
 When no subcommand is given:
 
 - `--assembly-mode reference` (default) runs `filter refilter assemble trim combine tree`;
-- `--assembly-mode uce` runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval.
+- `--assembly-mode uce` runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval;
+- `--assembly-mode its2` currently inherits the reference-mode default chain. Because standard `combine` reads only the first sequence per locus, ITS2 analyses should explicitly request `filter refilter assemble` to retain every candidate.
 
 Default reference-mode example:
 
@@ -124,7 +124,9 @@ cli/geneminer2 \
   -p 8
 ```
 
-## 4. UCE assembly
+## 4. UCE and ITS2 assembly
+
+### 4.1 UCE
 
 UCE mode relaxes boundaries imposed by short probes and favors longer flanking sequences that retain read support. During refiltering, a paired-end read pair is retained whenever either mate passes the locus filter.
 
@@ -147,6 +149,20 @@ This combines the linear-extension idea used by MaSuRCA with SPAdes-style local 
 `--uce-rescue-reads` uses preliminary contigs plus the original references to recruit raw reads again, followed by one additional re-filtering and assembly round. Rescue processes at most four samples concurrently, with up to four threads per sample and an overall limit set by `-p`.
 
 After relaxing `-sb`, `-e`, or the assembly k-mer range, inspect `uce_assembly_summary.csv`, `uce_rescue_summary.csv`, and downstream alignments. See the [output guide](output.md) for details.
+
+### 4.2 ITS2
+
+ITS2 mode targets capture data in which one locus may contain several genuine variants. It requires the Rust assembler and fixes the filtering, refiltering, and assembly k-mer size at `21`. Refiltering retains paired reads; the assembler then measures total fragment support, support from both mates, diagnostic fragments compatible with only one candidate, and EM-estimated relative abundance.
+
+Sequences that the reads cannot distinguish remain in an equivalence group instead of being forced into one variant. Each sample receives `its2_assembly_summary.csv`; `results/` contains multiple accepted sequences per locus and a `<locus>.its2_support.tsv` table. The current `combine` stage targets one sequence per locus and does not retain these variants, so use:
+
+```bash
+cli/geneminer2 filter refilter assemble \
+  -f samples.tsv -r references -o output \
+  -p 8 --assembly-mode its2
+```
+
+ITS2 mode cannot use `--assembler-implementation original`, and it does not fall back when the Rust assembler is unavailable or fails.
 
 ## 5. Population-genetic analysis
 
@@ -212,7 +228,7 @@ Generate consensus sequences, trim them to references, and combine them:
 cli/geneminer2 consensus trim combine \
   -f samples.tsv -r references -o output \
   -c 0.75 -ts consensus -tm all -tr 0.5 \
-  -cs trimmed --msa-program muscle
+  -cs trimmed
 ```
 
 Generate tables from existing UCE results without plotting heatmaps:
@@ -259,8 +275,11 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-sb, --soft-boundary VALUE` | Integer, `auto`, or `unlimited`; default `auto` |
 | `-i, --search-depth INT` | Search depth; default `4096` |
 | `--min-coverage INT` | Minimum contig read depth; default `0` |
-| `--assembler-implementation MODE` | `auto` (default) tries Rust then falls back to the unmodified original; `rust` is strict Rust-only; `original` skips Rust |
-| `--assembly-mode MODE` | `reference` or `uce`; default `reference` |
+| `--assembler-implementation MODE` | `auto` (default) tries Rust then falls back to the unmodified original; `rust` is strict Rust-only; `original` skips Rust; ITS2 is Rust-only |
+| `--assembler-read-chunk-size INT` | Reads loaded per Rust assembler batch; default `8192` |
+| `--assembler-kmer-count-threads INT` | K-mer sorting/counting workers per locus; default `0` selects automatically |
+| `--assembler-graph-format MODE` | Optional graph output: `none` (default), `gfa`, `dot`, or `both` |
+| `--assembly-mode MODE` | `reference`, `uce`, or `its2`; default `reference`; ITS2 fixes k=21 and retains multiple candidates |
 | `--uce-path-strategy MODE` | `backbone` (default) commits one path at bubbles without backtracking; `search` preserves legacy branch enumeration |
 | `--uce-backbone-lookahead INT` | Linear look-ahead steps per backbone bubble; default `24`, minimum `1` |
 | `--uce-side-candidates INT` | Used only with `--uce-path-strategy search`; default `8`, minimum `3` |
@@ -310,7 +329,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-cs, --combine-source SOURCE` | `assembly`, `consensus`, or `trimmed`; default is the preceding stage's output |
 | `-cd, --clean-difference FLOAT` | Maximum acceptable pairwise alignment difference; default `1.0` |
 | `-cn, --clean-sequences INT` | Minimum sequences per alignment; default `0` |
-| `--msa-program PROGRAM` | `clustalo`, `mafft`, or `muscle`; default `mafft` |
+| `--msa-program PROGRAM` | `clustalo` or `mafft`; default `mafft` |
 | `--msa-threads INT` | Threads per MSA job; default `1` and cannot exceed `-p` |
 | `--alignment-filter PROGRAM` | `trimal`, `alifilter`, or `none`; default `trimal` |
 | `--filter-processes INT` | Concurrent alignment-filter jobs; default equals `-p` |

@@ -1,13 +1,13 @@
 use crate::assembly::{
-    add_assemble_chunk_parallel, add_read_slices, assemble_seed, compare_contigs,
-    filter_and_weight_graph,
+    add_assemble_chunk_parallel, add_read_slices, assemble_seed, calculate_read_support,
+    compare_contigs, filter_and_weight_graph,
 };
 use crate::io_utils::{
     find_filtered, for_each_sequence_chunk, load_or_build_reference_kmers, minimum_sequence_length,
-    read_fasta,
+    read_fasta, read_linked_fragments,
 };
 use crate::model::{Args, AssemblyMode, ContigRecord, GraphFormat, LocusResult, LocusTask};
-use crate::seq::{calculate_auto_k, reverse_complement_kmer};
+use crate::seq::{calculate_auto_k, reverse_complement, reverse_complement_kmer};
 use crate::unitig::write_graphs;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -37,6 +37,12 @@ fn remove_if_exists(path: &Path) {
 
 fn clean_locus_outputs(args: &Args, key: &str) {
     remove_if_exists(&args.output.join("results").join(format!("{key}.fasta")));
+    remove_if_exists(
+        &args
+            .output
+            .join("results")
+            .join(format!("{key}.its2_support.tsv")),
+    );
     remove_if_exists(&args.output.join("contigs_all").join(format!("{key}.fasta")));
     remove_if_exists(
         &args
@@ -59,6 +65,19 @@ fn format_header(contig: &ContigRecord, mode: AssemblyMode, prefix: &str) -> Str
     if mode == AssemblyMode::Uce {
         header.push_str(&format!("_supported_{}", contig.supported_bases));
     }
+    if mode == AssemblyMode::Its2 {
+        header.push_str(&format!(
+            "_fragments_{}_paired_{}_diagnostic_{}_em_{:.3}_abundance_{:.6}",
+            contig.fragment_support,
+            contig.paired_fragment_support,
+            contig.diagnostic_fragment_support,
+            contig.em_fragment_support,
+            contig.em_abundance
+        ));
+    }
+    if mode == AssemblyMode::Its2 && !contig.label.is_empty() {
+        header = format!(">{}_{}", contig.label, &header[1..]);
+    }
     header.push_str(&format!("_balance_{:.3}", contig.flank_balance));
     header
 }
@@ -73,6 +92,157 @@ fn write_contigs(
     for contig in contigs {
         writeln!(writer, "{}", format_header(contig, mode, prefix))?;
         writeln!(writer, "{}", String::from_utf8_lossy(&contig.sequence))?;
+    }
+    writer.flush()
+}
+
+fn mate_matches_candidate(mate: &[u8], candidate: &[u8], slice_len: usize) -> bool {
+    if mate.is_empty() || candidate.is_empty() {
+        return false;
+    }
+    let width = slice_len.min(mate.len());
+    let start = (mate.len() - width) / 2;
+    let slice = &mate[start..start + width];
+    let reverse = reverse_complement(slice);
+    candidate.windows(width).any(|window| window == slice)
+        || candidate
+            .windows(width)
+            .any(|window| window == reverse.as_slice())
+}
+
+fn append_equivalence_member(members: &mut String, label: &str) {
+    if label.is_empty() || members.split(";").any(|member| member == label) {
+        return;
+    }
+    if !members.is_empty() {
+        members.push(';');
+    }
+    members.push_str(label);
+}
+
+fn prefer_its2_candidate(
+    existing: &ContigRecord,
+    candidate: &ContigRecord,
+    mode: AssemblyMode,
+) -> bool {
+    if existing.label.is_empty() != candidate.label.is_empty() {
+        return !candidate.label.is_empty();
+    }
+    compare_contigs(existing, candidate, mode).is_lt()
+}
+
+fn annotate_its2_candidates(
+    candidates: &mut [ContigRecord],
+    fragments: &[Vec<Vec<u8>>],
+    slice_len: usize,
+) {
+    let mut compatibilities = Vec::new();
+    for fragment in fragments {
+        let compatible: Vec<(usize, usize)> = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                let matching_mates = fragment
+                    .iter()
+                    .filter(|mate| mate_matches_candidate(mate, &candidate.sequence, slice_len))
+                    .count();
+                (matching_mates > 0).then_some((index, matching_mates))
+            })
+            .collect();
+        for (index, matching_mates) in &compatible {
+            candidates[*index].fragment_support += 1;
+            if *matching_mates >= 2 {
+                candidates[*index].paired_fragment_support += 1;
+            }
+        }
+        let indices: Vec<usize> = compatible.iter().map(|(index, _)| *index).collect();
+        if indices.len() == 1 {
+            candidates[indices[0]].diagnostic_fragment_support += 1;
+        }
+        if !indices.is_empty() {
+            compatibilities.push(indices);
+        }
+    }
+    if compatibilities.is_empty() {
+        return;
+    }
+    let mut abundance: Vec<f64> = candidates
+        .iter()
+        .map(|candidate| candidate.fragment_support.max(1) as f64)
+        .collect();
+    let normalizer: f64 = abundance.iter().sum();
+    for value in &mut abundance {
+        *value /= normalizer;
+    }
+    let mut expected = vec![0.0; candidates.len()];
+    for _ in 0..64 {
+        expected.fill(0.0);
+        for compatible in &compatibilities {
+            let denominator: f64 = compatible.iter().map(|index| abundance[*index]).sum();
+            if denominator > 0.0 {
+                for index in compatible {
+                    expected[*index] += abundance[*index] / denominator;
+                }
+            }
+        }
+        let total: f64 = expected.iter().sum();
+        if total > 0.0 {
+            for (value, count) in abundance.iter_mut().zip(expected.iter()) {
+                *value = *count / total;
+            }
+        }
+    }
+    for (candidate, (count, value)) in candidates
+        .iter_mut()
+        .zip(expected.into_iter().zip(abundance))
+    {
+        candidate.em_fragment_support = count;
+        candidate.em_abundance = value;
+        candidate.accepted = candidate.fragment_support >= 2;
+        candidate.rejection_reason = if candidate.accepted {
+            String::new()
+        } else {
+            "low_fragment_or_diagnostic_support".to_string()
+        };
+    }
+}
+
+fn its2_status(contig: &ContigRecord) -> &'static str {
+    if !contig.accepted {
+        "LOW_SUPPORT"
+    } else if contig.diagnostic_fragment_support > 0 && contig.paired_fragment_support > 0 {
+        "PASS"
+    } else {
+        "EQUIVALENCE_GROUP"
+    }
+}
+
+fn write_its2_support(path: &Path, contigs: &[ContigRecord]) -> io::Result<()> {
+    let mut writer = BufWriter::new(File::create(path)?);
+    writeln!(writer, "variant,equivalence_members,length,fragment_support,paired_fragment_support,diagnostic_fragment_support,em_fragment_support,em_abundance,status")?;
+    for (index, contig) in contigs.iter().enumerate() {
+        let label = if contig.label.is_empty() {
+            format!("assembly_{}", index + 1)
+        } else {
+            contig.label.clone()
+        };
+        writeln!(
+            writer,
+            "{},{},{},{},{},{},{:.6},{:.8},{}",
+            label,
+            if contig.equivalence_members.is_empty() {
+                label.clone()
+            } else {
+                contig.equivalence_members.clone()
+            },
+            contig.sequence.len(),
+            contig.fragment_support,
+            contig.paired_fragment_support,
+            contig.diagnostic_fragment_support,
+            contig.em_fragment_support,
+            contig.em_abundance,
+            its2_status(contig)
+        )?;
     }
     writer.flush()
 }
@@ -131,6 +301,11 @@ fn process_locus_inner(
     let Some((filtered_path, fasta)) = find_filtered(&args.output, &task.key) else {
         clean_locus_outputs(args, &task.key);
         return Ok(LocusResult::failure(&task.key, "no filtered file"));
+    };
+    let linked_fragments = if args.assembly_mode == AssemblyMode::Its2 {
+        read_linked_fragments(&filtered_path, fasta)?
+    } else {
+        Vec::new()
     };
     let minimum = minimum_sequence_length(&filtered_path, fasta, args.read_chunk_size)?;
     let slice_len = minimum.map_or(0, |length| ((length as f64 * 0.9) as usize).max(1));
@@ -280,12 +455,109 @@ fn process_locus_inner(
                 } else {
                     rejected.push(candidate);
                 }
-            } else if candidate.read_count as usize * slice_len > candidate.sequence.len() {
+            } else if args.assembly_mode == AssemblyMode::Its2
+                || candidate.read_count as usize * slice_len > candidate.sequence.len()
+            {
                 accepted.push(candidate);
             } else {
                 rejected.push(candidate);
             }
         }
+    }
+
+    if args.assembly_mode == AssemblyMode::Its2 {
+        accepted.retain(|candidate| candidate.sequence.len() <= 400);
+        for (label, sequence) in &reference_records {
+            let support = calculate_read_support(sequence, slice_len, &reads);
+            if support.total_read_count > 0 {
+                accepted.push(ContigRecord {
+                    label: label.clone(),
+                    equivalence_members: label.clone(),
+                    sequence: sequence.clone(),
+                    read_count: support.total_read_count,
+                    supported_span: support.supported_extent,
+                    supported_bases: support.supported_bases,
+                    support_breadth: support.breadth,
+                    max_support_gap: support.max_gap,
+                    flank_balance: support.flank_balance,
+                    unique_read_count: support.unique_read_count,
+                    multi_mapping_read_count: support.multi_mapping_read_count,
+                    read_density: if sequence.is_empty() {
+                        0.0
+                    } else {
+                        support.total_read_count as f64 / sequence.len() as f64
+                    },
+                    support_fraction: if sequence.is_empty() {
+                        0.0
+                    } else {
+                        support.supported_extent as f64 / sequence.len() as f64
+                    },
+                    ..ContigRecord::default()
+                });
+            }
+        }
+        let mut unique: HashMap<Vec<u8>, ContigRecord> = HashMap::new();
+        for mut candidate in accepted.drain(..).chain(rejected.drain(..)) {
+            if candidate.equivalence_members.is_empty() {
+                candidate.equivalence_members = candidate.label.clone();
+            }
+            match unique.get_mut(&candidate.sequence) {
+                Some(existing) => {
+                    let mut members = existing.equivalence_members.clone();
+                    append_equivalence_member(&mut members, &candidate.label);
+                    if prefer_its2_candidate(existing, &candidate, args.assembly_mode) {
+                        candidate.equivalence_members = members;
+                        *existing = candidate;
+                    } else {
+                        existing.equivalence_members = members;
+                    }
+                }
+                None => {
+                    unique.insert(candidate.sequence.clone(), candidate);
+                }
+            }
+        }
+        let mut equivalence: HashMap<Vec<usize>, ContigRecord> = HashMap::new();
+        for mut candidate in unique.into_values() {
+            let signature: Vec<usize> = linked_fragments
+                .iter()
+                .enumerate()
+                .filter_map(|(index, fragment)| {
+                    fragment
+                        .iter()
+                        .any(|mate| mate_matches_candidate(mate, &candidate.sequence, slice_len))
+                        .then_some(index)
+                })
+                .collect();
+            match equivalence.get_mut(&signature) {
+                Some(existing) => {
+                    let mut members = existing.equivalence_members.clone();
+                    for label in candidate.equivalence_members.split(";") {
+                        append_equivalence_member(&mut members, label);
+                    }
+                    if prefer_its2_candidate(existing, &candidate, args.assembly_mode) {
+                        candidate.equivalence_members = members;
+                        *existing = candidate;
+                    } else {
+                        existing.equivalence_members = members;
+                    }
+                }
+                None => {
+                    equivalence.insert(signature, candidate);
+                }
+            }
+        }
+        let mut candidates: Vec<ContigRecord> = equivalence.into_values().collect();
+        annotate_its2_candidates(&mut candidates, &linked_fragments, slice_len);
+        accepted = candidates
+            .iter()
+            .filter(|candidate| candidate.accepted)
+            .cloned()
+            .collect();
+        rejected = candidates
+            .into_iter()
+            .filter(|candidate| !candidate.accepted)
+            .collect();
     }
 
     let mut low_quality = accepted.is_empty();
@@ -315,7 +587,19 @@ fn process_locus_inner(
     accepted.sort_by(|left, right| compare_contigs(right, left, args.assembly_mode));
     rejected.sort_by(|left, right| compare_contigs(right, left, args.assembly_mode));
 
-    if args.assembly_mode == AssemblyMode::Reference || !low_quality {
+    if args.assembly_mode == AssemblyMode::Its2 {
+        write_contigs(&best_path, &accepted, args.assembly_mode, "its2_variant")?;
+        write_contigs(&all_path, &accepted, args.assembly_mode, "its2_variant")?;
+        let mut support = accepted.clone();
+        support.extend(rejected.clone());
+        write_its2_support(
+            &args
+                .output
+                .join("results")
+                .join(format!("{}.its2_support.tsv", task.key)),
+            &support,
+        )?;
+    } else if args.assembly_mode == AssemblyMode::Reference || !low_quality {
         write_contigs(
             &best_path,
             std::slice::from_ref(&best),
@@ -327,7 +611,8 @@ fn process_locus_inner(
         remove_if_exists(&best_path);
         remove_if_exists(&all_path);
     }
-    if args.assembly_mode == AssemblyMode::Uce && !rejected.is_empty() {
+    if matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) && !rejected.is_empty()
+    {
         write_contigs(
             &low_path,
             &rejected,
@@ -485,4 +770,60 @@ pub fn write_summary(path: &Path, rows: &HashMap<String, String>) -> io::Result<
         write!(writer, "{}\r\n", rows[key])?;
     }
     writer.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(label: &str, sequence: &[u8]) -> ContigRecord {
+        ContigRecord {
+            label: label.to_string(),
+            equivalence_members: label.to_string(),
+            sequence: sequence.to_vec(),
+            ..ContigRecord::default()
+        }
+    }
+
+    #[test]
+    fn its2_pe_evidence_assigns_diagnostic_support_and_em() {
+        let mut candidates = vec![candidate("A", b"AAAATATA"), candidate("B", b"AAAACGCG")];
+        let fragments = vec![
+            vec![b"TATA".to_vec(), b"TATA".to_vec()],
+            vec![b"CGCG".to_vec()],
+            vec![b"AAAA".to_vec()],
+        ];
+        annotate_its2_candidates(&mut candidates, &fragments, 4);
+        assert_eq!(candidates[0].fragment_support, 2);
+        assert_eq!(candidates[0].paired_fragment_support, 1);
+        assert_eq!(candidates[0].diagnostic_fragment_support, 1);
+        assert!(candidates[0].accepted);
+        assert_eq!(its2_status(&candidates[0]), "PASS");
+        assert_eq!(candidates[1].fragment_support, 2);
+        assert_eq!(candidates[1].diagnostic_fragment_support, 1);
+        assert!(candidates[1].accepted);
+        assert_eq!(its2_status(&candidates[1]), "EQUIVALENCE_GROUP");
+        assert!((candidates[0].em_abundance - 0.5).abs() < 1e-6);
+        assert!((candidates[1].em_abundance - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn its2_labelled_reference_beats_anonymous_graph_candidate() {
+        let anonymous = candidate("", b"AAAATATA");
+        let labelled = candidate("C40", b"AAAATATA");
+        assert!(prefer_its2_candidate(
+            &anonymous,
+            &labelled,
+            AssemblyMode::Its2
+        ));
+        assert!(!prefer_its2_candidate(
+            &labelled,
+            &anonymous,
+            AssemblyMode::Its2
+        ));
+        let mut members = "C40".to_string();
+        append_equivalence_member(&mut members, "C40e");
+        append_equivalence_member(&mut members, "C40");
+        assert_eq!(members, "C40;C40e");
+    }
 }

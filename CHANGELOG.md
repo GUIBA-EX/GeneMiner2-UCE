@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7 — ITS2 assembly and Rust utility migration
+
+- Added ITS2 multi-candidate assembly with paired-fragment compatibility, equivalence groups, diagnostic support, and EM abundance estimates; ITS2 now remains strictly Rust-only on failure.
+- Reimplemented alignment cleanup, sequence merging, reference trimming, and UCE statistics as readable Rust utilities while preserving their command-line contracts.
+- Removed the unused MUSCLE integration and obsolete validation-only helper scripts.
+- Fixed single-end statistics, rescue scheduling after sample failures, deterministic gene-tree ordering, and top-level CLI error handling.
+- Synchronized Chinese and English README, command-line, and output documentation with the current CLI; removed obsolete GUI-era console output and local debug artifacts.
+
 ## v0.65 — MainFilter deterministic lookup optimization
 
 - Optimized the Rust primary filter's short-k-mer scan with a DNA lookup table, modulo-free probe scheduling, and `AHashMap` k-mer lookup.
@@ -11,6 +19,7 @@
 - Compress non-branching UCE backbone paths into unitigs, retaining bounded decisions only at graph junctions.
 - Add optional compact GFA and DOT assembly-graph output via `--assembler-graph-format`.
 - Add `--assembler-read-chunk-size` and `--assembler-kmer-count-threads`, while preserving the unmodified Python fallback.
+
 ## v0.5 — Rust UCE assembly and reusable population analysis
 
 - Added the high-performance Rust UCE assembler with compact rolling k-mers, a bounded non-backtracking backbone path strategy, reference caching, and parallel per-locus assembly.

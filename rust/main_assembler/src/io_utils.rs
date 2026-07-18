@@ -115,6 +115,15 @@ where
     Ok(())
 }
 
+pub fn read_linked_fragments(path: &Path, fasta: bool) -> io::Result<Vec<Vec<Vec<u8>>>> {
+    let mut reads = Vec::new();
+    for_each_sequence_chunk(path, fasta, 8192, |chunk| {
+        reads.extend_from_slice(chunk);
+        Ok(())
+    })?;
+    Ok(reads.chunks(2).map(|mates| mates.to_vec()).collect())
+}
+
 pub fn minimum_sequence_length(
     path: &Path,
     fasta: bool,
