@@ -2,7 +2,7 @@
 
 **[English README](README_EN.md)**
 
-GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 target-enrichment、ultraconserved element（UCE）和相关二代测序数据。原来参考引导招募 reads 那套框架还留着，另外又加上了 UCE 侧翼恢复、ITS2 多候选组装和 UCE 群体遗传分析，基本上一套就能整明白。主打的就是一个带派。
+GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 target-enrichment、ultraconserved element（UCE）和相关二代测序数据。原来参考引导招募 reads 那套框架还留着，另外又加上了 UCE 侧翼恢复、marker profiling 和 UCE 群体遗传分析，基本上一套就能整明白。主打的就是一个带派。
 
 用这个软件出了结果，别忘了引用 [GeneMiner2-UCE GitHub 仓库](https://github.com/GUIBA-EX/GeneMiner2-UCE)。正式论文发出来以后，这旮沓会马上补上。
 
@@ -12,7 +12,7 @@ GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 ta
 
 - 从 genome skimming 或 target-capture reads 里把目标分子标记捞出来。
 - 跑 UCE 模式时，把有 reads 撑腰的 core 和侧翼序列都留下。
-- 跑 ITS2 模式时，不硬挑一条，多个候选都留着，还给出 paired、diagnostic 和 EM 丰度证据。
+- `profiling` 从 WGS 或其他 shotgun reads 招募 marker 相关 reads，再直接作 k-mer 伪比对和丰度估计。
 - 拿多个 UCE 样本整公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入。
 - 导出 PHYLUCE 能直接接上的 contig，再把样本和 locus 的恢复质量归拢成表。
 
@@ -22,7 +22,7 @@ GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 ta
 | --- | --- | --- |
 | `--assembly-mode reference` | genome skimming、常规基因恢复 | 参考引导 contig；默认流程会按参考裁切 |
 | `--assembly-mode uce` | UCE target capture | UCE core 和有 reads 支持的 flanking sequence |
-| `--assembly-mode its2` | 同一个 locus 里可能有多个真 ITS2 变体 | 多条候选序列和 fragment-level 支持 |
+| `profiling` 子命令 | WGS / metagenome 中任意扩增子 marker | marker group 的相对信号、检出状态和 QC |
 | `population` 子命令 | 二倍体 UCE 群体重测序或 target capture | 公共伪参考、联合 SNP、PCA 和 ADMIXTURE 面板 |
 
 ## 咋整进你那系统里？
@@ -84,22 +84,22 @@ UCE 模式会松开短 probe 边界对组装的限制，默认跳过参考引导
 
 默认 Rust assembler 走不反复 backtrack 的 backbone 策略，遇上气泡不会来回来去磨叽。`--uce-rescue-reads` 会拿第一轮 contig 加原始参考再招一遍 reads；要是 rescue 以后质量掉了，就麻溜儿退回第一轮结果。参数、质量护栏、reference cache 和回退规则都归拢在 [UCE 流程说明](docs/uce-workflow_ZH.md)里。
 
-## ITS2 模式咋回事
+## Profiling 模式咋回事
 
-ITS2 模式固定用 Rust assembler 和 21-mer。一个 locus 里要是真有多个候选，就都留着，再报告 fragment、paired-fragment、diagnostic-fragment 和 EM abundance。reads 分不清的候选会归到 equivalence group 里，不瞎拍脑袋硬选一个。
+`profiling` 是**读段定量模式，不组装**。它针对任意扩增子 marker：先用 GeneMiner2 做一次 k-mer 招募，再将招募 reads 用 Themisto 伪比对至 marker 参考库，最后由 mSWEEP 从共享命中中估计各 reference group 的相对信号。不会运行 `refilter`、`assemble`、`combine` 或 `tree`。
 
-常规 `combine` 是按每个 locus 一条序列设计的，所以 ITS2 得明确告诉程序只跑这三步：
+参考库直接通过 `-r` 提供一个 `.fasta` 或 `.fa` 文件；该文件中的每条序列是一个 Themisto color。运行环境需提供 `themisto` 和 `mSWEEP`，可通过 `--profile-themisto`、`--profile-msweep` 显式指定路径。
 
 ```bash
-cli/geneminer2 filter refilter assemble \
+cli/geneminer2 profiling \
   -f samples.tsv \
-  -r references \
+  -r marker_reference.fasta \
   -o output \
   -p 8 \
-  --assembly-mode its2
+  --profile-decoy non_target_sequences.fasta
 ```
 
-ITS2 不认原始 Python assembler，Rust assembler 要是失败了也不往 Python 回退。结果搁在各样本的 `results/`、`its2_assembly_summary.csv` 和 `<locus>.its2_support.tsv`，上这几个地方找准没错。
+每个样本的主结果为 `<output>/<sample>/marker_profile/marker_group_abundance.tsv`；`marker_qc.tsv` 记录伪比对和 mSWEEP 统计，`marker_reference_metadata.tsv` 记录 reference color 与 group。`relative_proportion` 是 marker 信号的相对比例，不等同于生物体细胞或个体比例。
 
 ## Population 模式咋回事
 

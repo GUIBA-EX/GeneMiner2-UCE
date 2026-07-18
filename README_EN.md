@@ -2,7 +2,7 @@
 
 **[中文主页](README.md)**
 
-GeneMiner2-UCE is the UCE extension of GeneMiner2 for target-enrichment, ultraconserved-element (UCE), and related short-read data. It retains reference-guided read recruitment while extending UCE flank recovery, multi-candidate ITS2 assembly, and population-genetic analysis of UCE data.
+GeneMiner2-UCE is the UCE extension of GeneMiner2 for target-enrichment, ultraconserved-element (UCE), and related short-read data. It retains reference-guided read recruitment while extending UCE flank recovery, marker profiling, and population-genetic analysis of UCE data.
 
 Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/GeneMiner2-UCE) when using this software. A formal publication will be added when available.
 
@@ -12,7 +12,7 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 - Recover molecular markers from genome-skimming or target-capture reads.
 - Preserve UCE cores and read-supported flanking sequences.
-- Retain multiple ITS2 candidates with paired, diagnostic, and EM-abundance evidence.
+- Recruit marker-associated reads from WGS or other shotgun data and quantify them directly by k-mer pseudoalignment.
 - Build a cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs from UCE samples.
 - Export PHYLUCE-compatible contigs and summarize recovery quality by sample and locus.
 
@@ -22,7 +22,7 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 | --- | --- | --- |
 | `--assembly-mode reference` | Genome skimming and conventional gene recovery | Reference-guided contigs with reference trimming in the default workflow |
 | `--assembly-mode uce` | UCE target capture | UCE cores and read-supported flanking sequences |
-| `--assembly-mode its2` | Loci with several genuine ITS2 variants | Multiple candidates with fragment-level support |
+| `profiling` subcommand | Any amplicon marker in WGS or metagenomic data | Relative marker-group signal, detection state, and QC |
 | `population` subcommand | Diploid UCE resequencing or target capture | Cohort pseudo-reference, joint SNPs, PCA, and ADMIXTURE panels |
 
 ## Installation
@@ -84,22 +84,22 @@ UCE mode reduces the influence of short-probe boundaries, skips reference-guided
 
 The default Rust assembler follows a backbone strategy without repeated backtracking. `--uce-rescue-reads` recruits reads again using first-round contigs plus the original references, and restores the first-round result when rescue quality deteriorates. See the [UCE workflow guide](docs/uce-workflow_EN.md) for parameters, guardrails, reference caching, and fallback rules.
 
-## ITS2 mode
+## Profiling mode
 
-ITS2 mode requires the Rust assembler and uses a fixed 21-mer. It can emit several candidates per locus and reports fragment, paired-fragment, diagnostic-fragment, and EM-abundance evidence. Candidates that reads cannot distinguish remain in an equivalence group.
+`profiling` is a **read-level quantification workflow, not an assembler**. It supports any amplicon marker: GeneMiner2 performs one k-mer recruitment, Themisto pseudoaligns the recruited reads to the marker library, and mSWEEP estimates relative signal among reference groups that share reads. It does not run `refilter`, `assemble`, `combine`, or `tree`.
 
-The standard `combine` stage expects one sequence per locus, so run ITS2 explicitly as:
+Pass one `.fasta` or `.fa` marker library directly with `-r`; each reference sequence becomes a Themisto color. `themisto` and `mSWEEP` must be available, either on `PATH` or supplied via `--profile-themisto` and `--profile-msweep`.
 
 ```bash
-cli/geneminer2 filter refilter assemble \
+cli/geneminer2 profiling \
   -f samples.tsv \
-  -r references \
+  -r marker_reference.fasta \
   -o output \
   -p 8 \
-  --assembly-mode its2
+  --profile-decoy non_target_sequences.fasta
 ```
 
-ITS2 cannot use the original Python assembler and does not fall back when the Rust assembler fails. Results are written under each sample's `results/`, `its2_assembly_summary.csv`, and `<locus>.its2_support.tsv`.
+The primary per-sample result is `<output>/<sample>/marker_profile/marker_group_abundance.tsv`; `marker_qc.tsv` records pseudoalignment and mSWEEP statistics, while `marker_reference_metadata.tsv` records the reference-color/group mapping. `relative_proportion` is relative marker signal, not a cell or organism proportion.
 
 ## Population mode
 

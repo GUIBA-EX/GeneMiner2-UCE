@@ -1,4 +1,4 @@
-PY_SRC := build_consensus its2_profile unix_command
+PY_SRC := build_consensus unix_command
 PY_BIN := $(patsubst %,cli/bin/%,$(PY_SRC))
 RUST_ASSEMBLER_BIN := cli/bin/main_assembler-rust
 ORIGINAL_ASSEMBLER_BIN := cli/bin/main_assembler-original
@@ -20,11 +20,12 @@ ALIGNMENT_CLEAN_BIN := cli/bin/fix_alignment
 MERGE_SEQ_BIN := cli/bin/merge_seq
 BUILD_TRIMED_BIN := cli/bin/build_trimed
 GM2_STATS_BIN := cli/bin/gm2_stats
+MARKER_PROFILE_BIN := cli/bin/marker_profile
 FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(PY_BIN)
+build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(PY_BIN)
 	for target in $(PY_SRC); do cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/$$target/_internal; done
 	cd cli && ln -f -r -s bin/unix_command geneminer2
 
@@ -115,6 +116,10 @@ $(BUILD_TRIMED_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
 $(GM2_STATS_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin gm2_stats
 	install rust/gm2_tools/target/release/gm2_stats $(GM2_STATS_BIN)
+
+$(MARKER_PROFILE_BIN): rust/marker_profile/Cargo.toml rust/marker_profile/src/main.rs | cli/bin
+	cargo build --release --manifest-path rust/marker_profile/Cargo.toml
+	install rust/marker_profile/target/release/marker_profile $(MARKER_PROFILE_BIN)
 
 $(PY_BIN): cli/bin/%: scripts/%.py | cython
 	cd scripts && pyinstaller -D -y --optimize 2 $(notdir $<)

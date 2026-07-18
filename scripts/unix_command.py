@@ -15,6 +15,7 @@ COMMAND_HELP = '''
 filter    Reference-based filtering of raw reads
 refilter  Refinement of filtered reads
 assemble  Gene assembly using wDBG
+profiling Marker read-level profiling (one recruitment, no assembly)
 population Build a cohort UCE reference and generate complete, one-per-UCE and LD-pruned SNP panels
 consensus Consensus generation on heterozygous sites
 trim      Flank sequence removal
@@ -47,6 +48,21 @@ REFERENCE_EXTENSIONS = ('.fa', '.fas', '.fasta')
 def is_reference_file_name(name):
     """瞅瞅这文件名儿是不是咱认的参考序列。"""
     return os.path.splitext(name)[1].lower() in REFERENCE_EXTENSIONS
+
+def materialize_profile_reference(args):
+    """Allow profiling to receive one .fa/.fasta file while MainFilter receives a directory."""
+    if "profiling" not in args.command or not os.path.isfile(args.r):
+        return
+    extension = os.path.splitext(args.r)[1].lower()
+    if extension not in (".fa", ".fasta"):
+        raise RuntimeError("profiling reference must use the .fa or .fasta extension")
+    reference_dir = os.path.join(args.o.strip(), ".marker_profile_reference")
+    os.makedirs(reference_dir, exist_ok=True)
+    link_path = os.path.join(reference_dir, os.path.basename(args.r))
+    if os.path.lexists(link_path):
+        os.remove(link_path)
+    os.symlink(os.path.realpath(args.r), link_path)
+    args.r = reference_dir
 
 def find_executable(prog, internal=False):
     """把要用的程序划拉出来，找不着就麻溜儿报错。"""
@@ -751,7 +767,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
 
             params = [filter_bin, '-r', args.r, '-q1', q1, '-q2', q2, '-o', os.path.join(out_loc, name),
                       '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                      '-m', '4' if args.assembly_mode == 'its2' else '5', '-lb', '-lkd', kmer_dict_path]
+                      '-m', '4' if 'profiling' in args.command else '5', '-lb', '-lkd', kmer_dict_path]
 
             if args.max_reads > 0:
                 params.extend(['-m_reads', str(args.max_reads)])
@@ -821,7 +837,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                       '--min-depth', str(args.depth_low_water_mark), '--max-depth', str(args.depth_limit),
                       '--max-size', str(args.file_size_limit), '--use-gm2-format']
 
-            if args.assembly_mode in ('uce', 'its2'):
+            if args.assembly_mode == 'uce' or 'profiling' in args.command:
                 params.append('--keep-linked-mates')
 
             subprocess.run(params, check=True)
@@ -838,7 +854,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         original_rust_assembler_bin = None
         rust_assembler_bin = None
 
-        # reference 默认用 original-rust；UCE 和 ITS2 默认用 uce-rust，original 仍保留给上游 Python 对照。
+        # reference 默认用 original-rust；UCE 默认用 uce-rust，original 仍保留给上游 Python 对照。
         if args.assembly_mode == 'reference':
             if assembler_implementation in ('auto', 'original-rust'):
                 original_rust_assembler_bin = find_executable('main_assembler-original-rust', internal=True)
@@ -849,12 +865,12 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         elif args.assembly_mode == 'uce':
             if assembler_implementation in ('original', 'original-rust'):
                 raise RuntimeError(
-                    f'{args.assembly_mode.upper()} mode requires the Rust UCE/ITS2 assembler'
+                    f'{args.assembly_mode.upper()} mode requires the Rust UCE assembler'
                 )
             rust_assembler_bin = find_executable('main_assembler-rust', internal=True)
 
         def run_assembler(name, thr=1, ref_dir=None):
-            """组装这个样本；reference 默认 original-rust，UCE 和 ITS2 默认 uce-rust。"""
+            """组装这个样本；reference 默认 original-rust，UCE 默认 uce-rust。"""
             sample_dir = os.path.join(out_loc, name)
             in_dir = os.path.join(sample_dir, 'filtered')
             out_dir = os.path.join(sample_dir, 'results')
@@ -865,33 +881,52 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             if not os.path.isdir(in_dir):
                 raise RuntimeError('No successful filter run, cannot assemble')
 
-            if args.assembly_mode == 'its2':
+            if 'profiling' in args.command:
                 ref_files = list(iter_reference_files(ref_dir))
                 if len(ref_files) != 1:
                     raise RuntimeError(
-                        'ITS2 mode requires exactly one reference FASTA (the SymPortal post-MED database)'
+                        'profiling requires exactly one marker reference FASTA'
                     )
                 reads = [
                     entry.path for entry in sorted(os.scandir(in_dir), key=lambda entry: entry.name)
                     if entry.is_file() and get_sample_ext(entry.name) in ('.fq', '.fasta')
                 ]
                 if not reads:
-                    raise RuntimeError('No recruited ITS2 reads found for profiling')
-                profile_dir = os.path.join(sample_dir, 'its2_profile')
+                    raise RuntimeError('No recruited marker reads found for profiling')
+                profile_dir = os.path.join(sample_dir, 'marker_profile')
                 if os.path.isdir(profile_dir):
                     shutil.rmtree(profile_dir, ignore_errors=True)
-                profiler_bin = find_executable('its2_profile', internal=True)
-                minimap2_bin = find_executable('minimap2')
+                if len(reads) != 1:
+                    raise RuntimeError('profiling requires exactly one merged recruited-read file')
+                quant_bin = find_executable('marker_profile', internal=True)
+                bundled_candidates = (
+                    os.path.normpath(os.path.join(SCRIPT_ROOT, os.pardir, 'tools', 'themisto-v3.2.2', 'themisto_linux-v3.2.2', 'themisto')),
+                    os.path.normpath(os.path.join(os.path.dirname(os.path.realpath(sys.executable)), os.pardir, os.pardir, 'tools', 'themisto-v3.2.2', 'themisto_linux-v3.2.2', 'themisto')),
+                )
+                bundled_themisto = next((path for path in bundled_candidates if os.path.isfile(path)), '')
+                themisto_bin = args.profile_themisto or bundled_themisto or find_executable('themisto')
+                msweep_bin = args.profile_msweep or find_executable('mSWEEP')
+                cache_root = args.profile_index_dir or args.reference_cache_dir or os.path.join(out_loc, '.gm2_reference_cache')
+                cache_dir = os.path.join(cache_root, f'profile_themisto_k{args.profile_kmer_size}')
                 command = [
-                    profiler_bin, '--reference', ref_files[0].path, '--reads', *reads,
-                    '--output', profile_dir, '--minimap2', minimap2_bin,
-                    '--threads', str(thr), '--score-delta', str(args.its2_score_delta),
-                    '--min-query-coverage', str(args.its2_min_query_coverage),
-                    '--min-clade-score-margin', str(args.its2_min_clade_score_margin),
+                    quant_bin, '--reference', ref_files[0].path, '--reads', reads[0],
+                    '--output', profile_dir, '--cache', cache_dir,
+                    '--themisto', themisto_bin, '--msweep', msweep_bin,
+                    '--threads', str(thr), '--kmer-size', str(args.profile_kmer_size),
+                    '--threshold', str(args.profile_pseudoalign_threshold),
+                    '--relevant-kmer-fraction', str(args.profile_relevant_kmer_fraction),
+                    '--index-memory-gb', str(args.profile_index_memory_gb),
+                    '--min-evidence', str(args.profile_min_evidence),
                 ]
+                if args.profile_group_map:
+                    command.extend(['--groups', args.profile_group_map])
+                if args.profile_decoy:
+                    command.extend(['--decoy', args.profile_decoy])
+                if args.profile_force_rebuild:
+                    command.append('--force-rebuild')
                 subprocess.run(command, check=True)
-                if not os.path.isfile(os.path.join(profile_dir, 'its2_profile.tsv')):
-                    raise RuntimeError('ITS2 profiling failed to produce its2_profile.tsv')
+                if not os.path.isfile(os.path.join(profile_dir, 'marker_group_abundance.tsv')):
+                    raise RuntimeError('profiling failed to produce marker_group_abundance.tsv')
                 return
 
             def clear_assembly_outputs():
@@ -901,7 +936,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 graph_dir = os.path.join(sample_dir, 'assembly_graphs')
                 if os.path.isdir(graph_dir):
                     shutil.rmtree(graph_dir, ignore_errors=True)
-                for path in (result_path, uce_summary_path, os.path.join(sample_dir, 'its2_assembly_summary.csv')):
+                for path in (result_path, uce_summary_path, os.path.join(sample_dir, 'marker_profile_summary.csv')):
                     if os.path.isfile(path):
                         os.remove(path)
 
@@ -2056,6 +2091,7 @@ def execute_tasks(args, samples):
 
     commands = frozenset(args.command)
 
+    do_profile = 'profiling' in commands
     do_filter = 'filter' in commands
     do_refilter = 'refilter' in commands
     do_assemble = 'assemble' in commands
@@ -2067,7 +2103,11 @@ def execute_tasks(args, samples):
     do_stats = 'stats' in commands
 
     try:
-        if do_filter or do_refilter or do_assemble:
+        if do_profile:
+            if len(commands) != 1:
+                raise RuntimeError('profiling is a complete marker workflow and cannot be combined with other subcommands')
+            do_filter_assemble(args, samples, True, False, True)
+        elif do_filter or do_refilter or do_assemble:
             do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble)
 
             if do_assemble and args.assembly_mode == 'uce':
@@ -2117,17 +2157,17 @@ def execute_tasks(args, samples):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,
-                                     description='GeneMiner2-UCE extracts phylogenetic marker loci for UCE workflows.',
+                                     description="GeneMiner2-UCE extracts phylogenetic marker loci for UCE workflows.",
                                      epilog=HELP_EPILOG)
     parser.add_argument('command',
-                        choices=('filter', 'refilter', 'assemble', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats'),
+                        choices=('filter', 'refilter', 'assemble', 'profiling', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats'),
                         help='One or several of the following actions, separated by space:' + COMMAND_HELP,
                         metavar='command',
                         nargs='*')
 
     group_io = parser.add_argument_group('input/output parameters')
     group_io.add_argument('-f', help='Sample list file', metavar='FILE', required=True)
-    group_io.add_argument('-r', help='Reference directory', metavar='DIR', required=True)
+    group_io.add_argument('-r', help='Reference directory; profiling also accepts one .fasta or .fa file', metavar='DIR', required=True)
     group_io.add_argument('-o', help='Output directory', metavar='DIR', required=True)
     group_io.add_argument('-p', default=1, help='Number of parallel processes', metavar='INT', type=int)
 
@@ -2143,7 +2183,7 @@ if __name__ == '__main__':
     group_refilter.add_argument('--depth-limit', default=768, help='Maximum depth processed during re-filtering', metavar='INT', type=int)
     group_refilter.add_argument('--file-size-limit', default=6, help='Maximum file size during re-filtering', metavar='INT', type=int)
 
-    group_assembly = parser.add_argument_group('arguments for assembling')
+    group_assembly = parser.add_argument_group('arguments for assembly')
     group_assembly.add_argument('-ka', default=0, help='Assembly k-mer size (default = auto)', metavar='INT', type=int)
     group_assembly.add_argument('--min-ka', default=21, help='Minimum auto-estimated assembly k-mer size', metavar='INT', type=int)
     group_assembly.add_argument('--max-ka', default=51, help='Maximum auto-estimated assembly k-mer size', metavar='INT', type=int)
@@ -2151,14 +2191,22 @@ if __name__ == '__main__':
     group_assembly.add_argument('-sb', '--soft-boundary', default='auto', help='Soft boundary (default = auto)', metavar='{INT,auto,unlimited}', type=str)
     group_assembly.add_argument('-i', '--search-depth', default=4096, help='Search depth', metavar='INT', type=int)
     group_assembly.add_argument('--min-coverage', default=0, help='Minimum read depth required for contig generation', metavar='INT', type=int)
-    group_assembly.add_argument('--assembler-implementation', choices=('auto', 'uce-rust', 'original', 'original-rust'), default='auto', help='Assembler implementation: auto uses original-rust in reference mode and uce-rust in UCE mode; ITS2 runs its dedicated Rust profiling workflow; original-rust is the deterministic Rust compatibility implementation for reference mode; uce-rust selects the UCE-oriented Rust assembler; original and original-rust are unavailable in UCE or ITS2 mode')
+    group_assembly.add_argument('--assembler-implementation', choices=('auto', 'uce-rust', 'original', 'original-rust'), default='auto', help='Assembler implementation: auto uses original-rust in reference mode and uce-rust in UCE mode; original-rust is the deterministic Rust compatibility implementation for reference mode; uce-rust selects the UCE-oriented Rust assembler; original and original-rust are unavailable in UCE mode')
     group_assembly.add_argument('--assembler-read-chunk-size', default=8192, help='Reads per bounded Rust assembler batch (default = 8192)', metavar='INT', type=int)
-    group_assembly.add_argument('--assembler-kmer-count-threads', default=0, help='Rust k-mer sort/count workers per locus; 0 allocates automatically', metavar='INT', type=int)
+    group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode: reference keeps the default behavior; uce preserves UCE flanks')
     group_assembly.add_argument('--assembler-graph-format', choices=('none', 'gfa', 'dot', 'both'), default='none', help='Write compact per-locus Rust assembly graphs (default = none)')
-    group_assembly.add_argument('--assembly-mode', choices=('reference', 'uce', 'its2'), default='reference', help='Assembly mode: reference keeps the default behavior; uce preserves UCE flanks; its2 profiles recruited reads directly against one SymPortal post-MED FASTA without assembly')
-    group_assembly.add_argument('--its2-score-delta', default=5, help='ITS2: retain reference alignments within this score of the best alignment (default = 5)', metavar='INT', type=int)
-    group_assembly.add_argument('--its2-min-query-coverage', default=0.85, help='ITS2: minimum aligned fraction of a read retained for classification (default = 0.85)', metavar='FLOAT', type=float)
-    group_assembly.add_argument('--its2-min-clade-score-margin', default=10, help='ITS2: minimum alignment-score advantage over the nearest alternative clade for the specificity filter (default = 10)', metavar='INT', type=int)
+    group_profile = parser.add_argument_group('arguments for marker profiling')
+    group_profile.add_argument('--profile-kmer-size', default=21, help='Profiling: Themisto k-mer size (odd integer 15-31; default = 21)', metavar='INT', type=int)
+    group_profile.add_argument('--profile-pseudoalign-threshold', default=0.80, help='Profiling: Themisto pseudoalignment threshold (default = 0.80)', metavar='FLOAT', type=float)
+    group_profile.add_argument('--profile-relevant-kmer-fraction', default=0.50, help='Profiling: minimum fraction of query k-mers found in the reference index (default = 0.50)', metavar='FLOAT', type=float)
+    group_profile.add_argument('--profile-group-map', default='', help='Profiling: optional TSV mapping reference ID to reporting group', metavar='FILE')
+    group_profile.add_argument('--profile-decoy', default='', help='Profiling: optional non-target decoy FASTA', metavar='FILE')
+    group_profile.add_argument('--profile-index-dir', default='', help='Profiling: cache directory for split references and the Themisto index', metavar='DIR')
+    group_profile.add_argument('--profile-index-memory-gb', default=2, help='Profiling: Themisto index-build memory limit in GiB (default = 2)', metavar='INT', type=int)
+    group_profile.add_argument('--profile-min-evidence', default=3, help='Profiling: minimum exclusive group-supporting queries required for detection (default = 3)', metavar='INT', type=int)
+    group_profile.add_argument('--profile-themisto', default='', help='Profiling: Themisto executable path; by default use PATH', metavar='FILE')
+    group_profile.add_argument('--profile-msweep', default='', help='Profiling: mSWEEP executable path; by default use PATH', metavar='FILE')
+    group_profile.add_argument('--profile-force-rebuild', action='store_true', default=False, help='Profiling: rebuild the cached Themisto reference index')
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path handling: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration (default = backbone)')
     group_assembly.add_argument('--uce-backbone-lookahead', default=24, help='Greedy look-ahead steps used to choose a UCE backbone edge at each bubble (default = 24)', metavar='INT', type=int)
@@ -2237,14 +2285,18 @@ if __name__ == '__main__':
         parser.error('--reference-cache-dir requires --reuse-reference-cache')
 
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
-    if args.assembly_mode == 'its2':
+    if 'profiling' in args.command:
         args.kf = args.ka = args.min_ka = args.max_ka = 21
-        if args.its2_score_delta < 0:
-            parser.error('--its2-score-delta must be greater than or equal to 0')
-        if not 0 < args.its2_min_query_coverage <= 1:
-            parser.error('--its2-min-query-coverage must be in (0, 1]')
-        if args.its2_min_clade_score_margin < 0:
-            parser.error('--its2-min-clade-score-margin must be greater than or equal to 0')
+        if args.profile_kmer_size < 15 or args.profile_kmer_size > 31 or args.profile_kmer_size % 2 == 0:
+            parser.error('--profile-kmer-size must be an odd integer from 15 to 31')
+        if not 0 < args.profile_pseudoalign_threshold <= 1:
+            parser.error('--profile-pseudoalign-threshold must be in (0, 1]')
+        if not 0 <= args.profile_relevant_kmer_fraction <= 1:
+            parser.error('--profile-relevant-kmer-fraction must be in [0, 1]')
+        if args.profile_index_memory_gb < 1:
+            parser.error('--profile-index-memory-gb must be at least 1')
+        if args.profile_min_evidence < 1:
+            parser.error('--profile-min-evidence must be at least 1')
     args.uce_backbone_lookahead = max(args.uce_backbone_lookahead, 1)
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
     args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
@@ -2310,6 +2362,11 @@ if __name__ == '__main__':
         print('  Option --max-depth has been removed. Please use --depth-limit instead.')
         print(DEPTH_DEPRECATION_EXPLAINER)
         sys.exit(2)
+
+    try:
+        materialize_profile_reference(args)
+    except RuntimeError as e:
+        parser.error(str(e))
 
     samples = prepare_workdir(args)
 
