@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.1 — Repository cleanup
+
+- Removed the unreferenced population pseudo-reference comparison helper.
+- Made `clean` remove Python bytecode caches and made `distclean` remove all generated PyInstaller spec files.
+
 ## v0.7 — ITS2 assembly and Rust utility migration
 
 - Added ITS2 multi-candidate assembly with paired-fragment compatibility, equivalence groups, diagnostic support, and EM abundance estimates; ITS2 now remains strictly Rust-only on failure.

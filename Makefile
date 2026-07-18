@@ -27,6 +27,7 @@ build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(POPULAT
 	cd cli && ln -f -r -s bin/unix_command geneminer2
 
 clean:
+	rm -f -r scripts/__pycache__
 	rm -f -r scripts/filter/bin
 	rm -f -r scripts/build
 	rm -f -r scripts/dist
@@ -37,9 +38,7 @@ clean:
 	rm -f -r rust/gm2_tools/target
 
 distclean: clean
-	for target in $(PY_SRC); do rm -f scripts/$$target.spec; done
-	rm -f scripts/main_refilter_new.spec
-	rm -f scripts/main_assembler_original.spec
+	rm -f scripts/*.spec
 	rm -f -r cli/bin
 	rm -f cli/geneminer2
 
