@@ -115,7 +115,7 @@ references/
 - `--assembly-mode uce` 用于从 genome skimming 或 target capture 恢复 UCE，运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围；
 - `profiling` 先做一次招募，再由 Themisto 伪比对和 mSWEEP 完成 group profiling；不组装，也不运行下游系统发育步骤。
 
-默认参考模式示例：
+默认 original 模式示例：
 
 ```bash
 cli/geneminer2 \
@@ -129,35 +129,19 @@ cli/geneminer2 \
 
 ### 4.1 UCE
 
-UCE 模式放宽短 probe 的参考边界限制，优先保留更长且仍有 reads 支持的侧翼序列。在 refilter 阶段，只要任一 mate 通过 locus 过滤，整对 paired-end reads 都会保留。
-
-基础运行示例：
+UCE 模式用于从 genome skimming 或 target capture reads 恢复 UCE core 及有 read 支持的 flank。refilter 时任一 mate 通过即可保留整对 reads；默认流程跳过 `trim`，避免新恢复的 flank 被裁回参考范围。
 
 ```bash
 cli/geneminer2 \
-  -f samples.tsv \
-  -r references \
-  -o output \
-  -p 8 \
-  --assembly-mode uce \
-  --uce-rescue-reads
+  -f samples.tsv -r references -o output -p 8 \
+  --assembly-mode uce --uce-rescue-reads
 ```
 
-默认的 `--uce-path-strategy backbone` 每个方向只构建一条路径。遇到气泡时，它对每条出边执行受 `--uce-backbone-lookahead` 限制的线性前瞻，优先选择可延伸更远的分支，再用累计 k-mer 支持度打破平局；选定后永久丢弃同一气泡的其他出边，不保存分支栈，也不 backtrack。已访问 k-mer 不会再次进入，因此环路会直接终止。
-
-该策略借鉴 MaSuRCA 的唯一线性延伸和 SPAdes 的局部 bulge 选择思路，但仍保留 GeneMiner2 的 read 支持与深度 guardrails。若需与旧算法做 A/B 对照，使用 `--uce-path-strategy search`；此时 `--uce-side-candidates` 才生效。
-
-当前 assembler 路径、算法取舍和验证重点见[Assembler 说明](../../docs/assembler-algorithm_ZH.md)。
-
-`--uce-rescue-reads` 在第一轮组装后，以初步 contig 和原始参考再次招募 raw reads，并只执行一轮 re-filtering 和 assembly。rescue 最多并行处理 4 个样本、每个样本最多使用 4 个线程，并受 `-p` 总量约束。
-
-建议在放宽 `-sb`、`-e` 或 assembly k-mer 范围后检查 `uce_assembly_summary.csv`、`uce_rescue_summary.csv` 和下游 alignment。详细输出见[输出文件说明](output.md)。
+组装策略、后端选择、rescue、cache 和 QC 见[Assembler 章节](../../docs/assembler_ZH.md)。本手册只保留参数定义；输出字段见[输出文件说明](output.md)。
 
 ### 4.2 Marker profiling
 
-`profiling` 是从 WGS 或 metagenome reads 中免组装获取 marker 信息的读段级流程。它先用 GeneMiner2 做一次 k-mer 招募，再用 Themisto 对招募的 query records 做伪比对，最后以 mSWEEP 估计 group-level 的相对 marker 信号。
-
-通过 `-r` 提供一个 `.fa` 或 `.fasta` marker 参考，并必须用 `--profile-group-map` 提供 `reference_id<TAB>group` 两列 TSV。reference ID 是 FASTA 标题第一个空白前字段，每条参考都必须映射到一个 reporting group。`--profile-kmer-size` 为招募和 Themisto 同时设置同一个 15–31 的奇数 k-mer。
+Profiling 执行一次招募、Themisto 伪比对和 mSWEEP group 估计，不组装。它需要一个 `.fa` 或 `.fasta` marker 参考库，以及 `reference_id<TAB>group` 格式的 `--profile-group-map`。
 
 ```bash
 cli/geneminer2 profiling \
@@ -165,55 +149,23 @@ cli/geneminer2 profiling \
   --profile-group-map marker_groups.tsv -o output -p 8
 ```
 
-主结果是 `<sample>/marker_profile/marker_group_abundance.tsv`，并输出 `marker_qc.tsv` 与 `marker_reference_metadata.tsv`。比例是未校准的 marker 信号比例，不能直接当作细胞或个体比例；证据计数是单条 read/query record，并非 paired fragment。
+输入、decoy、cache、QC 与定量解释见[Profiling 章节](../../docs/profiling_ZH.md)。
 
 ## 5. Population 群体遗传分析
 
-### 5.1 适用范围
+### 5.1 适用范围与示例
 
-`population` 从多个样本的 UCE 组装结果和原始 reads 构建未定相的二倍体 SNP 矩阵，主要用于 PCA、ADMIXTURE、遗传成分比较和物种界定。
-
-运行前，每个样本必须已经完成 UCE 组装，并保留：
-
-- `uce_assembly_summary.csv`；
-- `results/` 中已接受的 UCE contig；
-- 样本表所列的原始 reads。
-
-该模式输出未定相基因型，而不是两条完整单倍型。它不替代需要单倍型序列、重组信息或单 locus 基因树的 phasing 流程。
-
-### 5.2 分析流程
-
-1. 按 locus 汇总已接受 contig，构建公共 UCE 参考；
-2. 使用 minibwa 将全部样本统一 mapping 到同一参考；
-3. 使用 bcftools 联合检测变异并执行基因型和位点过滤；
-4. 输出 all-SNP、每个 UCE 一个 SNP 和 LD-pruned 三种面板。
-
-PLINK 对三种面板分别执行 PCA。ADMIXTURE 默认使用每个 UCE 一个 SNP 的主面板，并在指定 K 范围内计算交叉验证误差。
-
-### 5.3 运行示例
-
-已有 UCE 组装结果后，可单独运行：
+`population` 拿多个已完成 UCE 组装的样本及其原始 reads，构建公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入。每个样本必须保留 `uce_assembly_summary.csv`、`results/` 中已接受的 contig，以及样本表所列 reads。
 
 ```bash
 cli/geneminer2 population \
   -f /home/user/project/samples.tsv \
-  -r /home/user/project/references \
-  -o /home/user/project/output \
-  -p 8 \
+  -r /home/user/project/references -o output -p 8 \
   --assembly-mode uce \
-  --population-admixture-k-min 2 \
-  --population-admixture-k-max 6
+  --population-admixture-k-min 2 --population-admixture-k-max 6
 ```
 
-使用 `--population-reference-fasta FILE` 可固定外部公共参考。`--population-start-at mapping`、`calling` 或 `selection` 仅应在相应的公共参考、BAM 或过滤 VCF 已存在且通过检查时使用；缺失时程序会报错，而不会静默重跑或混用文件。
-
-正式解释遗传成分前，应检查：
-
-- `population/mapping/mapping_qc.tsv` 中的 mapping rate、coverage breadth 和 depth；
-- `population/variants/variant_qc.tsv` 中各阶段的变异数；
-- 内部构建公共参考时，`population/reference/reference_contribution.tsv` 中公共参考来源是否过度集中；
-- 样本和位点缺失率；
-- 三种 SNP 面板的 PCA 是否给出一致的主要结构。
+公共伪参考策略、分阶段重启、SNP 面板和必查 QC 见[Population 流程说明](../../docs/population_ZH.md)。仅在对应阶段产物已经通过校验时使用 `--population-start-at`。
 
 ## 6. 分步运行示例
 
@@ -278,7 +230,7 @@ cli/geneminer2 stats \
 | `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
 | `-i, --search-depth INT` | 搜索深度，默认 `4096` |
 | `--min-coverage INT` | contig 最低 read depth，默认 `0` |
-| `--assembler-implementation MODE` | `auto`（默认）在 reference 模式使用 `original-rust`，在 UCE 模式使用 `uce-rust`；`uce-rust` 选择 UCE 定向的 Rust assembler；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 reference；UCE 不再回退 Python |
+| `--assembler-implementation MODE` | `auto`（默认）在 original 模式使用 `original-rust`，在 uce 模式使用 `uce-rust`；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 original；uce 不再回退 Python |
 | `--assembler-read-chunk-size INT` | Rust assembler 每批读取的 reads 数，默认 `8192` |
 | `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
 | `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |

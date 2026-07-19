@@ -1,6 +1,8 @@
-# Population 流程说明
+# 4. Population
 
 [English version](population_EN.md)
+
+前置章节：[Filter](filter_ZH.md)、[Assembler](assembler_ZH.md)、[Profiling](profiling_ZH.md)。
 
 `population` 面向多个二倍体 UCE 样本，从已接受 contig 和原始 reads 构建公共伪参考、联合 SNP、PCA 与 ADMIXTURE 面板。它输出未定相基因型，不代替需要完整单倍型或单 locus 基因树的 phasing 分析。
 

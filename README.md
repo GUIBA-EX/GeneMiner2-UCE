@@ -94,7 +94,7 @@ cli/geneminer2 \
 
 UCE 模式会松开短 probe 边界对组装的限制，默认跳过参考引导的 `trim`，优先留下延伸更长、同时还有 reads 支持的候选。refilter 的时候，只要一对儿 mate 里有一个通过 locus 过滤，整对 paired-end reads 都留下，不能把有用的侧翼信息半道扔了。
 
-默认 Rust assembler 走不反复 backtrack 的 backbone 策略，遇上气泡不会来回来去磨叽。`--uce-rescue-reads` 会拿第一轮 contig 加原始参考再招一遍 reads；要是 rescue 以后质量掉了，就麻溜儿退回第一轮结果。参数、质量护栏、reference cache 和回退规则都归拢在 [UCE 流程说明](docs/uce-workflow_ZH.md)里。
+默认 Rust assembler 走不反复 backtrack 的 backbone 策略，遇上气泡不会来回来去磨叽。`--uce-rescue-reads` 会拿第一轮 contig 加原始参考再招一遍 reads；要是 rescue 以后质量掉了，就麻溜儿退回第一轮结果。组装策略、质量护栏、cache 和 rescue 规则见 [Assembler 章节](docs/assembler_ZH.md)。
 
 ## Profiling 模式咋回事
 
@@ -131,18 +131,18 @@ cli/geneminer2 population \
   --population-admixture-k-max 6
 ```
 
-运行时得把 minibwa、samtools、bcftools 和 PLINK 1.9 预备好；ADMIXTURE 没有也能接着跑，只是不出那部分结果。伪参考咋选、断点咋接、三套 SNP 面板咋看、哪些 QC 必须瞅，都写在 [Population 流程说明](docs/population_ZH.md)里了。
+运行时得把 minibwa、samtools、bcftools 和 PLINK 1.9 预备好；ADMIXTURE 没有也能接着跑，只是不出那部分结果。伪参考策略、分阶段重启、SNP 面板和 QC 见 [Population 章节](docs/population_ZH.md)。
 
 ## 实现和文档都搁哪儿
 
-默认构建包含 Rust MainFilter、Refilter、Assembler、Population、marker profiling 辅助工具、`original-rust` 兼容后端和其他 Rust 辅助工具。`--assembly-mode original` 默认选择 `original-rust`；`--assembler-implementation original` 选择固定的[上游 GeneMiner2 Python 原版](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py)，用于严格对照；`uce-rust` 是 UCE 定向后端，常规 UCE 恢复应使用 `--assembly-mode uce`。`--assembly-mode uce` 只使用 `uce-rust`，程序不可用或失败时直接报错，不会回退到 Python。`--reuse-reference-cache` 为 `original-rust` 复用带格式、实现版本、k 和参考文件指纹验证的二进制 k-mer cache；损坏或过期时自动重建。主 CLI 编排器和 consensus 程序仍使用 Python。
+默认构建包含 Rust MainFilter、Refilter、Assembler、Population、marker profiling 辅助工具和其他 Rust 工具。`original` 默认使用 `original-rust`，也可用 `--assembler-implementation original` 选择固定的[上游 GeneMiner2 Python 原版](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py)作严格对照；`uce` 只使用 `uce-rust`。`--reuse-reference-cache` 为 `original-rust` 复用经格式、实现版本、k 与参考文件指纹校验的二进制 cache；损坏或过期时自动重建。主 CLI 编排器和 consensus 程序仍使用 Python。
 
 - [中文命令行指南](manual/ZH_CN/command_line.md)
 - [中文输出文件说明](manual/ZH_CN/output.md)
-- [UCE 流程说明](docs/uce-workflow_ZH.md)
-- [Assembler 路径与算法说明](docs/assembler-algorithm_ZH.md)
-- [Population 流程说明](docs/population_ZH.md)
-- [MainFilter 性能与兼容性说明](docs/mainfilter-performance.md)
+- [Filter 章节](docs/filter_ZH.md)
+- [Assembler 章节](docs/assembler_ZH.md)
+- [Profiling 章节](docs/profiling_ZH.md)
+- [Population 章节](docs/population_ZH.md)
 - [版本更新记录](CHANGELOG.md)
 
 ## 引用和联系

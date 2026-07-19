@@ -1,8 +1,10 @@
-# Population workflow
+# 4. Population
 
 [中文版本](population_ZH.md)
 
-The `population` workflow targets multiple diploid UCE samples and builds a cohort pseudo-reference, joint SNPs, PCA, and ADMIXTURE panels from accepted contigs and the original reads. It reports unphased genotypes and does not replace phasing when complete haplotypes or per-locus gene trees are required.
+Previous chapters: [Filter](filter_EN.md), [Assembler](assembler_EN.md), and [Profiling](profiling_EN.md).
+
+The `population` workflow targets multiple diploid UCE samples and builds a cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs from accepted contigs and the original reads. It reports unphased genotypes and does not replace phasing when complete haplotypes or per-locus gene trees are required.
 
 See the [command-line guide](../manual/EN_US/command_line.md) for all options and the [output guide](../manual/EN_US/output.md) for file descriptions.
 

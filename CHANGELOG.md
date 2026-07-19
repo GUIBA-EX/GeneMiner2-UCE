@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.2 — Four-chapter documentation
+
+- Reorganized user documentation into Filter, Assembler, Profiling, and Population chapters in both Chinese and English.
+- Consolidated UCE workflow and assembler rationale into the Assembler chapter; added the first dedicated generic marker-profiling chapter.
+- Reduced duplicated workflow and QC prose in the command-line manuals while retaining command and option references.
+- Moved the MainFilter performance note to `docs/development/` and removed superseded workflow documents.
+
 ## v0.9.1 — Marker profiling hardening and mode clarification
 
 - Made marker profiling fully group-map driven: dynamic reporting groups, exact reference-to-group coverage checks, content-addressed Themisto cache keys, safer output handling, and expanded QC.

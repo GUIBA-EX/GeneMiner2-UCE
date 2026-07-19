@@ -115,7 +115,7 @@ When no subcommand is given:
 - `--assembly-mode uce` is for UCE recovery from genome skimming or target capture; it runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval;
 - `profiling` runs one recruitment step followed by Themisto pseudoalignment and mSWEEP group profiling; it does not assemble or run downstream phylogenetic steps.
 
-Default reference-mode example:
+Default original-mode example:
 
 ```bash
 cli/geneminer2 \
@@ -129,33 +129,19 @@ cli/geneminer2 \
 
 ### 4.1 UCE
 
-UCE mode relaxes boundaries imposed by short probes and favors longer flanking sequences that retain read support. During refiltering, a paired-end read pair is retained whenever either mate passes the locus filter.
-
-Basic example:
+UCE mode recovers UCE cores and read-supported flanks from genome-skimming or target-capture reads. It retains a paired-end fragment when either mate passes refiltering; the default workflow skips `trim` to preserve recovered flanks.
 
 ```bash
 cli/geneminer2 \
-  -f samples.tsv \
-  -r references \
-  -o output \
-  -p 8 \
-  --assembly-mode uce \
-  --uce-rescue-reads
+  -f samples.tsv -r references -o output -p 8 \
+  --assembly-mode uce --uce-rescue-reads
 ```
 
-The default `--uce-path-strategy backbone` builds only one path in each direction. At a bubble it performs a linear look-ahead bounded by `--uce-backbone-lookahead`, prefers the branch that remains extendable for longer, and breaks ties by cumulative k-mer support. Once selected, sibling edges are permanently discarded: there is no branch stack and no backtracking. Previously visited k-mers cannot be re-entered, so cycles terminate.
-
-This combines the linear-extension idea used by MaSuRCA with SPAdes-style local bulge selection while retaining GeneMiner2 read-support and depth guardrails. For an A/B comparison with the legacy algorithm, use `--uce-path-strategy search`; `--uce-side-candidates` applies only to that strategy.
-
-`--uce-rescue-reads` uses preliminary contigs plus the original references to recruit raw reads again, followed by one additional re-filtering and assembly round. Rescue processes at most four samples concurrently, with up to four threads per sample and an overall limit set by `-p`.
-
-After relaxing `-sb`, `-e`, or the assembly k-mer range, inspect `uce_assembly_summary.csv`, `uce_rescue_summary.csv`, and downstream alignments. See the [output guide](output.md) for details.
+For assembly behavior, backend selection, rescue, cache semantics, and QC, see the [Assembler chapter](../../docs/assembler_EN.md). Use this manual for option definitions and the [output guide](output.md) for file fields.
 
 ### 4.2 Marker profiling
 
-`profiling` is a read-level workflow for extracting a marker from WGS or metagenomic reads without assembly. It first performs one GeneMiner2 k-mer recruitment, then pseudoaligns recruited query records with Themisto and estimates group-level relative marker signal with mSWEEP.
-
-Provide exactly one `.fa` or `.fasta` marker reference with `-r` and a required two-column TSV, `reference_id<TAB>group`, with `--profile-group-map`. The reference ID is the first whitespace-delimited FASTA-header field; every reference must map to exactly one reporting group. `--profile-kmer-size` sets the same odd k-mer size (15–31) for both recruitment and Themisto.
+Profiling performs one recruitment followed by Themisto pseudoalignment and mSWEEP group estimation; it does not assemble. It requires one `.fa` or `.fasta` marker library and `--profile-group-map` with `reference_id<TAB>group`.
 
 ```bash
 cli/geneminer2 profiling \
@@ -163,55 +149,23 @@ cli/geneminer2 profiling \
   --profile-group-map marker_groups.tsv -o output -p 8
 ```
 
-The main output is `<sample>/marker_profile/marker_group_abundance.tsv`, accompanied by `marker_qc.tsv` and `marker_reference_metadata.tsv`. Proportions are uncalibrated marker-signal proportions rather than cell or organism proportions; evidence counts are read/query records, not paired fragments.
+Inputs, decoys, cache control, QC, and quantitative interpretation are in the [Profiling chapter](../../docs/profiling_EN.md).
 
 ## 5. Population-genetic analysis
 
-### 5.1 Scope
+### 5.1 Scope and example
 
-`population` derives an unphased diploid SNP matrix from UCE assemblies and the original reads of multiple samples. Its principal uses are PCA, ADMIXTURE, ancestry comparison, and species delimitation.
-
-Before running it, each sample must have completed UCE assembly, and the following must remain available:
-
-- `uce_assembly_summary.csv`;
-- accepted UCE contigs under `results/`;
-- the original reads listed in the sample table.
-
-This mode reports unphased genotypes, not two complete haplotype sequences. It does not replace phasing when haplotype sequences, recombination information, or per-locus gene trees are required.
-
-### 5.2 Workflow
-
-1. Pool accepted contigs by locus and build a cohort UCE reference.
-2. Map every sample uniformly to the same reference with minibwa.
-3. Jointly call variants with bcftools and apply genotype- and site-level filters.
-4. Generate all-SNP, one-SNP-per-UCE, and LD-pruned panels.
-
-PLINK runs PCA on all three panels. ADMIXTURE uses the one-SNP-per-UCE primary panel by default and evaluates cross-validation error across the requested K range.
-
-### 5.3 Example
-
-After UCE assembly is complete, run population analysis independently:
+`population` uses multiple completed UCE assemblies and their original reads to create a cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs. Each sample must retain `uce_assembly_summary.csv`, accepted contigs in `results/`, and the reads listed in the sample table.
 
 ```bash
 cli/geneminer2 population \
   -f /home/user/project/samples.tsv \
-  -r /home/user/project/references \
-  -o /home/user/project/output \
-  -p 8 \
+  -r /home/user/project/references -o output -p 8 \
   --assembly-mode uce \
-  --population-admixture-k-min 2 \
-  --population-admixture-k-max 6
+  --population-admixture-k-min 2 --population-admixture-k-max 6
 ```
 
-Use `--population-reference-fasta FILE` to materialize a fixed external cohort reference. Use `--population-start-at mapping`, `calling`, or `selection` only when the corresponding reference, BAM, or filtered VCF output already exists and has passed its validation checks.
-
-Before interpreting ancestry results, inspect:
-
-- mapping rate, coverage breadth, and depth in `population/mapping/mapping_qc.tsv`;
-- variant-stage counts in `population/variants/variant_qc.tsv`;
-- cohort-reference contributions in `population/reference/reference_contribution.tsv` when the reference was built internally;
-- sample and site missingness;
-- agreement among PCA results from the three SNP panels.
+For pseudo-reference strategies, stage restarts, SNP panels, and required QC, see the [Population workflow guide](../../docs/population_EN.md). Use `--population-start-at` only with validated outputs from the requested stage.
 
 ## 6. Staged-run examples
 

@@ -94,7 +94,7 @@ cli/geneminer2 \
 
 UCE mode reduces the influence of short-probe boundaries, skips reference-guided `trim` in the default workflow, and favors longer candidates that retain read support. During refiltering, the complete paired-end fragment is retained whenever either mate passes the locus filter.
 
-The default Rust assembler follows a backbone strategy without repeated backtracking. `--uce-rescue-reads` recruits reads again using first-round contigs plus the original references, and restores the first-round result when rescue quality deteriorates. See the [UCE workflow guide](docs/uce-workflow_EN.md) for parameters, guardrails, reference caching, and fallback rules.
+The default Rust assembler follows a backbone strategy without repeated backtracking. `--uce-rescue-reads` recruits reads again using first-round contigs plus the original references, and restores the first-round result when rescue quality deteriorates. See the [Assembler chapter](docs/assembler_EN.md) for parameters, guardrails, reference caching, and fallback rules.
 
 ## Profiling mode
 
@@ -131,18 +131,18 @@ cli/geneminer2 population \
   --population-admixture-k-max 6
 ```
 
-Runtime dependencies are minibwa, samtools, bcftools, and PLINK 1.9; ADMIXTURE is optional. See the [Population workflow guide](docs/population_EN.md) for pseudo-reference strategies, staged restarts, SNP panels, and required QC checks.
+Runtime dependencies are minibwa, samtools, bcftools, and PLINK 1.9; ADMIXTURE is optional. See the [Population chapter](docs/population_EN.md) for pseudo-reference strategies, staged restarts, SNP panels, and required QC checks.
 
 ## Implementation and documentation
 
-The default build includes the Rust MainFilter, Refilter, Assembler, Population workflow, marker-profiling helper, the `original-rust` compatibility backend, and Rust helper tools. `--assembly-mode original` uses `original-rust` by default; `--assembler-implementation original` selects the fixed [upstream GeneMiner2 Python assembler](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py) for strict comparison; `--assembler-implementation uce-rust` can test the UCE-oriented backend in original mode. `--assembly-mode uce` uses only `uce-rust`: an unavailable or failed Rust assembler is reported as an error with no Python fallback. With `--reuse-reference-cache`, `original-rust` reuses a binary k-mer cache validated by format version, implementation version, k, and reference-file identity; stale or corrupt files are rebuilt automatically. The main CLI orchestrator and consensus program remain in Python.
+The default build includes Rust MainFilter, Refilter, Assembler, Population, marker-profiling helpers, and other Rust utilities. `original` uses `original-rust` by default and can select the fixed [upstream GeneMiner2 Python assembler](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py) with `--assembler-implementation original` for strict comparison; `uce` uses only `uce-rust`. With `--reuse-reference-cache`, `original-rust` reuses a binary cache validated by format, implementation version, k, and reference-file identity; stale or corrupt files are rebuilt automatically. The main CLI orchestrator and consensus program remain in Python.
 
 - [Command-line guide](manual/EN_US/command_line.md)
 - [Output-file guide](manual/EN_US/output.md)
-- [UCE workflow guide](docs/uce-workflow_EN.md)
-- [Assembler paths and algorithms (Chinese)](docs/assembler-algorithm_ZH.md)
-- [Population workflow guide](docs/population_EN.md)
-- [MainFilter performance and compatibility note](docs/mainfilter-performance.md)
+- [Filter chapter](docs/filter_EN.md)
+- [Assembler chapter](docs/assembler_EN.md)
+- [Profiling chapter](docs/profiling_EN.md)
+- [Population chapter](docs/population_EN.md)
 - [Release history](CHANGELOG.md)
 
 ## Citation and contact
