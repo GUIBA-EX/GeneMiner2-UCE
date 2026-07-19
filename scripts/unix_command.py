@@ -15,6 +15,7 @@ COMMAND_HELP = '''
 filter    Reference-based filtering of raw reads
 refilter  Refinement of filtered reads
 assemble  Gene assembly using wDBG
+mito      Mitochondrial GB mining, UCE assembly, overlap merging and circularity QC
 profiling Marker read-level profiling (one recruitment, no assembly)
 population Build a cohort UCE reference and generate complete, one-per-UCE and LD-pruned SNP panels
 consensus Consensus generation on heterozygous sites
@@ -64,6 +65,64 @@ def materialize_profile_reference(args):
     os.symlink(os.path.realpath(args.r), link_path)
     args.r = reference_dir
 
+def prepare_mito_reference(args):
+    """Build a per-locus mitochondrial reference directory with the Rust helper."""
+    if not getattr(args, "mito_genbank", ""):
+        return
+    if not os.path.isfile(args.mito_genbank):
+        raise RuntimeError(f"Unable to read mitochondrial GenBank file: {args.mito_genbank}")
+    if args.mito_flank < 0:
+        raise RuntimeError("--mito-flank must be non-negative")
+    reference_dir = os.path.join(args.o.strip(), ".gm2_mito_reference")
+    mito_bin = find_executable("mito_workflow", internal=True)
+    if os.path.isdir(reference_dir):
+        shutil.rmtree(reference_dir)
+    subprocess.run([mito_bin, "prepare-reference", "--input", args.mito_genbank,
+                    "--out-dir", reference_dir, "--flank", str(args.mito_flank),
+                    "--tile-length", str(args.mito_tile_length),
+                    "--tile-step", str(args.mito_tile_step)], check=True)
+    args.r = reference_dir
+
+def run_mito_finalize(args, samples):
+    """Finalize the single GM2 UCE assembly with overlaps and paired-read links."""
+    if not getattr(args, "mito_genbank", ""):
+        return
+    mito_bin = find_executable("mito_workflow", internal=True)
+    reference_dir = args.r
+    reference_genome = os.path.join(reference_dir, "metadata", "mitochondrial_reference.fasta")
+    def finalize_sample(sample):
+        sample_dir = os.path.join(args.o.strip(), sample)
+        command = [
+            mito_bin, "finalize",
+            "--reference-genome", reference_genome,
+            "--contigs", os.path.join(sample_dir, "contigs_all", "mitochondrion.fasta"),
+            "--paired-reads", os.path.join(sample_dir, "filtered", "mitochondrion.fq"),
+            "--out-dir", os.path.join(sample_dir, "mito"),
+            "--minimum-overlap", str(args.mito_min_overlap),
+            "--minimum-identity", str(args.mito_min_overlap_identity),
+            "--terminal-window", str(args.mito_terminal_window),
+            "--link-kmer", str(args.mito_link_kmer),
+            "--minimum-link-hits", str(args.mito_min_link_hits),
+            "--minimum-pair-support", str(args.mito_min_pair_support),
+            "--bridge-kmer", str(args.mito_bridge_kmer),
+            "--bridge-minimum-depth", str(args.mito_bridge_min_depth),
+            "--maximum-bridge", str(args.mito_max_bridge),
+            "--minimum-junction-support", str(getattr(args, "mito_min_junction_support", 3)),
+            "--require-circular", "true",
+        ]
+        subprocess.run(command, check=True)
+
+    workers = min(max(1, getattr(args, 'p', 1)), len(samples))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(finalize_sample, sample): sample for sample in samples}
+        for future in as_completed(futures):
+            sample = futures[future]
+            try:
+                future.result()
+            except Exception as error:
+                raise RuntimeError(
+                    f"Mitochondrial finalization failed for {sample}: {error}"
+                ) from error
 def profile_cache_key(paths, kmer_size):
     digest = hashlib.sha256()
     digest.update(str(kmer_size).encode())
@@ -91,7 +150,6 @@ def prepare_profile_cache_key(args):
     )
     bundled_themisto = next((path for path in bundled_candidates if os.path.isfile(path)), "")
     args.profile_themisto_bin = args.profile_themisto or bundled_themisto or find_executable("themisto")
-    args.profile_msweep_bin = args.profile_msweep or find_executable("mSWEEP")
     args.profile_reference_path = ref_files[0].path
     args.profile_cache_key = profile_cache_key(
         (args.profile_reference_path, args.profile_group_map, args.profile_decoy, args.profile_themisto_bin),
@@ -100,13 +158,16 @@ def prepare_profile_cache_key(args):
 
 def find_executable(prog, internal=False):
     """把要用的程序划拉出来，找不着就麻溜儿报错。"""
-    bin_path = os.path.join(SCRIPT_ROOT, prog)
+    bundled_paths = (
+        os.path.join(SCRIPT_ROOT, prog),
+        os.path.normpath(os.path.join(SCRIPT_ROOT, os.pardir, "cli", "bin", prog)),
+    )
+    bin_path = next((path for path in bundled_paths if os.path.isfile(path) and os.access(path, os.X_OK)), None)
 
-    if not shutil.which(bin_path):
+    if not bin_path:
         if internal:
-            raise RuntimeError(f"A GeneMiner component is missing from '{bin_path}'")
-        else:
-            bin_path = shutil.which(prog)
+            raise RuntimeError(f"A GeneMiner component is missing from {bundled_paths!r}")
+        bin_path = shutil.which(prog)
 
     if not bin_path:
         raise RuntimeError(f"Unable to find {prog} executable")
@@ -747,6 +808,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
     """把过滤、再过滤、组装和救援这一大趟活儿串起来。"""
     out_loc = args.o.strip()
     is_profiling = "profiling" in getattr(args, "command", ())
+    is_mito = bool(getattr(args, "is_mito_workflow", False))
     kmer_dict_path = get_reference_kmer_dict_path(args, out_loc)
     args.assembler_reference_cache_dir = get_assembler_reference_cache_dir(args, out_loc)
     rescue_enabled = args.uce_rescue_reads
@@ -802,7 +864,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
 
             params = [filter_bin, '-r', args.r, '-q1', q1, '-q2', q2, '-o', os.path.join(out_loc, name),
                       '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                      '-m', '4' if is_profiling else '5', '-lb', '-lkd', kmer_dict_path]
+                      '-m', '4' if is_profiling or is_mito else '5', '-lb', '-lkd', kmer_dict_path]
 
             if args.max_reads > 0:
                 params.extend(['-m_reads', str(args.max_reads)])
@@ -811,6 +873,16 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
 
             if not os.path.isfile(read_count_path):
                 raise RuntimeError('Filter failed')
+
+            if is_mito:
+                collapsed_dir = out_dir + '_collapsed'
+                if os.path.isdir(collapsed_dir):
+                    shutil.rmtree(collapsed_dir, ignore_errors=True)
+                subprocess.run([find_executable('mito_workflow', internal=True), 'collapse-baits',
+                                '--input-dir', out_dir, '--out-dir', collapsed_dir,
+                                '--output-name', 'mitochondrion'], check=True)
+                shutil.rmtree(out_dir, ignore_errors=True)
+                os.replace(collapsed_dir, out_dir)
 
             if not do_refilter and os.path.isdir(out_dir):
                 merge_dir = os.path.join(out_loc, name, 'filtered')
@@ -870,7 +942,9 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             params = [refilter_bin, '-r', ref_dir, '-qd', in_dir, '-o', out_dir, '-kf', str(args.kf),
                       '-p', str(thr), '--log-file', os.path.join(out_loc, name, 'log.txt'),
                       '--min-depth', str(args.depth_low_water_mark), '--max-depth', str(args.depth_limit),
-                      '--max-size', str(args.file_size_limit), '--use-gm2-format']
+                      '--max-size', str(args.file_size_limit)]
+            if not is_mito:
+                params.append('--use-gm2-format')
 
             if args.assembly_mode == 'uce' or is_profiling:
                 params.append('--keep-linked-mates')
@@ -934,12 +1008,11 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 command = [
                     quant_bin, '--reference', args.profile_reference_path, '--reads', reads[0],
                     '--output', profile_dir, '--cache', cache_dir,
-                    '--themisto', args.profile_themisto_bin, '--msweep', args.profile_msweep_bin,
+                    '--themisto', args.profile_themisto_bin,
                     '--threads', str(thr), '--kmer-size', str(args.profile_kmer_size),
                     '--threshold', str(args.profile_pseudoalign_threshold),
                     '--relevant-kmer-fraction', str(args.profile_relevant_kmer_fraction),
                     '--index-memory-gb', str(args.profile_index_memory_gb),
-                    '--min-evidence', str(args.profile_min_evidence),
                 ]
                 if args.profile_group_map:
                     command.extend(['--groups', args.profile_group_map])
@@ -948,8 +1021,8 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 if args.profile_force_rebuild:
                     command.append('--force-rebuild')
                 subprocess.run(command, check=True)
-                if not os.path.isfile(os.path.join(profile_dir, 'marker_group_abundance.tsv')):
-                    raise RuntimeError('profiling failed to produce marker_group_abundance.tsv')
+                if not os.path.isfile(os.path.join(profile_dir, 'marker_reference_support.tsv')):
+                    raise RuntimeError('profiling failed to produce marker_reference_support.tsv')
                 return
 
             def clear_assembly_outputs():
@@ -1336,10 +1409,12 @@ def write_uce_outputs(args, samples):
 def run_population(args):
     """把 population 模式参数攒齐，交给主程序开整。"""
     population_bin = find_executable('main_population', internal=True)
+    engine = getattr(args, 'engine', 'pseudoref')
     command = [
         population_bin,
         '--output', args.o.strip(),
         '--samples', args.f,
+        '--engine', engine,
         '--reference-strategy', args.population_reference_strategy,
         '--start-at', args.population_start_at,
         '--threads', str(args.p),
@@ -1363,6 +1438,12 @@ def run_population(args):
         '--plink', args.population_plink,
         '--admixture', args.population_admixture,
     ]
+
+    if engine in ('panref', 'panrefv2'):
+        command.extend(['--panref-baits', args.r])
+
+    if getattr(args, 'population_panrefv2_include_low_confidence', False):
+        command.append('--panrefv2-include-low-confidence')
 
     if args.population_reference_fasta:
         command.extend(['--reference-fasta', args.population_reference_fasta])
@@ -2106,6 +2187,87 @@ def build_concatenation_tree(args):
 
     shutil.copyfile(out_path, final_tree_path)
 
+
+def read_single_fasta_sequence(path):
+    with open(path) as handle:
+        return ''.join(line.strip() for line in handle if not line.startswith('>'))
+
+def circularly_consistent(left, right, minimum_identity=0.9999):
+    """Return true when two circular sequences have the same cut-independent sequence.
+
+    Exact equality remains the normal fast path.  The seeded comparison also accepts
+    the very small number of consensus differences expected between consecutive
+    read-depth stages, without treating a materially different assembly as stable.
+    """
+    if len(left) != len(right) or not left:
+        return False
+    doubled = right + right
+    if left in doubled:
+        return True
+    seed_length = min(31, len(left))
+    anchors = sorted({0, len(left) // 4, len(left) // 2, len(left) * 3 // 4})
+    starts = set()
+    for anchor in anchors:
+        seed = left[anchor:anchor + seed_length]
+        start = doubled.find(seed)
+        while 0 <= start < len(right):
+            starts.add((start - anchor) % len(right))
+            start = doubled.find(seed, start + 1)
+    for start in starts:
+        candidate = doubled[start:start + len(left)]
+        matches = sum(base == candidate_base for base, candidate_base in zip(left, candidate))
+        if matches / len(left) >= minimum_identity:
+            return True
+    return False
+
+def mito_stage_is_circular(path):
+    try:
+        with open(path) as handle:
+            return any(line.strip() == 'status\tcircular' for line in handle)
+    except OSError:
+        return False
+
+def run_mito_adaptive(args, samples):
+    base_output = args.o.strip()
+    stage_root = os.path.join(base_output, '.mito_adaptive')
+    reference_dir = args.r
+    original_max_reads = args.max_reads
+    previous = None
+    limit = args.mito_initial_reads
+    maximum = args.mito_max_reads
+    while True:
+        stage_output = os.path.join(stage_root, f'{limit}m')
+        args.o = stage_output
+        args.max_reads = limit
+        do_filter_assemble(args, samples, True, True, True)
+        write_uce_outputs(args, samples)
+        run_mito_finalize(args, samples)
+        current = {}
+        for sample in samples:
+            sample_dir = os.path.join(stage_output, sample, 'mito')
+            summary = os.path.join(sample_dir, 'mitochondrial_assembly_summary.tsv')
+            fasta = os.path.join(sample_dir, 'mitochondrial_assembly.fasta')
+            if not mito_stage_is_circular(summary):
+                current[sample] = None
+            else:
+                current[sample] = read_single_fasta_sequence(fasta)
+        if previous and all(current.get(sample) and circularly_consistent(previous[sample], current[sample]) for sample in samples):
+            for sample in samples:
+                source = os.path.join(stage_output, sample)
+                destination = os.path.join(base_output, sample)
+                if os.path.isdir(destination):
+                    shutil.rmtree(destination)
+                shutil.copytree(source, destination)
+            args.o = base_output
+            args.max_reads = original_max_reads
+            args.r = reference_dir
+            return
+        previous = current
+        if maximum and limit >= maximum:
+            raise RuntimeError(f'mito adaptive stop did not confirm a circular assembly by {limit}M reads')
+        next_limit = limit * 2
+        limit = min(next_limit, maximum) if maximum else next_limit
+
 def execute_tasks(args, samples):
     """照命令顺序调度整条流程，哪步出岔子都稳当收口。"""
     if not os.path.isdir(args.r):
@@ -2126,6 +2288,9 @@ def execute_tasks(args, samples):
     do_stats = 'stats' in commands
 
     try:
+        if getattr(args, 'is_mito_workflow', False) and getattr(args, 'mito_adaptive_stop', False):
+            run_mito_adaptive(args, samples)
+            return 0
         if do_profile:
             if len(commands) != 1:
                 raise RuntimeError('profiling is a complete marker workflow and cannot be combined with other subcommands')
@@ -2135,6 +2300,9 @@ def execute_tasks(args, samples):
 
             if do_assemble and args.assembly_mode == 'uce':
                 write_uce_outputs(args, samples)
+
+            if do_assemble and getattr(args, 'is_mito_workflow', False):
+                run_mito_finalize(args, samples)
 
         if do_population:
             if do_assemble and args.assembly_mode != 'uce':
@@ -2183,14 +2351,31 @@ if __name__ == '__main__':
                                      description="GeneMiner2-UCE extracts phylogenetic marker loci for UCE workflows.",
                                      epilog=HELP_EPILOG)
     parser.add_argument('command',
-                        choices=('filter', 'refilter', 'assemble', 'profiling', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats'),
+                        choices=('filter', 'refilter', 'assemble', 'mito', 'profiling', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats'),
                         help='One or several of the following actions, separated by space:' + COMMAND_HELP,
                         metavar='command',
                         nargs='*')
 
     group_io = parser.add_argument_group('input/output parameters')
     group_io.add_argument('-f', help='Sample list file', metavar='FILE', required=True)
-    group_io.add_argument('-r', help='Reference directory; profiling also accepts one .fasta or .fa file', metavar='DIR', required=True)
+    group_io.add_argument('-r', help='Reference directory; optional with mito, which derives it from --mito-genbank', metavar='DIR', required=False, default='')
+    group_io.add_argument('--mito-genbank', default='', help='Annotated mitochondrial GenBank reference; enables the mito workflow', metavar='FILE')
+    group_io.add_argument('--mito-flank', default=150, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-tile-length', default=1200, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-tile-step', default=600, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-min-overlap', default=41, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-min-overlap-identity', default=0.98, type=float, help=argparse.SUPPRESS, metavar='FLOAT')
+    group_io.add_argument('--mito-min-junction-support', default=3, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-terminal-window', default=500, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-link-kmer', default=31, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-min-link-hits', default=2, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-min-pair-support', default=3, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-bridge-kmer', default=31, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-bridge-min-depth', default=2, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-max-bridge', default=1000, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-initial-reads', default=10, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_io.add_argument('--mito-max-reads', default=320, type=int, help='Maximum adaptive input limit in approximately 1.05M paired-read blocks (default = 320)', metavar='INT')
+    group_io.add_argument('--no-mito-adaptive-stop', dest='mito_adaptive_stop', action='store_false', default=True, help='Disable default staged mito adaptive stopping')
     group_io.add_argument('-o', help='Output directory', metavar='DIR', required=True)
     group_io.add_argument('-p', default=1, help='Number of parallel processes', metavar='INT', type=int)
 
@@ -2222,13 +2407,11 @@ if __name__ == '__main__':
     group_profile.add_argument('--profile-kmer-size', default=21, help='Profiling: k-mer size for both recruitment and Themisto (odd integer 15-31; default = 21)', metavar='INT', type=int)
     group_profile.add_argument('--profile-pseudoalign-threshold', default=0.80, help='Profiling: Themisto pseudoalignment threshold (default = 0.80)', metavar='FLOAT', type=float)
     group_profile.add_argument('--profile-relevant-kmer-fraction', default=0.50, help='Profiling: minimum fraction of query k-mers found in the reference index (default = 0.50)', metavar='FLOAT', type=float)
-    group_profile.add_argument('--profile-group-map', default='', help='Profiling: required TSV mapping reference ID to reporting group', metavar='FILE')
+    group_profile.add_argument('--profile-group-map', default='', help='Profiling: optional TSV mapping reference ID to reporting group', metavar='FILE')
     group_profile.add_argument('--profile-decoy', default='', help='Profiling: optional non-target decoy FASTA', metavar='FILE')
     group_profile.add_argument('--profile-index-dir', default='', help='Profiling: cache directory for split references and the Themisto index', metavar='DIR')
     group_profile.add_argument('--profile-index-memory-gb', default=2, help='Profiling: Themisto index-build memory limit in GiB (default = 2)', metavar='INT', type=int)
-    group_profile.add_argument('--profile-min-evidence', default=3, help='Profiling: minimum exclusive group-supporting queries required for detection (default = 3)', metavar='INT', type=int)
     group_profile.add_argument('--profile-themisto', default='', help='Profiling: Themisto executable path; by default use PATH', metavar='FILE')
-    group_profile.add_argument('--profile-msweep', default='', help='Profiling: mSWEEP executable path; by default use PATH', metavar='FILE')
     group_profile.add_argument('--profile-force-rebuild', action='store_true', default=False, help='Profiling: rebuild the cached Themisto reference index')
     group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path handling: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration (default = backbone)')
@@ -2243,6 +2426,8 @@ if __name__ == '__main__':
     group_assembly.add_argument('--uce-rescue-min-density-ratio', default=0.5, help='Minimum rescue/before read-density ratio kept after UCE raw-read rescue (default = 0.5)', metavar='FLOAT', type=float)
 
     group_population = parser.add_argument_group('arguments for population SNP analysis')
+    group_population.add_argument('--engine', choices=('pseudoref', 'panref', 'panrefv2'), default='pseudoref', help='Population reference engine: accepted-contig pseudoref, legacy panref, or streaming two-pass PanRefV2')
+    group_population.add_argument('--population-panrefv2-include-low-confidence', action='store_true', default=False, help='Include short or low-support PanRefV2 loci in the mapping FASTA')
     group_population.add_argument('--population-reference-strategy', choices=('sqcl-longest', 'supported'), default='sqcl-longest', help='Public-reference representative selection: SqCL-like longest accepted contig or support-first (default = sqcl-longest)')
     group_population.add_argument('--population-reference-fasta', default=None, help='Use a fixed external cohort FASTA instead of building a reference from accepted contigs', metavar='FILE')
     group_population.add_argument('--population-min-mapq', default=20, help='Minimum mapping quality for joint calling (default = 20)', metavar='INT', type=int)
@@ -2303,14 +2488,48 @@ if __name__ == '__main__':
     parser.add_argument('--max-depth', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+    args.is_mito_workflow = False
+
+    if 'mito' in args.command:
+        args.is_mito_workflow = True
+        if len(args.command) != 1:
+            parser.error("mito is a complete workflow and cannot be combined with other subcommands")
+        if not args.mito_genbank:
+            parser.error("mito requires --mito-genbank")
+        if args.mito_tile_length < 1 or args.mito_tile_step < 1 or args.mito_tile_step > args.mito_tile_length:
+            parser.error("mito requires 0 < --mito-tile-step <= --mito-tile-length")
+        if args.mito_min_overlap < 1 or not 0 < args.mito_min_overlap_identity <= 1:
+            parser.error("mito overlap parameters require positive overlap and identity in (0, 1]")
+        if args.mito_min_junction_support < 1:
+            parser.error("--mito-min-junction-support must be positive")
+        if args.mito_terminal_window < 1 or args.mito_min_link_hits < 1 or args.mito_min_pair_support < 1:
+            parser.error("mito terminal-window, link-hit and pair-support values must be positive")
+        if not 1 <= args.mito_link_kmer <= 63 or not 1 <= args.mito_bridge_kmer <= 63:
+            parser.error("mito link and bridge k-mers must be between 1 and 63")
+        if args.mito_bridge_min_depth < 1 or args.mito_max_bridge < 1:
+            parser.error("mito bridge depth and maximum bridge must be positive")
+        if args.mito_initial_reads < 1:
+            parser.error('--mito-initial-reads must be positive')
+        if args.mito_max_reads < args.mito_initial_reads:
+            parser.error('--mito-max-reads must be at least --mito-initial-reads')
+        args.command = ('filter', 'refilter', 'assemble')
+        args.assembly_mode = 'uce'
+        if args.ka == 0:
+            args.ka = 31
+        args.uce_min_read_density = 0
+        args.search_depth = max(args.search_depth, 30000)
+    elif args.mito_genbank:
+        parser.error('--mito-genbank is only valid with the mito subcommand')
+    elif not args.r:
+        parser.error("-r is required unless the mito subcommand is used")
 
     if args.reference_cache_dir and not args.reuse_reference_cache:
         parser.error('--reference-cache-dir requires --reuse-reference-cache')
 
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
     if 'profiling' in args.command:
-        if not args.profile_group_map or not os.path.isfile(args.profile_group_map):
-            parser.error('--profile-group-map is required and must be a readable TSV file')
+        if args.profile_group_map and not os.path.isfile(args.profile_group_map):
+            parser.error('--profile-group-map must be a readable TSV file')
         if args.profile_kmer_size < 15 or args.profile_kmer_size > 31 or args.profile_kmer_size % 2 == 0:
             parser.error('--profile-kmer-size must be an odd integer from 15 to 31')
         args.kf = args.ka = args.min_ka = args.max_ka = args.profile_kmer_size
@@ -2320,8 +2539,6 @@ if __name__ == '__main__':
             parser.error('--profile-relevant-kmer-fraction must be in [0, 1]')
         if args.profile_index_memory_gb < 1:
             parser.error('--profile-index-memory-gb must be at least 1')
-        if args.profile_min_evidence < 1:
-            parser.error('--profile-min-evidence must be at least 1')
     args.uce_backbone_lookahead = max(args.uce_backbone_lookahead, 1)
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
     args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
@@ -2389,6 +2606,8 @@ if __name__ == '__main__':
         sys.exit(2)
 
     try:
+        if args.is_mito_workflow:
+            prepare_mito_reference(args)
         materialize_profile_reference(args)
         prepare_profile_cache_key(args)
     except RuntimeError as e:

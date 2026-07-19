@@ -1,4 +1,5 @@
-# GeneMiner2-UCE
+| `profiling` subcommand | Any amplicon marker in WGS or metagenomic data | Per-reference hit, fractional, and singleton support |
+| `mito` subcommand | Annotated GenBank reference and short reads | Read-supported circular or partial mitochondrial assembly |# GeneMiner2-UCE
 
 **[中文主页](README.md)**
 
@@ -12,7 +13,7 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 - Recover molecular markers from genome-skimming or target-capture reads.
 - Preserve UCE cores and read-supported flanking sequences.
-- Recruit marker-associated reads from WGS or other shotgun data and quantify them directly by k-mer pseudoalignment.
+- Recruit marker-associated reads from WGS or other shotgun data and report reference-level support by k-mer pseudoalignment.
 - Build a cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs from UCE samples.
 - Export PHYLUCE-compatible contigs and summarize recovery quality by sample and locus.
 
@@ -22,15 +23,17 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 | --- | --- | --- |
 | `--assembly-mode original` | Exons, SCOs, and nuclear or mitochondrial markers | Reference-guided contigs with reference trimming in the default workflow |
 | `--assembly-mode uce` | UCE recovery from genome skimming or target capture | UCE cores and read-supported flanking sequences |
-| `profiling` subcommand | Any amplicon marker in WGS or metagenomic data | Relative marker-group signal, detection state, and QC |
+| `profiling` subcommand | Any amplicon marker in WGS or metagenomic data | Per-reference hit, fractional, and singleton support |
+| `mito` subcommand | Annotated GenBank reference and short reads | Read-supported circular or partial mitochondrial assembly |
 | `population` subcommand | Multiple samples with completed UCE assemblies | Cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs |
 
 ## Installation
 
-GeneMiner2-UCE is currently built from source. Run in the repository root:
+GeneMiner2-UCE is built from source. Activate an environment containing Cython, PyInstaller, and Rust, then run in the repository root:
 
 ```bash
-make
+conda activate geneminer2uce
+make build
 ```
 
 The resulting entry point is:
@@ -39,7 +42,7 @@ The resulting entry point is:
 cli/geneminer2
 ```
 
-Run `make` again after pulling a release that changes the source. See the [command-line guide](manual/EN_US/command_line.md) for complete build and runtime dependencies.
+Run `make build` again after pulling a release that changes the source. See the [command-line guide](manual/EN_US/command_line.md) for complete build and runtime dependencies.
 
 ## Quick start
 
@@ -98,21 +101,18 @@ The default Rust assembler follows a backbone strategy without repeated backtrac
 
 ## Profiling mode
 
-`profiling` is a **read-level quantification workflow, not an assembler**. It supports any amplicon marker: GeneMiner2 performs one k-mer recruitment, Themisto pseudoaligns the recruited reads to the marker library, and mSWEEP estimates relative signal among reference groups that share reads. It does not run `refilter`, `assemble`, `combine`, or `tree`.
-
-Pass one `.fasta` or `.fa` marker library directly with `-r`, plus a required two-column `--profile-group-map` TSV: `reference_id<TAB>group`. The reference ID is the first whitespace-delimited FASTA-header field, and every reference must map to exactly one group. `themisto` and `mSWEEP` must be available, either on `PATH` or supplied via `--profile-themisto` and `--profile-msweep`.
+`profiling` is a **read-level evidence workflow, not an assembler**. GeneMiner2 recruits marker-related reads once, then Themisto pseudoaligns them to the reference library. The primary result is support for each reference sequence; it does not run `refilter`, `assemble`, `combine`, or `tree`.
 
 ```bash
 cli/geneminer2 profiling \
   -f samples.tsv \
   -r marker_reference.fasta \
-  --profile-group-map marker_groups.tsv \
-  -o output \
-  -p 8 \
-  --profile-decoy non_target_sequences.fasta
+  -o output -p 8
 ```
 
-The primary per-sample result is `<output>/<sample>/marker_profile/marker_group_abundance.tsv`; `marker_qc.tsv` records pseudoalignment and mSWEEP statistics, while `marker_reference_metadata.tsv` records the reference-color/group mapping. `evidence_queries` and `exclusive_queries` count individual FASTA/FASTQ query records, not paired fragments. `relative_proportion` is an uncalibrated marker-signal proportion renormalized after the minimum-exclusive-evidence rule; it is not a cell or organism proportion.
+`<output>/<sample>/marker_profile/marker_reference_support.tsv` reports hit queries, fractional shared-query support, and singleton support for every hit reference. A query with N candidates contributes `1/N` to each candidate, so shared reads are not counted N times. This is compatibility evidence, not a unique identification or organismal abundance.
+
+`--profile-group-map` is optional and only fills the `group` annotation column with a species, clade, or curated DIV label. It does not calculate group abundance. See the [Profiling chapter](docs/profiling_EN.md) for cache and QC details.
 
 ## Population mode
 
@@ -127,20 +127,22 @@ cli/geneminer2 population \
   -o output \
   -p 8 \
   --assembly-mode uce \
+  --engine panref \
   --population-admixture-k-min 2 \
   --population-admixture-k-max 6
 ```
 
 Runtime dependencies are minibwa, samtools, bcftools, and PLINK 1.9; ADMIXTURE is optional. See the [Population chapter](docs/population_EN.md) for pseudo-reference strategies, staged restarts, SNP panels, and required QC checks.
 
-## Implementation and documentation
+## Documentation
 
-The default build includes Rust MainFilter, Refilter, Assembler, Population, marker-profiling helpers, and other Rust utilities. `original` uses `original-rust` by default and can select the fixed [upstream GeneMiner2 Python assembler](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py) with `--assembler-implementation original` for strict comparison; `uce` uses only `uce-rust`. With `--reuse-reference-cache`, `original-rust` reuses a binary cache validated by format, implementation version, k, and reference-file identity; stale or corrupt files are rebuilt automatically. The main CLI orchestrator and consensus program remain in Python.
+The README is an entry point; parameter definitions, QC rules, and output fields live in the chapters below. `original` uses `original-rust` by default; select the fixed [upstream GeneMiner2 Python assembler](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py) with `--assembler-implementation original` only for strict comparison. `uce` uses `uce-rust` only.
 
 - [Command-line guide](manual/EN_US/command_line.md)
 - [Output-file guide](manual/EN_US/output.md)
 - [Filter chapter](docs/filter_EN.md)
 - [Assembler chapter](docs/assembler_EN.md)
+- [Mito workflow](docs/5.mito.md)
 - [Profiling chapter](docs/profiling_EN.md)
 - [Population chapter](docs/population_EN.md)
 - [Release history](CHANGELOG.md)

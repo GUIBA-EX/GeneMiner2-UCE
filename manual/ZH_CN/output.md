@@ -36,11 +36,11 @@
 
 ## Marker profiling 输出
 
-**marker_profile/marker_group_abundance.tsv**：每个 group 的相对 marker 信号、检出状态和支持证据计数。比例不是经过校准的细胞或个体比例。
+**marker_profile/marker_reference_support.tsv**：每条命中的参考序列一行。`hit_queries` 是相容 query 总数；`fractional_queries` 将共享 query 平分给候选；`singleton_queries` 是只与该参考相容的 query 数。
 
-**marker_profile/marker_qc.tsv**：该样本的伪比对、target/decoy、证据、mSWEEP 和参数汇总。计数单位是单条 FASTA/FASTQ query record。
+**marker_profile/marker_qc.tsv**：该样本的伪比对与运行参数汇总；计数单位是单条 FASTA/FASTQ query record。
 
-**marker_profile/marker_reference_metadata.tsv**：本次 profiling 所用的 reference ID、Themisto color 与 reporting group 映射。
+**marker_profile/marker_reference_metadata.tsv**：本次 profiling 所用的 reference ID、Themisto color 与可选 group 注释映射。
 
 ## 合并输出
 
@@ -74,9 +74,9 @@
 
 - `sample_manifest.tsv`：原始样本名、GeneMiner2 内部目录名、VCF 样本名、reads 路径和 SE/PE 布局的对应关系。
 - `reference/population_reference.fasta`：所有样本统一 mapping 使用的公共 UCE 参考。使用 `--population-reference-fasta` 时为复制后的外部参考。
-- `reference/population_reference_provenance.tsv`：内部构建参考时，每个 locus 的来源样本、选择策略、候选数、长度及 reads 支持指标。
-- `reference/reference_contribution.tsv`：内部构建参考时，每个样本贡献的参考 loci 数及比例，用于检查公共参考是否由少数样本主导。
-- `reference/locus_name_map.tsv`：内部构建参考时原始 locus 名和 VCF 安全名称的对应关系。
+- `reference/population_reference_provenance.tsv`：仅 `pseudoref` 内部构建时，每个 locus 的来源样本、选择策略、候选数、长度及 reads 支持指标。
+- `reference/reference_contribution.tsv`：仅 `pseudoref` 内部构建时，每个样本贡献的参考 loci 数及比例，用于检查公共参考是否由少数样本主导。
+- `reference/locus_name_map.tsv`：仅 `pseudoref` 内部构建时原始 locus 名和 VCF 安全名称的对应关系。
 - `reference/reference_source.tsv`：使用固定外部参考时，记录源文件与复制后的参考路径。
 - `mapping/<sample>.bam` 和索引：minibwa 统一 mapping 后经 samtools 处理的 BAM。
 - `mapping/mapping_qc.tsv`：每个样本的 mapped/properly-paired reads、mapping rate、覆盖广度和平均深度。
@@ -96,6 +96,8 @@
 - `structure/admixture/status.tsv`：ADMIXTURE 的 `complete`、`skipped`、`unavailable` 或 `failed` 状态。
 
 PCA 和 ADMIXTURE 的主解释应优先使用每个 UCE 一个 SNP 的面板，并与 all-SNP 和 LD-pruned PCA 比较。若样本 mapping rate、coverage breadth 明显偏低，应先排查缺失数据；仅在内部构建参考时，才根据 `reference_contribution.tsv` 的参考来源不均衡排查参考偏倚。
+
+PanRefV2还会写入 `reference/panrefv2/`：`index_metadata.tsv`、`recruitment_summary.tsv`、`population_graph.gfa` 和 `locus_summary.tsv`。这些文件记录bait minimizer、read招募、局部图及每个locus的QC；默认只有状态为`pass`的locus进入公共参考。
 
 ## 统计输出
 

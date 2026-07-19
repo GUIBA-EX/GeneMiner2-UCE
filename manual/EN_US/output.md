@@ -36,11 +36,11 @@ Each sample listed in the input table gets a folder under the output directory.
 
 ## Marker profiling outputs
 
-**marker_profile/marker_group_abundance.tsv**: Per-group relative marker-signal estimates, detection state, and supporting evidence counts. These proportions are not calibrated cell or organism proportions.
+**marker_profile/marker_reference_support.tsv**: One row per hit reference sequence. `hit_queries` is total compatible query count; `fractional_queries` divides each shared query equally among its candidates; `singleton_queries` counts queries compatible with this reference alone.
 
-**marker_profile/marker_qc.tsv**: Pseudoalignment, target/decoy, evidence, mSWEEP, and parameter summary for the sample. Counts are individual FASTA/FASTQ query records.
+**marker_profile/marker_qc.tsv**: Pseudoalignment and run-parameter summary for the sample. Counts are individual FASTA/FASTQ query records.
 
-**marker_profile/marker_reference_metadata.tsv**: Reference IDs, Themisto colors, and reporting-group assignments used for the profile.
+**marker_profile/marker_reference_metadata.tsv**: Reference IDs, Themisto colors, and optional group annotations used for the profile.
 
 ## Combined outputs
 
@@ -74,9 +74,9 @@ The `population` subcommand creates `population/` under the existing output dire
 
 - `sample_manifest.tsv`: Mapping among original sample IDs, GeneMiner2 internal directories, VCF sample IDs, read paths, and SE/PE layouts.
 - `reference/population_reference.fasta`: Cohort UCE reference used for uniform mapping of every sample; when `--population-reference-fasta` is used, this is the copied external reference.
-- `reference/population_reference_provenance.tsv`: For internally built references, source sample, selection strategy, candidate count, length, and read-support metrics for each locus.
-- `reference/reference_contribution.tsv`: For internally built references, the number and fraction of loci contributed by each sample.
-- `reference/locus_name_map.tsv`: For internally built references, mapping between original and VCF-safe locus names.
+- `reference/population_reference_provenance.tsv`: For internally built `pseudoref` references, source sample, selection strategy, candidate count, length, and read-support metrics for each locus.
+- `reference/reference_contribution.tsv`: For internally built `pseudoref` references, the number and fraction of loci contributed by each sample.
+- `reference/locus_name_map.tsv`: For internally built `pseudoref` references, mapping between original and VCF-safe locus names.
 - `reference/reference_source.tsv`: For fixed external references, the source and materialized-reference paths.
 - `mapping/<sample>.bam` and indexes: minibwa alignments processed by samtools.
 - `mapping/mapping_qc.tsv`: Mapped and properly paired reads, mapping rate, coverage breadth, and mean depth for each sample.
@@ -94,6 +94,8 @@ The `population` subcommand creates `population/` under the existing output dire
 - `structure/admixture/K<K>.log`, `population.<K>.Q`, and `population.<K>.P`: ADMIXTURE log, individual ancestry proportions, and ancestral-population allele frequencies for each K.
 - `structure/admixture/cv_errors.tsv`: Cross-validation error for each K and a marker for the minimum-error K.
 - `structure/admixture/status.tsv`: ADMIXTURE status: `complete`, `skipped`, `unavailable`, or `failed`.
+
+PanRefV2 additionally writes `reference/panrefv2/index_metadata.tsv`, `recruitment_summary.tsv`, `population_graph.gfa`, and `locus_summary.tsv`; only `pass` loci enter the mapping FASTA by default.
 
 Primary interpretation of PCA and ADMIXTURE should use the one-SNP-per-UCE panel and be compared with the all-SNP and LD-pruned PCA results. If mapping rate or coverage breadth is unusually low, investigate missing data before interpreting ancestry proportions. For internally built references, also investigate reference bias when `reference_contribution.tsv` shows a strongly imbalanced origin.
 

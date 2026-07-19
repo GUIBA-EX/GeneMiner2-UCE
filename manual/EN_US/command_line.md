@@ -113,7 +113,7 @@ When no subcommand is given:
 
 - `--assembly-mode original` (default) is for reference-guided recovery of exons, SCOs, and nuclear or mitochondrial markers; it runs `filter refilter assemble trim combine tree`;
 - `--assembly-mode uce` is for UCE recovery from genome skimming or target capture; it runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval;
-- `profiling` runs one recruitment step followed by Themisto pseudoalignment and mSWEEP group profiling; it does not assemble or run downstream phylogenetic steps.
+- `profiling` runs one recruitment step followed by Themisto pseudoalignment and reference-level support reporting; it does not assemble or run downstream phylogenetic steps.
 
 Default original-mode example:
 
@@ -141,12 +141,11 @@ For assembly behavior, backend selection, rescue, cache semantics, and QC, see t
 
 ### 4.2 Marker profiling
 
-Profiling performs one recruitment followed by Themisto pseudoalignment and mSWEEP group estimation; it does not assemble. It requires one `.fa` or `.fasta` marker library and `--profile-group-map` with `reference_id<TAB>group`.
+Profiling performs one recruitment followed by Themisto pseudoalignment and reference-level support reporting; it does not assemble. It requires one `.fa` or `.fasta` marker library. `--profile-group-map` is optional and adds a group annotation column.
 
 ```bash
 cli/geneminer2 profiling \
-  -f samples.tsv -r marker_reference.fasta \
-  --profile-group-map marker_groups.tsv -o output -p 8
+  -f samples.tsv -r marker_reference.fasta \ -o output -p 8
 ```
 
 Inputs, decoys, cache control, QC, and quantitative interpretation are in the [Profiling chapter](../../docs/profiling_EN.md).
@@ -161,7 +160,7 @@ Inputs, decoys, cache control, QC, and quantitative interpretation are in the [P
 cli/geneminer2 population \
   -f /home/user/project/samples.tsv \
   -r /home/user/project/references -o output -p 8 \
-  --assembly-mode uce \
+  --assembly-mode uce --engine panrefv2 \
   --population-admixture-k-min 2 --population-admixture-k-max 6
 ```
 
@@ -251,7 +250,9 @@ The tables below list the main public options and current defaults. Run `cli/gen
 
 | Option | Description |
 | --- | --- |
-| `--population-reference-strategy MODE` | `sqcl-longest` (default) or `supported` |
+| `--engine MODE` | `pseudoref` (default), legacy `panref`, or `panrefv2`; the latter two use the per-locus bait directory supplied with `-r` |
+| `--population-panrefv2-include-low-confidence` | Also write `short` or `low_sample_support` PanRefV2 loci to the mapping FASTA; default keeps only `pass` |
+| `--population-reference-strategy MODE` | `pseudoref` only: `sqcl-longest` (default) or `supported` |
 | `--population-reference-fasta FILE` | Use a fixed external FASTA as the cohort reference; it is copied into `population/reference/` and has no per-sample contribution table |
 | `--population-min-mapq INT` / `--population-min-baseq INT` | Minimum MAPQ / base quality; defaults `20` / `20` |
 | `--population-min-dp INT` / `--population-min-gq INT` | Set lower-quality genotypes to missing; defaults `5` / `20` |

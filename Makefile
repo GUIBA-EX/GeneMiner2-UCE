@@ -13,19 +13,20 @@ FILTER_RUST_MANIFEST := rust/main_filter_new/Cargo.toml
 FILTER_RUST_SOURCES := $(FILTER_RUST_MANIFEST) rust/main_filter_new/src/main.rs
 POPULATION_BIN := cli/bin/main_population
 POPULATION_RUST_MANIFEST := rust/main_population/Cargo.toml
-POPULATION_RUST_SOURCES := $(POPULATION_RUST_MANIFEST) rust/main_population/src/main.rs
+POPULATION_RUST_SOURCES := $(POPULATION_RUST_MANIFEST) $(wildcard rust/main_population/src/*.rs) $(wildcard rust/main_population/src/panref/*.rs)
 TOOLS_RUST_MANIFEST := rust/gm2_tools/Cargo.toml
 TOOLS_RUST_SOURCES := $(TOOLS_RUST_MANIFEST) $(wildcard rust/gm2_tools/src/*.rs) $(wildcard rust/gm2_tools/src/bin/*.rs)
 ALIGNMENT_CLEAN_BIN := cli/bin/fix_alignment
 MERGE_SEQ_BIN := cli/bin/merge_seq
 BUILD_TRIMED_BIN := cli/bin/build_trimed
 GM2_STATS_BIN := cli/bin/gm2_stats
+MITO_WORKFLOW_BIN := cli/bin/mito_workflow
 MARKER_PROFILE_BIN := cli/bin/marker_profile
 FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(PY_BIN)
+build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(PY_BIN)
 	for target in $(PY_SRC); do cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/$$target/_internal; done
 	cd cli && ln -f -r -s bin/unix_command geneminer2
 
@@ -116,6 +117,10 @@ $(BUILD_TRIMED_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
 $(GM2_STATS_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin gm2_stats
 	install rust/gm2_tools/target/release/gm2_stats $(GM2_STATS_BIN)
+
+$(MITO_WORKFLOW_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin mito_workflow
+	install rust/gm2_tools/target/release/mito_workflow $(MITO_WORKFLOW_BIN)
 
 $(MARKER_PROFILE_BIN): rust/marker_profile/Cargo.toml rust/marker_profile/src/main.rs | cli/bin
 	cargo build --release --manifest-path rust/marker_profile/Cargo.toml

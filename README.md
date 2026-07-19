@@ -12,7 +12,7 @@ GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 ta
 
 - 从 genome skimming 或 target-capture reads 里把目标分子标记捞出来。
 - 跑 UCE 模式时，把有 reads 撑腰的 core 和侧翼序列都留下。
-- `profiling` 从 WGS 或其他 shotgun reads 招募 marker 相关 reads，再直接作 k-mer 伪比对和丰度估计。
+- `profiling` 从 WGS 或其他 shotgun reads 招募 marker 相关 reads，再直接作 k-mer 伪比对并输出参考序列支持。
 - 拿多个 UCE 样本整公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入。
 - 导出 PHYLUCE 能直接接上的 contig，再把样本和 locus 的恢复质量归拢成表。
 
@@ -22,15 +22,17 @@ GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 ta
 | --- | --- | --- |
 | `--assembly-mode original` | exon、SCO 及核/线粒体 marker | 参考引导 contig；默认流程会按参考裁切 |
 | `--assembly-mode uce` | genome skimming 或 target capture 中的 UCE | UCE core 和有 reads 支持的 flanking sequence |
-| `profiling` 子命令 | WGS / metagenome 中任意扩增子 marker | marker group 的相对信号、检出状态和 QC |
+| `profiling` 子命令 | WGS / metagenome 中任意扩增子 marker | 每条参考序列的命中、共享支持和单例支持 |
+| `mito` 子命令 | 带注释 GenBank 参考与短读长数据 | 仅由样本 reads 支持的闭环或 partial 线粒体组装 |
 | `population` 子命令 | 多个已完成 UCE 组装的样本 | 公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入 |
 
 ## 咋整进你那系统里？
 
-GeneMiner2-UCE 现在得从源码构建。进到仓库根目录，bash螚（make）一下就成了：
+GeneMiner2-UCE 现在得从源码构建。先激活包含 Cython、PyInstaller 和 Rust 的构建环境，再进仓库根目录：
 
 ```bash
-make
+conda activate geneminer2uce
+make build
 ```
 
 螚完以后，入口搁这儿：
@@ -39,7 +41,7 @@ make
 cli/geneminer2
 ```
 
-以后要是拉了带源码改动的新版本，记着再跑一遍 `make`，别拿旧程序硬对付。完整构建依赖和外部工具要求都写在[中文命令行指南](manual/ZH_CN/command_line.md)里了。
+以后要是拉了带源码改动的新版本，记着再跑一遍 `make build`，别拿旧程序硬对付。完整构建依赖和外部工具要求都写在[中文命令行指南](manual/ZH_CN/command_line.md)里了。
 
 ## 麻溜儿跑一遍
 
@@ -98,21 +100,21 @@ UCE 模式会松开短 probe 边界对组装的限制，默认跳过参考引导
 
 ## Profiling 模式咋回事
 
-`profiling` 是**读段定量模式，不组装**。它针对任意扩增子 marker：先用 GeneMiner2 做一次 k-mer 招募，再将招募 reads 用 Themisto 伪比对至 marker 参考库，最后由 mSWEEP 从共享命中中估计各 reference group 的相对信号。不会运行 `refilter`、`assemble`、`combine` 或 `tree`。
+`profiling` 是**读段证据模式，不组装**：先做一次 k-mer 招募，再用 Themisto 把招募 reads 同 marker 参考库比较。默认主结果是每条参考序列的支持证据；不会运行 `refilter`、`assemble`、`combine` 或 `tree`。
 
-参考库直接通过 `-r` 提供一个 `.fasta` 或 `.fa` 文件；同时必须用 `--profile-group-map` 提供两列 TSV：`reference_id<TAB>group`。`reference_id` 是 FASTA 标题的第一个空白前字段，且每条参考序列都必须映射到一个 group；同一 ID 可重复但 group 必须一致。运行环境需提供 `themisto` 和 `mSWEEP`，可通过 `--profile-themisto`、`--profile-msweep` 显式指定路径。
+最常用的参考序列级模式就是默认：
 
 ```bash
 cli/geneminer2 profiling \
-  -f samples.tsv \
-  -r marker_reference.fasta \
-  --profile-group-map marker_groups.tsv \
-  -o output \
-  -p 8 \
-  --profile-decoy non_target_sequences.fasta
+  -f samples.tsv -r marker_reference.fasta \
+  -o output -p 8
 ```
 
-每个样本的主结果为 `<output>/<sample>/marker_profile/marker_group_abundance.tsv`；`marker_qc.tsv` 记录伪比对和 mSWEEP 统计，`marker_reference_metadata.tsv` 记录 reference color 与 group。`evidence_queries` 与 `exclusive_queries` 按单条 FASTA/FASTQ query 记录计数，不是 paired fragment 数。`relative_proportion` 是经过最低独占证据门槛后重新归一化的、尚未校准的 marker 信号比例，不等同于生物体细胞或个体比例。
+主结果 `<output>/<sample>/marker_profile/marker_reference_support.tsv` 会给每条命中的参考序列写出总命中、分数化共享支持与单例支持。一条 read 若有 N 个候选，每个候选只获得 `1/N`，不能把同一条 read 重复算给所有候选。它表示与参考相容的证据，不是唯一鉴定或生物量丰度。
+
+`--profile-group-map` 可选：用于在结果的 `group` 列给参考序列附加物种、clade 或整理过的 DIV 标签，不再计算 group 丰度。
+
+完整参数、输出和 QC 见 [Profiling 章节](docs/profiling_ZH.md)。
 
 ## Population 模式咋回事
 
@@ -123,24 +125,26 @@ UCE 已经组装完了，就这么跑：
 ```bash
 cli/geneminer2 population \
   -f samples.tsv \
-  -r references \
+  -r baits_by_locus \
   -o output \
   -p 8 \
   --assembly-mode uce \
+  --engine panref \
   --population-admixture-k-min 2 \
   --population-admixture-k-max 6
 ```
 
-运行时得把 minibwa、samtools、bcftools 和 PLINK 1.9 预备好；ADMIXTURE 没有也能接着跑，只是不出那部分结果。伪参考策略、分阶段重启、SNP 面板和 QC 见 [Population 章节](docs/population_ZH.md)。
+`panref` 以冻结核心图和受限侧翼救援构建公共参考；默认只将通过QC的locus写入参考。运行时需要 minibwa、samtools、bcftools 和 PLINK 1.9；ADMIXTURE 可选。参数、阶段和QC见 [Population 章节](docs/population_ZH.md)。
 
-## 实现和文档都搁哪儿
+## 文档往哪儿找
 
-默认构建包含 Rust MainFilter、Refilter、Assembler、Population、marker profiling 辅助工具和其他 Rust 工具。`original` 默认使用 `original-rust`，也可用 `--assembler-implementation original` 选择固定的[上游 GeneMiner2 Python 原版](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py)作严格对照；`uce` 只使用 `uce-rust`。`--reuse-reference-cache` 为 `original-rust` 复用经格式、实现版本、k 与参考文件指纹校验的二进制 cache；损坏或过期时自动重建。主 CLI 编排器和 consensus 程序仍使用 Python。
+首页只管选模式和跑起第一条命令；参数、质量控制和输出字段都归到下面的专题文档。`original` 默认用 `original-rust`，需要与上游 Python 对照时才显式加 `--assembler-implementation original`；`uce` 只使用 `uce-rust`。
 
 - [中文命令行指南](manual/ZH_CN/command_line.md)
 - [中文输出文件说明](manual/ZH_CN/output.md)
 - [Filter 章节](docs/filter_ZH.md)
 - [Assembler 章节](docs/assembler_ZH.md)
+- [5. Mito：线粒体基因组](docs/5.mito.md)
 - [Profiling 章节](docs/profiling_ZH.md)
 - [Population 章节](docs/population_ZH.md)
 - [版本更新记录](CHANGELOG.md)

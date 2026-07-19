@@ -52,7 +52,7 @@ class CliSmokeTests(unittest.TestCase):
     @mock.patch.object(unix_command, "find_executable", return_value="/gm2/main_population")
     def test_population_command_invokes_rust_driver_with_minibwa(self, _find, run):
         args = SimpleNamespace(
-            o="out", f="samples.tsv", p=4,
+            o="out", f="samples.tsv", r="baits", p=4, engine="panrefv2",
             population_reference_strategy="sqcl-longest",
             population_min_mapq=20, population_min_baseq=20,
             population_min_dp=5, population_min_gq=20,
@@ -71,6 +71,8 @@ class CliSmokeTests(unittest.TestCase):
         unix_command.run_population(args)
         command = run.call_args.args[0]
         self.assertEqual(command[0], "/gm2/main_population")
+        self.assertEqual(command[command.index("--engine") + 1], "panrefv2")
+        self.assertEqual(command[command.index("--panref-baits") + 1], "baits")
         self.assertIn("--minibwa", command)
         self.assertEqual(command[command.index("--minibwa") + 1], "minibwa")
         self.assertEqual(command[command.index("--reference-strategy") + 1], "sqcl-longest")

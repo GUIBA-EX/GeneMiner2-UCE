@@ -22,6 +22,8 @@ env/
 ENV/
 
 # Local build outputs
+scripts/main_refilter_ext.c
+scripts/main_refilter_ext.*.so
 cli/
 build/
 dist/

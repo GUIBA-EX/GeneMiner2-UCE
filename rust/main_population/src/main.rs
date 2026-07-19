@@ -1,12 +1,28 @@
+mod panref {
+    pub(crate) mod backbone;
+    pub(crate) mod bait;
+    pub(crate) mod bait_index;
+    pub(crate) mod dbg;
+    pub(crate) mod recruit;
+    pub(crate) mod v2;
+}
+
+use crate::panref::backbone::assemble_backbone;
+use crate::panref::bait::BaitCatalog;
+use crate::panref::bait_index::BaitIndex;
+use crate::panref::recruit::recruit_pairs_to_fastq;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 
 type AppResult<T> = Result<T, String>;
+type PanrefBackbone = (Vec<u8>, u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum Stage {
@@ -31,11 +47,21 @@ impl ReferenceStrategy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Engine {
+    Pseudoref,
+    Panref,
+    PanrefV2,
+}
+
 #[derive(Debug)]
 struct Args {
     output: PathBuf,
     samples_tsv: PathBuf,
+    engine: Engine,
     reference_strategy: ReferenceStrategy,
+    panref_baits: Option<PathBuf>,
+    panrefv2_include_low_confidence: bool,
     threads: usize,
     min_mapq: u32,
     min_baseq: u32,
@@ -68,7 +94,10 @@ impl Default for Args {
         Self {
             output: PathBuf::new(),
             samples_tsv: PathBuf::new(),
+            engine: Engine::Pseudoref,
             reference_strategy: ReferenceStrategy::SqclLongest,
+            panref_baits: None,
+            panrefv2_include_low_confidence: false,
             threads: 1,
             min_mapq: 20,
             min_baseq: 20,
@@ -140,9 +169,12 @@ fn print_help() {
          Usage: main_population --output DIR --samples FILE [options]\n\n\
          --output DIR              Existing GeneMiner2 output directory\n\
          --samples FILE            Original GeneMiner2 sample TSV\n\
+         --engine STR              pseudoref, panref, or panrefv2 (default: pseudoref)\n\
+         --panref-baits DIR       Per-locus bait FASTA directory required by panref or panrefv2\n\
+         --panrefv2-include-low-confidence  Include short or low-support PanRefV2 loci in FASTA\n\
          --reference-strategy STR  sqcl-longest or supported (default: sqcl-longest)\n\
          --reference-fasta FILE    Use a fixed external cohort reference\n\
-         --threads INT             Threads passed to external tools (default: 1)\n\
+         --threads INT             Threads for external tools and PanRef graph building (default: 1)\n\
          --min-mapq INT            Minimum mapping quality (default: 20)\n\
          --min-baseq INT           Minimum base quality (default: 20)\n\
          --min-dp INT              Minimum genotype depth (default: 5)\n\
@@ -205,6 +237,15 @@ fn parse_reference_strategy(value: &str) -> AppResult<ReferenceStrategy> {
     }
 }
 
+fn parse_engine(value: &str) -> AppResult<Engine> {
+    match value {
+        "pseudoref" => Ok(Engine::Pseudoref),
+        "panref" => Ok(Engine::Panref),
+        "panrefv2" => Ok(Engine::PanrefV2),
+        _ => Err("invalid engine; expected pseudoref, panref, or panrefv2".to_string()),
+    }
+}
+
 fn parse_args(argv: Vec<String>) -> AppResult<Args> {
     if argv.iter().any(|arg| arg == "-h" || arg == "--help") {
         print_help();
@@ -223,6 +264,12 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
             "--samples" => {
                 args.samples_tsv = PathBuf::from(take_value(&argv, &mut i, "--samples")?)
             }
+            "--engine" => args.engine = parse_engine(&take_value(&argv, &mut i, "--engine")?)?,
+            "--panref-baits" => {
+                args.panref_baits =
+                    Some(PathBuf::from(take_value(&argv, &mut i, "--panref-baits")?))
+            }
+            "--panrefv2-include-low-confidence" => args.panrefv2_include_low_confidence = true,
             "--reference-strategy" => {
                 args.reference_strategy =
                     parse_reference_strategy(&take_value(&argv, &mut i, "--reference-strategy")?)?
@@ -325,6 +372,22 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
     }
     if args.start_at > args.stop_after {
         return Err("--start-at must not be later than --stop-after".into());
+    }
+    if matches!(args.engine, Engine::Panref | Engine::PanrefV2) {
+        if args.reference_fasta.is_some() {
+            return Err(
+                "--engine panref/panrefv2 cannot be combined with --reference-fasta".into(),
+            );
+        }
+        let Some(baits) = args.panref_baits.as_ref() else {
+            return Err("--engine panref/panrefv2 requires --panref-baits".into());
+        };
+        if !baits.is_dir() {
+            return Err(format!(
+                "--panref-baits is not a directory: {}",
+                baits.display()
+            ));
+        }
     }
     Ok(args)
 }
@@ -560,6 +623,163 @@ fn candidate_cmp(strategy: ReferenceStrategy, left: &Candidate, right: &Candidat
 }
 
 fn build_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
+    match args.engine {
+        Engine::Pseudoref => build_pseudoref_reference(args, samples),
+        Engine::Panref => build_panref_reference(args, samples),
+        Engine::PanrefV2 => panref::v2::build_reference(args, samples),
+    }
+}
+
+fn assemble_panref_backbones(
+    recruited_dir: &Path,
+    catalog: &BaitCatalog,
+    threads: usize,
+) -> AppResult<Vec<Option<PanrefBackbone>>> {
+    let tasks = catalog
+        .loci
+        .iter()
+        .enumerate()
+        .filter_map(|(id, locus)| {
+            let path = recruited_dir.join(format!("locus_{id:05}.interleaved.fq"));
+            path.is_file().then_some((id, path, locus.records.clone()))
+        })
+        .collect::<Vec<_>>();
+    let mut results = vec![None; catalog.loci.len()];
+    if tasks.is_empty() {
+        return Ok(results);
+    }
+    let workers = threads.max(1).min(tasks.len());
+    let (sender, receiver) = mpsc::channel();
+    let queue = Arc::new(Mutex::new(VecDeque::from(tasks)));
+    let mut handles = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let sender = sender.clone();
+        let queue = Arc::clone(&queue);
+        handles.push(thread::spawn(move || loop {
+            let task = queue
+                .lock()
+                .expect("PanRef task queue poisoned")
+                .pop_front();
+            let Some((id, path, baits)) = task else { break };
+            let _ = sender.send((id, assemble_backbone(&path, &baits)));
+        }));
+    }
+    drop(sender);
+    for (id, backbone) in receiver {
+        results[id] = backbone?;
+    }
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| "PanRef backbone worker panicked".to_string())?;
+    }
+    Ok(results)
+}
+
+fn build_panref_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
+    let baits = args
+        .panref_baits
+        .as_ref()
+        .ok_or("--engine panref/panrefv2 requires --panref-baits")?;
+    let reference_dir = args.output.join("population").join("reference");
+    let panref_dir = reference_dir.join("panref");
+    fs::create_dir_all(&panref_dir)
+        .map_err(|e| format!("unable to create {}: {e}", panref_dir.display()))?;
+    let catalog = BaitCatalog::read(baits)?;
+    let index = BaitIndex::build_catalog(&catalog)?;
+    let loci = catalog
+        .loci
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    index.write_metadata(&panref_dir.join("index_metadata.tsv"), &loci)?;
+    write_sample_manifest(
+        &args.output.join("population").join("sample_manifest.tsv"),
+        samples,
+    )?;
+    let recruited_dir = panref_dir.join("recruited");
+    if recruited_dir.exists() {
+        fs::remove_dir_all(&recruited_dir)
+            .map_err(|e| format!("unable to clear {}: {e}", recruited_dir.display()))?;
+    }
+    let report_path = panref_dir.join("recruitment_summary.tsv");
+    let mut report = BufWriter::new(File::create(&report_path).map_err(|e| e.to_string())?);
+    writeln!(report, "sample\ttotal_locus_assignments\tloci_with_pairs\tstrong_pairs\trescued_pairs\tambiguous_pairs")
+        .map_err(|e| e.to_string())?;
+    report.flush().map_err(|e| e.to_string())?;
+    for sample in samples {
+        let stats = recruit_pairs_to_fastq(
+            &index,
+            &catalog,
+            &sample.read1,
+            &sample.read2,
+            &recruited_dir,
+            &sample.internal,
+            args.threads,
+        )?;
+        let total: u64 = stats.per_locus.iter().sum();
+        let covered = stats.per_locus.iter().filter(|&count| *count > 0).count();
+        writeln!(
+            report,
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            sample.internal,
+            total,
+            covered,
+            stats.strong_pairs,
+            stats.rescued_pairs,
+            stats.ambiguous_pairs
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    report.flush().map_err(|e| e.to_string())?;
+    let fasta_path = reference_dir.join("population_reference.fasta");
+    let mut fasta = BufWriter::new(File::create(&fasta_path).map_err(|e| e.to_string())?);
+    let mut backbone_report = BufWriter::new(
+        File::create(panref_dir.join("backbone_summary.tsv")).map_err(|e| e.to_string())?,
+    );
+    writeln!(backbone_report, "locus\tstatus\tsequence_length\tpe_links")
+        .map_err(|e| e.to_string())?;
+    let backbones = assemble_panref_backbones(&recruited_dir, &catalog, args.threads)?;
+    let mut written = 0_usize;
+    let mut used_names = HashSet::new();
+    for (id, locus) in catalog.loci.iter().enumerate() {
+        match backbones[id].as_ref() {
+            Some((sequence, pe_links)) => {
+                let name = safe_locus_name(&locus.name);
+                if !used_names.insert(name.clone()) {
+                    return Err(format!(
+                        "PanRef locus names collide after FASTA sanitization: {}",
+                        locus.name
+                    ));
+                }
+                writeln!(fasta, ">{name}").map_err(|e| e.to_string())?;
+                writeln!(fasta, "{}", String::from_utf8_lossy(sequence))
+                    .map_err(|e| e.to_string())?;
+                writeln!(
+                    backbone_report,
+                    "{}\tassembled\t{}\t{}",
+                    locus.name,
+                    sequence.len(),
+                    pe_links
+                )
+                .map_err(|e| e.to_string())?;
+                written += 1;
+            }
+            None => writeln!(backbone_report, "{}\tno_backbone\t0\t0", locus.name)
+                .map_err(|e| e.to_string())?,
+        }
+    }
+    backbone_report.flush().map_err(|e| e.to_string())?;
+    if written == 0 {
+        return Err(
+            "PanRef found no bait-anchored local backbone; see population/reference/panref".into(),
+        );
+    }
+    write_reference_manifest(&reference_dir, "panref", &fasta_path)?;
+    Ok(fasta_path)
+}
+
+fn build_pseudoref_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
     let root = args.output.join("population");
     let reference_dir = root.join("reference");
     fs::create_dir_all(&reference_dir)
@@ -691,8 +911,30 @@ fn build_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
         )
         .map_err(|e| e.to_string())?;
     }
+    fasta.flush().map_err(|e| e.to_string())?;
+    provenance.flush().map_err(|e| e.to_string())?;
+    name_map.flush().map_err(|e| e.to_string())?;
+    contribution.flush().map_err(|e| e.to_string())?;
     write_sample_manifest(&root.join("sample_manifest.tsv"), samples)?;
+    write_reference_manifest(&reference_dir, "pseudoref", &fasta_path)?;
     Ok(fasta_path)
+}
+
+fn write_reference_manifest(reference_dir: &Path, engine: &str, fasta: &Path) -> AppResult<()> {
+    let bytes = fs::metadata(fasta).map_err(|e| e.to_string())?.len();
+    fs::write(
+        reference_dir.join("reference_manifest.tsv"),
+        format!(
+            "engine\treference_fasta\tbytes\n{}\t{}\t{}\n",
+            engine,
+            fasta
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("population_reference.fasta"),
+            bytes
+        ),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn materialize_external_reference(args: &Args, samples: &[Sample]) -> AppResult<PathBuf> {
@@ -734,6 +976,7 @@ fn materialize_external_reference(args: &Args, samples: &[Sample]) -> AppResult<
         &args.output.join("population").join("sample_manifest.tsv"),
         samples,
     )?;
+    write_reference_manifest(&reference_dir, "external", &target)?;
     Ok(target)
 }
 

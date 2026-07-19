@@ -113,7 +113,7 @@ references/
 
 - `--assembly-mode original`（默认）用于 exon、SCO 及核/线粒体 marker 的参考引导恢复，运行 `filter refilter assemble trim combine tree`；
 - `--assembly-mode uce` 用于从 genome skimming 或 target capture 恢复 UCE，运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围；
-- `profiling` 先做一次招募，再由 Themisto 伪比对和 mSWEEP 完成 group profiling；不组装，也不运行下游系统发育步骤。
+- `profiling` 先做一次招募，再由 Themisto 伪比对并输出参考序列级支持；不组装，也不运行下游系统发育步骤。
 
 默认 original 模式示例：
 
@@ -141,12 +141,11 @@ cli/geneminer2 \
 
 ### 4.2 Marker profiling
 
-Profiling 执行一次招募、Themisto 伪比对和 mSWEEP group 估计，不组装。它需要一个 `.fa` 或 `.fasta` marker 参考库，以及 `reference_id<TAB>group` 格式的 `--profile-group-map`。
+Profiling 执行一次招募、Themisto 伪比对并输出参考序列级支持，不组装。它需要一个 `.fa` 或 `.fasta` marker 参考库；`--profile-group-map` 可选，仅增加 group 注释列。
 
 ```bash
 cli/geneminer2 profiling \
-  -f samples.tsv -r marker_reference.fasta \
-  --profile-group-map marker_groups.tsv -o output -p 8
+  -f samples.tsv -r marker_reference.fasta \ -o output -p 8
 ```
 
 输入、decoy、cache、QC 与定量解释见[Profiling 章节](../../docs/profiling_ZH.md)。
@@ -251,7 +250,9 @@ cli/geneminer2 stats \
 
 | 参数 | 说明 |
 | --- | --- |
-| `--population-reference-strategy MODE` | `sqcl-longest`（默认）或 `supported` |
+| `--engine MODE` | `pseudoref`（默认）、旧 `panref` 或 `panrefv2`；后两者使用 `-r` 指定的按locus bait目录 |
+| `--population-panrefv2-include-low-confidence` | 将 `short` 或 `low_sample_support` PanRefV2 locus 也写入参考；默认仅保留 `pass` |
+| `--population-reference-strategy MODE` | 仅 `pseudoref` 使用：`sqcl-longest`（默认）或 `supported` |
 | `--population-reference-fasta FILE` | 使用固定外部 FASTA 作为公共参考；文件会复制到 `population/reference/`，不生成按样本的参考贡献统计 |
 | `--population-min-mapq INT` / `--population-min-baseq INT` | 联合检测最低 MAPQ / base quality，默认 `20` / `20` |
 | `--population-min-dp INT` / `--population-min-gq INT` | 低于阈值的基因型设为缺失，默认 `5` / `20` |

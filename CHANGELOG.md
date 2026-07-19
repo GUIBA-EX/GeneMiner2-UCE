@@ -1,4 +1,11 @@
 # Changelog
+## v1.0 — Reference-level profiling, pan-reference population analysis, and mitochondrial workflow
+
+- Reworked marker profiling into a general reference-level evidence workflow: GeneMiner2 recruitment plus Themisto pseudoalignment now reports per-reference hit counts, fractional shared-query support, and singleton support. Removed the mSWEEP dependency, group-abundance output, and associated CLI options; an optional group map is annotation only.
+- Added the experimental `panref` population engine, which builds a graph-backed cohort reference from UCE baits and sample reads while retaining the existing pseudo-reference engine and staged population outputs.
+- Added the `mito` workflow for annotated GenBank references: one mitochondrial read pool, UCE-style assembly, overlap merging, mate-link/read-graph validation, and conservative circularity reporting.
+- Reorganized Chinese and English READMEs, manuals, profiling/population chapters, and mitochondrial documentation; added ignore rules for generated Cython artifacts.
+
 ## v0.9.3 — Deterministic MainFilter I/O optimization
 
 - Avoided retaining FASTQ headers, `+` lines, and duplicate normalized text buffers in default GM2 output and scan-only modes; text-output modes remain byte-compatible.
