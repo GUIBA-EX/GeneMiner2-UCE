@@ -1,5 +1,3 @@
-| `profiling` subcommand | Any amplicon marker in WGS or metagenomic data | Per-reference hit, fractional, and singleton support |
-| `mito` subcommand | Annotated GenBank reference and short reads | Read-supported circular or partial mitochondrial assembly |# GeneMiner2-UCE
 
 **[中文主页](README.md)**
 
@@ -24,7 +22,7 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 | `--assembly-mode original` | Exons, SCOs, and nuclear or mitochondrial markers | Reference-guided contigs with reference trimming in the default workflow |
 | `--assembly-mode uce` | UCE recovery from genome skimming or target capture | UCE cores and read-supported flanking sequences |
 | `profiling` subcommand | Any amplicon marker in WGS or metagenomic data | Per-reference hit, fractional, and singleton support |
-| `mito` subcommand | Annotated GenBank reference and short reads | Read-supported circular or partial mitochondrial assembly |
+| `mito` subcommand | Ordinary circular animal mitochondria with an annotated GenBank reference | Read-supported circular or partial mitochondrial assembly |
 | `population` subcommand | Multiple samples with completed UCE assemblies | Cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs |
 
 ## Installation
@@ -99,6 +97,20 @@ UCE mode reduces the influence of short-probe boundaries, skips reference-guided
 
 The default Rust assembler follows a backbone strategy without repeated backtracking. `--uce-rescue-reads` recruits reads again using first-round contigs plus the original references, and restores the first-round result when rescue quality deteriorates. See the [Assembler chapter](docs/assembler_EN.md) for parameters, guardrails, reference caching, and fallback rules.
 
+## Mito mode
+
+`mito` is limited to **ordinary single circular animal mitochondrial genomes**. It recruits reads from an annotated GenBank reference and reports circularity only when overlap, local read-graph paths, and junction-spanning reads support it. It does not fill gaps from reference coordinates and is not intended for multipartite genomes, major rearrangements, strong heteroplasmy, or complex plant and fungal mitochondria.
+
+```bash
+cli/geneminer2 mito \
+  -f samples.tsv \
+  -o mito_output \
+  -p 8 \
+  --mito-genbank mitochondrial_reference.gb
+```
+
+See the [Mitochondrial chapter](docs/5.mito.md) for the workflow, success criteria, and expert parameters.
+
 ## Profiling mode
 
 `profiling` is a **read-level evidence workflow, not an assembler**. GeneMiner2 recruits marker-related reads once, then Themisto pseudoaligns them to the reference library. The primary result is support for each reference sequence; it does not run `refilter`, `assemble`, `combine`, or `tree`.
@@ -142,7 +154,7 @@ The README is an entry point; parameter definitions, QC rules, and output fields
 - [Output-file guide](manual/EN_US/output.md)
 - [Filter chapter](docs/filter_EN.md)
 - [Assembler chapter](docs/assembler_EN.md)
-- [Mito workflow](docs/5.mito.md)
+- [Mitochondrial chapter](docs/5.mito.md)
 - [Profiling chapter](docs/profiling_EN.md)
 - [Population chapter](docs/population_EN.md)
 - [Release history](CHANGELOG.md)

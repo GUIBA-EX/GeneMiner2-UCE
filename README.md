@@ -23,7 +23,7 @@ GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 ta
 | `--assembly-mode original` | exon、SCO 及核/线粒体 marker | 参考引导 contig；默认流程会按参考裁切 |
 | `--assembly-mode uce` | genome skimming 或 target capture 中的 UCE | UCE core 和有 reads 支持的 flanking sequence |
 | `profiling` 子命令 | WGS / metagenome 中任意扩增子 marker | 每条参考序列的命中、共享支持和单例支持 |
-| `mito` 子命令 | 带注释 GenBank 参考与短读长数据 | 仅由样本 reads 支持的闭环或 partial 线粒体组装 |
+| `mito` 子命令 | 常规环形动物线粒体与带注释 GenBank 参考 | 仅由样本 reads 支持的闭环或 partial 线粒体组装 |
 | `population` 子命令 | 多个已完成 UCE 组装的样本 | 公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入 |
 
 ## 咋整进你那系统里？
@@ -97,6 +97,20 @@ cli/geneminer2 \
 UCE 模式会松开短 probe 边界对组装的限制，默认跳过参考引导的 `trim`，优先留下延伸更长、同时还有 reads 支持的候选。refilter 的时候，只要一对儿 mate 里有一个通过 locus 过滤，整对 paired-end reads 都留下，不能把有用的侧翼信息半道扔了。
 
 默认 Rust assembler 走不反复 backtrack 的 backbone 策略，遇上气泡不会来回来去磨叽。`--uce-rescue-reads` 会拿第一轮 contig 加原始参考再招一遍 reads；要是 rescue 以后质量掉了，就麻溜儿退回第一轮结果。组装策略、质量护栏、cache 和 rescue 规则见 [Assembler 章节](docs/assembler_ZH.md)。
+
+## 线粒体模式咋回事
+
+`mito` 专门给**常规单条环形动物线粒体基因组**用：从带注释的 GenBank 参考招募 reads，组装后只在 overlap、局部 read graph 和 junction reads 都支持时报告闭环。它不拿参考坐标补洞，也不适合多分子、严重重排、强异质性或复杂植物和真菌线粒体。
+
+```bash
+cli/geneminer2 mito \
+  -f samples.tsv \
+  -o mito_output \
+  -p 8 \
+  --mito-genbank mitochondrial_reference.gb
+```
+
+完整流程、成功标准和专家参数见 [线粒体章节](docs/5.mito.md)。
 
 ## Profiling 模式咋回事
 
