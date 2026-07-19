@@ -233,7 +233,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `--assembler-read-chunk-size INT` | Reads loaded per Rust assembler batch; default `8192` |
 | `--assembler-kmer-count-threads INT` | K-mer sorting/counting workers per locus; default `0` selects automatically |
 | `--assembler-graph-format MODE` | Optional graph output: `none` (default), `gfa`, `dot`, or `both` |
-| `--assembly-mode MODE` | `reference` or `uce`; default `reference` |
+| `--assembly-mode MODE` | `original` or `uce`; default `original` |
 | `--uce-path-strategy MODE` | `backbone` (default) commits one path at bubbles without backtracking; `search` preserves legacy branch enumeration |
 | `--uce-backbone-lookahead INT` | Linear look-ahead steps per backbone bubble; default `24`, minimum `1` |
 | `--uce-side-candidates INT` | Used only with `--uce-path-strategy search`; default `8`, minimum `3` |

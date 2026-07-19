@@ -233,7 +233,7 @@ cli/geneminer2 stats \
 | `--assembler-read-chunk-size INT` | Rust assembler 每批读取的 reads 数，默认 `8192` |
 | `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
 | `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |
-| `--assembly-mode MODE` | `reference` 或 `uce`；默认 `reference` |
+| `--assembly-mode MODE` | `original` 或 `uce`；默认 `original` |
 | `--uce-path-strategy MODE` | `backbone`（默认）在气泡处提交单一路径且不回溯；`search` 保留旧的分支枚举 |
 | `--uce-backbone-lookahead INT` | backbone 在每个气泡处的线性前瞻步数，默认 `24`，最小为 `1` |
 | `--uce-side-candidates INT` | 仅在 `--uce-path-strategy search` 下使用；每侧候选数默认 `8`，最小为 `3` |
