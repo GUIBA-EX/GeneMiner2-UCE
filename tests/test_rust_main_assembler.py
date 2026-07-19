@@ -142,7 +142,7 @@ class RustMainAssemblerParityTests(unittest.TestCase):
                 "-p",
                 "1",
                 "--assembly-mode",
-                "reference",
+                "original",
             ]
 
             subprocess.run(

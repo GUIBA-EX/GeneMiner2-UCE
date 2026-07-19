@@ -1,4 +1,10 @@
 # Changelog
+## v0.9.3 — Deterministic MainFilter I/O optimization
+
+- Avoided retaining FASTQ headers, `+` lines, and duplicate normalized text buffers in default GM2 output and scan-only modes; text-output modes remain byte-compatible.
+- On the DK40 target-capture benchmark (one million read pairs), reduced default GM2 filtering time by about 7–9% while preserving all 4,466 GM2 files and the read-count report byte-for-byte.
+- Polished the MainFilter performance note with explicit compatibility boundaries, benchmark scope, and release-validation requirements.
+
 
 ## v0.9.2 — Four-chapter documentation
 

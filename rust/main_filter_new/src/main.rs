@@ -273,7 +273,7 @@ fn open_input(path: &Path) -> io::Result<BufReader<Box<dyn Read>>> {
 
 #[derive(Clone, Debug)]
 struct Record {
-    lines: Vec<String>,
+    lines: Option<Vec<String>>,
     sequence: Vec<u8>,
     quality: Option<Vec<u8>>,
 }
@@ -283,15 +283,17 @@ struct SequenceReader {
     kind: FileKind,
     pending_header: Option<String>,
     finished: bool,
+    keep_text_lines: bool,
 }
 
 impl SequenceReader {
-    fn open(path: &Path, kind: FileKind) -> AppResult<Self> {
+    fn open(path: &Path, kind: FileKind, keep_text_lines: bool) -> AppResult<Self> {
         Ok(Self {
             input: open_input(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?,
             kind,
             pending_header: None,
             finished: false,
+            keep_text_lines,
         })
     }
 
@@ -344,9 +346,10 @@ impl SequenceReader {
                 }
             }
         }
-        let sequence_line = String::from_utf8_lossy(&sequence).into_owned();
         Ok(Some(Record {
-            lines: vec![header, sequence_line],
+            lines: self.keep_text_lines.then(|| {
+                vec![header, String::from_utf8_lossy(&sequence).into_owned()]
+            }),
             sequence,
             quality: None,
         }))
@@ -380,10 +383,15 @@ impl SequenceReader {
         if quality.len() != sequence.len() {
             return Err("FASTQ sequence and quality lengths differ".to_string());
         }
-        let normalized_line = String::from_utf8_lossy(&sequence).into_owned();
-        let quality_text = String::from_utf8_lossy(&quality).into_owned();
         Ok(Some(Record {
-            lines: vec![header, normalized_line, plus, quality_text],
+            lines: self.keep_text_lines.then(|| {
+                vec![
+                    header,
+                    String::from_utf8_lossy(&sequence).into_owned(),
+                    plus,
+                    String::from_utf8_lossy(&quality).into_owned(),
+                ]
+            }),
             sequence,
             quality: Some(quality),
         }))
@@ -799,7 +807,7 @@ fn build_index(reference: &Path, k: usize, reverse_indexed: bool) -> AppResult<K
     }
     let mut index = KmerIndex::new(k, reverse_indexed, names);
     for (reference_id, path) in paths.iter().enumerate() {
-        let mut reader = SequenceReader::open(path, FileKind::Fasta)?;
+        let mut reader = SequenceReader::open(path, FileKind::Fasta, false)?;
         while let Some(record) = reader.next_record()? {
             index.add_reference_sequence(&record.sequence, reference_id as u32);
         }
@@ -1287,7 +1295,7 @@ impl OutputManager {
 // 文本输出保留原样，方便人眼复查。
 fn encode_text(record: &Record) -> Vec<u8> {
     let mut output = Vec::new();
-    for line in &record.lines {
+    for line in record.lines.as_ref().expect("text output requires record lines") {
         output.extend_from_slice(line.as_bytes());
         output.push(b'\n');
     }
@@ -1477,6 +1485,8 @@ fn run(args: Args) -> AppResult<()> {
             return Err("all read files must use the same FASTA/FASTQ format".to_string());
         }
     }
+    // GM2 和只扫描模式不留文本行，少分配几套没用的 String。
+    let keep_text_lines = matches!(args.mode, 0 | 1 | 4);
     let mut output = OutputManager::new(
         &args.output,
         &args.out_subdir,
@@ -1492,11 +1502,11 @@ fn run(args: Args) -> AppResult<()> {
     let filter_started = Instant::now();
 
     for file_number in 0..args.q1.len() {
-        let mut reader1 = SequenceReader::open(&args.q1[file_number], kind)?;
+        let mut reader1 = SequenceReader::open(&args.q1[file_number], kind, keep_text_lines)?;
         let mut reader2 = if args.q2.is_empty() {
             None
         } else {
-            Some(SequenceReader::open(&args.q2[file_number], kind)?)
+            Some(SequenceReader::open(&args.q2[file_number], kind, keep_text_lines)?)
         };
         let mut read_count = 0_u64;
         let max_reads = args.max_read_blocks.saturating_mul(MEBIBYTE_READS);
@@ -1700,7 +1710,7 @@ mod tests {
     #[test]
     fn gm2_header_uses_all_six_bytes() {
         let record = Record {
-            lines: vec![],
+            lines: None,
             sequence: vec![b'A'; 300],
             quality: Some(vec![b'I'; 300]),
         };

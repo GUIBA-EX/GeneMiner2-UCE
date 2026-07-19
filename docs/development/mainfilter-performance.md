@@ -1,33 +1,42 @@
 # MainFilter 性能优化与兼容性说明
 
-本说明记录当前 Rust `MainFilterNew` 的确定性优化、验证范围和暂不采用的方案。目标是降低 UCE 读段筛选的 CPU 开销，**不改变**命令行参数、字典格式、筛选规则或输出格式。
+本文记录 Rust `MainFilterNew` 已采用的确定性优化、实测边界和未采用方案。所有已采用优化都以保持命令行参数、k-mer 判定、字典兼容性和筛选输出不变为前提；性能收益必须经真实 reads 的 A/B 比较确认。
 
-## 当前保留的修改
+## 已采用的确定性优化
 
 | 修改 | 位置 | 原理 | 兼容性边界 |
 | --- | --- | --- | --- |
 | DNA 碱基查表 | `base_code` | 用固定的 256 项表把 `A/a/C/c/G/g/T/t/U/u` 转成 2-bit 编码，避免每个碱基做大小写转换和多分支匹配。 | 非 A/C/G/T/U 的字符仍会中断该 k-mer；与原规则一致。 |
 | 无取模采样扫描 | `KmerIndex::collect_hits`（`k <= 32`） | 用单调递增的 `next_probe` 记录下一个 `0, step, 2*step...` 采样起点，替代热循环里的 `start % step == 0`。 | 仍检查相同的全局起点，并始终补查 read 尾端 k-mer；`N` 或其他非标准碱基不会重置采样坐标。 |
 | `AHashMap` k-mer 索引 | `KmerStore` | 仅将内存中的 k-mer 到 locus 命中表从标准 `HashMap` 改为 `AHashMap`，减少哈希查询成本。 | 现有 v2 缓存仍可读取，缓存结构未改变；重新生成时条目排列可能不同，因此不承诺缓存二进制逐字节一致。哈希表的迭代顺序不参与筛选结果。 |
+| 按输出模式保留 FASTQ 文本行 | `SequenceReader`、`Record` | 默认 GM2（`-m 5`）和只扫描（`-m 3`）只保留序列与质量值；跳过后续不会使用的 header、`+` 行和规范化文本副本。 | 文本输出模式 `-m 0/1/4` 仍完整保留并写出所有 FASTQ/FASTA 行；筛选判定和 GM2 编码不变。 |
 
-长 k-mer 路径（`k > 32`）没有改动。默认 UCE 设置通常为 `k=31`，因此上述前两项覆盖常用路径。
+默认 UCE 设置通常为 `k=31`。因此 DNA 查表和无取模扫描覆盖常用短 k-mer 路径；按输出模式保留文本行适用于所有 k-mer 长度。
 
 ## 实测结果
 
-基准使用 Li et al. UCE 数据中的 DK40（`SRR29729138`）target-capture 样本。输入为 `fastp` 质控后的双端 reads；参考为 Bivalve 2k UCE probe loci；参数为 `k=31`、`step=4`。为使不同版本可重复比较，运行限制为前 1,000,000 个 read pairs。
+基准使用 Li et al. UCE 数据中的 DK40（`SRR29729138`）target-capture 样本。输入为 `fastp` 质控后的双端 reads，参考为 Bivalve 2k UCE probe loci，参数为 `k=31`、`step=4`；每次运行最多处理前 1,000,000 个 read pairs。
 
-仅扫描（`-m 3`）的三次运行平均 wall time：
+### 仅扫描
+
+以下为仅扫描模式（`-m 3`）的三次运行平均 wall time：
 
 | 实现 | 平均时间 | 相对原始 Rust MainFilter |
 | --- | ---: | ---: |
 | 原始 `std::HashMap` | 5.15 s | 基线 |
 | 无取模采样 | 5.00 s | 约快 2.9% |
 | 加 DNA 查表 | 3.60 s | 约快 30.2% |
-| 加 `AHashMap`（当前） | 3.07 s | 约快 40.5% |
+| 加 `AHashMap`（未含低分配读取） | 3.07 s | 约快 40.5% |
 
-在实际筛选输出模式（`-m 5`）下，当前实现与改动前实现产生的 4,466 个 GM2 文件以及 `ref_reads_count_dict.txt` 均逐字节一致。该比较证明本次改动没有改变此数据、此参数组合下的输出；它不是对所有测序策略或所有参数的生物学等价性证明。
+### 默认 GM2 输出
 
-该基准是 **target capture**，不能外推成 genome-skimming 的性能承诺。后者应另选有代表性的样本，以相同参考、k 和 step 进行输出逐字节比较和至少三次计时。
+在默认输出模式（`-m 5`）下，低分配读取将过滤阶段从 3.65–3.73 s 降至 3.39 s，约快 7–9%。旧版与候选版生成的 4,466 个 GM2 文件及 `ref_reads_count_dict.txt` 均逐字节一致。
+
+这证明该改动在此输入、参数和输出模式下保持结果不变；它不构成对所有测序策略、参考库或参数组合的生物学等价性声明。
+
+### 解释边界
+
+上述数据来自 **target capture**，不能外推为 genome-skimming 的性能承诺。对 genome-skimming，应选取有代表性的样本，在相同参考、`k` 和 `step` 下进行至少三次计时，并逐字节比较每个输出文件。
 
 ## 明确未采用的方案
 
@@ -40,7 +49,7 @@
 | 改大 `step` | 不属于性能优化 | 会改变采样密度和潜在检出率，必须用 UCE recovery/准确性验证决定，而不能只看运行时间。 |
 | SSHash/GGCAT 重构 | 暂不采用 | 这不是简单替换哈希表：需要静态 k-mer ID 到 locus posting 的新索引和缓存格式，应在确认索引查询仍是主瓶颈后独立设计和验证。 |
 
-## 维护与复核
+## 修改后的验证要求
 
 修改 `MainFilterNew` 后，至少执行：
 
@@ -50,7 +59,7 @@ cargo clippy --manifest-path rust/main_filter_new/Cargo.toml -- -D warnings
 cargo build --release --manifest-path rust/main_filter_new/Cargo.toml
 ```
 
-涉及筛选逻辑、k-mer 编码、缓存或输出路径时，还应选择固定的真实双端样本，分别运行旧二进制和候选二进制，并比较每个 locus 输出及 `ref_reads_count_dict.txt`：
+若改动涉及筛选逻辑、k-mer 编码、缓存或输出路径，还必须用固定的真实双端样本分别运行旧二进制与候选二进制，并比较每个 locus 输出及 `ref_reads_count_dict.txt`：
 
 ```
 diff -qr old_run/filtered_pe new_run/filtered_pe
