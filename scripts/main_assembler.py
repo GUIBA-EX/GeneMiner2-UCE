@@ -1247,7 +1247,7 @@ if __name__ == '__main__':
     pars.add_argument('-cov_min', metavar='<int>', type=int, help='''min coverage''', required=False, default=0)
     pars.add_argument('-sb', '--soft_boundary', metavar='<int>', type=int, help='''soft boundary，default = [0], -1时为切片长度的一半''', required=False, default=0)
     pars.add_argument('-p', '--processes', metavar='<int>', type=int, help='Number of processes for multiprocessing', default= 1)#max(multiprocessing.cpu_count()-1,2))
-    pars.add_argument('--assembly-mode', choices=('reference', 'uce'), default='reference', help='Assembly mode')
+    pars.add_argument('--assembly-mode', choices=('original', 'uce'), default='original', help='Assembly mode')
     pars.add_argument('--uce-side-candidates', dest='uce_side_candidates', metavar='<int>', type=int, default=8, help='''number of one-sided branch candidates to combine in UCE mode''')
     pars.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path strategy: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration')
     pars.add_argument('--uce-backbone-lookahead', dest='uce_backbone_lookahead', metavar='<int>', type=int, default=24, help='bounded greedy look-ahead per UCE backbone branch (default = 24)')
@@ -1258,6 +1258,8 @@ if __name__ == '__main__':
     pars.add_argument('--uce-max-depth-ratio', dest='uce_max_depth_ratio', metavar='<float>', type=float, default=0, help='''optional maximum kmer max/median depth ratio for UCE contigs; 0 disables''')
     pars.add_argument('--assembler-reference-cache-dir', dest='assembler_reference_cache_dir', metavar='<str>', default=None, help='''optional directory for cached assembler reference k-mer dictionaries''')
     args = pars.parse_args()
+    if args.assembly_mode == 'original':
+        args.assembly_mode = 'reference'
     args.uce_side_candidates = max(args.uce_side_candidates, 3)
     args.uce_backbone_lookahead = max(args.uce_backbone_lookahead, 1)
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)

@@ -115,7 +115,7 @@ class CliSmokeTests(unittest.TestCase):
         args = SimpleNamespace(
             o="out", r="refs", p=1, kf=21, step_size=4,
             reuse_reference_cache=False, reference_cache_dir=None,
-            uce_rescue_reads=False, assembly_mode="reference", soft_boundary="auto",
+            uce_rescue_reads=False, assembly_mode="original", soft_boundary="auto",
             assembler_implementation="auto", ka=39, min_ka=21, max_ka=39,
             error_threshold=2, search_depth=4096, min_coverage=0,
             uce_side_candidates=8, uce_max_contig_length=0,
@@ -144,7 +144,7 @@ class CliSmokeTests(unittest.TestCase):
         args = SimpleNamespace(
             o="out", r="refs", p=1, kf=21, step_size=4,
             reuse_reference_cache=True, reference_cache_dir="/cache",
-            uce_rescue_reads=False, assembly_mode="reference", soft_boundary="auto",
+            uce_rescue_reads=False, assembly_mode="original", soft_boundary="auto",
             assembler_implementation="original-rust", ka=39, min_ka=21, max_ka=39,
             error_threshold=2, search_depth=4096, min_coverage=0,
             uce_side_candidates=8, uce_max_contig_length=0,

@@ -34,15 +34,13 @@
 
 **assembly_graphs**：仅在使用 `--assembler-graph-format gfa`、`dot` 或 `both` 时生成的逐 locus 压缩组装图；默认不生成。
 
-## ITS2 专用输出
+## Marker profiling 输出
 
-**its2_assembly_summary.csv**：ITS2 模式的逐 locus 汇总表，记录组装状态、接受状态、代表序列长度、reads 支持、深度指标和候选数。
+**marker_profile/marker_group_abundance.tsv**：每个 group 的相对 marker 信号、检出状态和支持证据计数。比例不是经过校准的细胞或个体比例。
 
-**results/<locus>.fasta**：该 locus 所有已接受 ITS2 变体，而不只是单条最佳序列。标题包含 fragment、paired-fragment、diagnostic-fragment、EM support 和 abundance。
+**marker_profile/marker_qc.tsv**：该样本的伪比对、target/decoy、证据、mSWEEP 和参数汇总。计数单位是单条 FASTA/FASTQ query record。
 
-**results/<locus>.its2_support.tsv**：已接受和低支持候选的明细表，包含 equivalence members、总 fragment support、paired support、diagnostic support、EM support、EM abundance 和 `PASS`、`EQUIVALENCE_GROUP` 或 `LOW_SUPPORT` 状态。
-
-**contigs_all/<locus>.fasta**：所有已接受 ITS2 变体；`contigs_all_low/<locus>.fasta` 保存未达到 fragment support 标准的候选。
+**marker_profile/marker_reference_metadata.tsv**：本次 profiling 所用的 reference ID、Themisto color 与 reporting group 映射。
 
 ## 合并输出
 

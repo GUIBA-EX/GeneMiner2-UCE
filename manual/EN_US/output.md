@@ -12,7 +12,7 @@ Each sample listed in the input table gets a folder under the output directory.
 
 **large_files**: Reads that exceed the configured depth or file-size limits during re-filtering. This folder appears only when such files are produced.
 
-**results**: Primary assembled contigs. Reference and UCE modes write one selected contig per locus; in ITS2 mode, `<locus>.fasta` may contain multiple accepted variants.
+**results**: Primary assembled contigs. Reference and UCE modes write one selected contig per locus.
 
 **contigs_all**: Candidate assembly contigs considered by the assembler.
 
@@ -34,15 +34,13 @@ Each sample listed in the input table gets a folder under the output directory.
 
 **assembly_graphs**: Per-locus compact assembly graphs generated only with `--assembler-graph-format gfa`, `dot`, or `both`; no graphs are written by default.
 
-## ITS2-specific outputs
+## Marker profiling outputs
 
-**its2_assembly_summary.csv**: Per-locus ITS2 summary recording assembly and acceptance status, representative length, read support, depth metrics, and candidate count.
+**marker_profile/marker_group_abundance.tsv**: Per-group relative marker-signal estimates, detection state, and supporting evidence counts. These proportions are not calibrated cell or organism proportions.
 
-**results/<locus>.fasta**: Every accepted ITS2 variant for the locus rather than only one best sequence. Headers include fragment, paired-fragment, diagnostic-fragment, EM support, and abundance fields.
+**marker_profile/marker_qc.tsv**: Pseudoalignment, target/decoy, evidence, mSWEEP, and parameter summary for the sample. Counts are individual FASTA/FASTQ query records.
 
-**results/<locus>.its2_support.tsv**: Accepted and low-support candidate details, including equivalence members, total fragment support, paired support, diagnostic support, EM support, EM abundance, and `PASS`, `EQUIVALENCE_GROUP`, or `LOW_SUPPORT` status.
-
-**contigs_all/<locus>.fasta**: All accepted ITS2 variants; `contigs_all_low/<locus>.fasta` retains candidates below the fragment-support threshold.
+**marker_profile/marker_reference_metadata.tsv**: Reference IDs, Themisto colors, and reporting-group assignments used for the profile.
 
 ## Combined outputs
 

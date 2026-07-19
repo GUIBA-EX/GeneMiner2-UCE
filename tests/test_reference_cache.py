@@ -97,7 +97,7 @@ class ReferenceCacheTests(unittest.TestCase):
                 reuse_reference_cache=True,
                 reference_cache_dir=None,
                 uce_rescue_reads=False,
-                assembly_mode="reference",
+                assembly_mode="original",
                 p=1,
                 soft_boundary="auto",
             )

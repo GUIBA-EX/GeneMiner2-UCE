@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.1 — Marker profiling hardening and mode clarification
+
+- Made marker profiling fully group-map driven: dynamic reporting groups, exact reference-to-group coverage checks, content-addressed Themisto cache keys, safer output handling, and expanded QC.
+- Made `--profile-kmer-size` apply consistently to both GeneMiner2 recruitment and Themisto pseudoalignment; compute immutable profiling cache inputs once per run rather than once per sample.
+- Renamed the public conventional assembly mode from `reference` to `original`. `original` is for exon, SCO, and nuclear or mitochondrial marker recovery; `uce` is for UCE recovery from genome-skimming or target-capture data.
+- Updated Chinese and English READMEs, manuals, output descriptions, and assembler documentation for profiling and the `original` / `uce` split.
+
 
 ## v0.8 — Original-Rust default and assembler validation
 

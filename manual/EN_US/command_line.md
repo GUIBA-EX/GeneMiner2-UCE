@@ -99,6 +99,7 @@ One or more subcommands can be listed in execution order:
 | Subcommand | Function |
 | --- | --- |
 | `filter` | Recruit reads using reference k-mers |
+| `profiling` | Recruit marker reads once and estimate group-level marker signal without assembly |
 | `refilter` | Refine per-locus read assignment and filtering |
 | `assemble` | Assemble target sequences with the wDBG assembler |
 | `population` | Build a cohort UCE reference and generate SNP, PCA, and ADMIXTURE results |
@@ -110,9 +111,9 @@ One or more subcommands can be listed in execution order:
 
 When no subcommand is given:
 
-- `--assembly-mode reference` (default) runs `filter refilter assemble trim combine tree`;
-- `--assembly-mode uce` runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval;
-- `--assembly-mode its2` currently inherits the reference-mode default chain. Because standard `combine` reads only the first sequence per locus, ITS2 analyses should explicitly request `filter refilter assemble` to retain every candidate.
+- `--assembly-mode original` (default) is for reference-guided recovery of exons, SCOs, and nuclear or mitochondrial markers; it runs `filter refilter assemble trim combine tree`;
+- `--assembly-mode uce` is for UCE recovery from genome skimming or target capture; it runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval;
+- `profiling` runs one recruitment step followed by Themisto pseudoalignment and mSWEEP group profiling; it does not assemble or run downstream phylogenetic steps.
 
 Default reference-mode example:
 
@@ -124,7 +125,7 @@ cli/geneminer2 \
   -p 8
 ```
 
-## 4. UCE and ITS2 assembly
+## 4. UCE assembly and marker profiling
 
 ### 4.1 UCE
 
@@ -150,19 +151,19 @@ This combines the linear-extension idea used by MaSuRCA with SPAdes-style local 
 
 After relaxing `-sb`, `-e`, or the assembly k-mer range, inspect `uce_assembly_summary.csv`, `uce_rescue_summary.csv`, and downstream alignments. See the [output guide](output.md) for details.
 
-### 4.2 ITS2
+### 4.2 Marker profiling
 
-ITS2 mode targets capture data in which one locus may contain several genuine variants. It requires the Rust assembler and fixes the filtering, refiltering, and assembly k-mer size at `21`. Refiltering retains paired reads; the assembler then measures total fragment support, support from both mates, diagnostic fragments compatible with only one candidate, and EM-estimated relative abundance.
+`profiling` is a read-level workflow for extracting a marker from WGS or metagenomic reads without assembly. It first performs one GeneMiner2 k-mer recruitment, then pseudoaligns recruited query records with Themisto and estimates group-level relative marker signal with mSWEEP.
 
-Sequences that the reads cannot distinguish remain in an equivalence group instead of being forced into one variant. Each sample receives `its2_assembly_summary.csv`; `results/` contains multiple accepted sequences per locus and a `<locus>.its2_support.tsv` table. The current `combine` stage targets one sequence per locus and does not retain these variants, so use:
+Provide exactly one `.fa` or `.fasta` marker reference with `-r` and a required two-column TSV, `reference_id<TAB>group`, with `--profile-group-map`. The reference ID is the first whitespace-delimited FASTA-header field; every reference must map to exactly one reporting group. `--profile-kmer-size` sets the same odd k-mer size (15–31) for both recruitment and Themisto.
 
 ```bash
-cli/geneminer2 filter refilter assemble \
-  -f samples.tsv -r references -o output \
-  -p 8 --assembly-mode its2
+cli/geneminer2 profiling \
+  -f samples.tsv -r marker_reference.fasta \
+  --profile-group-map marker_groups.tsv -o output -p 8
 ```
 
-ITS2 mode cannot use `--assembler-implementation original` or `original-rust`, and it does not fall back when the Rust assembler is unavailable or fails.
+The main output is `<sample>/marker_profile/marker_group_abundance.tsv`, accompanied by `marker_qc.tsv` and `marker_reference_metadata.tsv`. Proportions are uncalibrated marker-signal proportions rather than cell or organism proportions; evidence counts are read/query records, not paired fragments.
 
 ## 5. Population-genetic analysis
 
@@ -275,11 +276,11 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-sb, --soft-boundary VALUE` | Integer, `auto`, or `unlimited`; default `auto` |
 | `-i, --search-depth INT` | Search depth; default `4096` |
 | `--min-coverage INT` | Minimum contig read depth; default `0` |
-| `--assembler-implementation MODE` | `auto` (default) uses `original-rust` in reference mode and `uce-rust` in UCE mode; ITS2 uses its dedicated Rust profiling workflow; `uce-rust` selects the UCE-oriented Rust assembler; `original` selects upstream Python; `original-rust` selects the deterministic single-thread Rust compatibility implementation; `original` and `original-rust` are reference-only; UCE and ITS2 never fall back to Python |
+| `--assembler-implementation MODE` | `auto` (default) uses `original-rust` in original mode and `uce-rust` in UCE mode; `uce-rust` selects the UCE-oriented Rust assembler; `original` selects upstream Python; `original-rust` selects the deterministic single-thread Rust compatibility implementation; `original` and `original-rust` are original-only; UCE never falls back to Python |
 | `--assembler-read-chunk-size INT` | Reads loaded per Rust assembler batch; default `8192` |
 | `--assembler-kmer-count-threads INT` | K-mer sorting/counting workers per locus; default `0` selects automatically |
 | `--assembler-graph-format MODE` | Optional graph output: `none` (default), `gfa`, `dot`, or `both` |
-| `--assembly-mode MODE` | `reference`, `uce`, or `its2`; default `reference`; ITS2 fixes k=21 and retains multiple candidates |
+| `--assembly-mode MODE` | `reference` or `uce`; default `reference` |
 | `--uce-path-strategy MODE` | `backbone` (default) commits one path at bubbles without backtracking; `search` preserves legacy branch enumeration |
 | `--uce-backbone-lookahead INT` | Linear look-ahead steps per backbone bubble; default `24`, minimum `1` |
 | `--uce-side-candidates INT` | Used only with `--uce-path-strategy search`; default `8`, minimum `3` |

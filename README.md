@@ -20,10 +20,10 @@ GeneMiner2-UCE 是 GeneMiner2 专门给 UCE 扩出来的版本，主要收拾 ta
 
 | 模式 | 啥数据适合 | 最后能整出啥 |
 | --- | --- | --- |
-| `--assembly-mode reference` | genome skimming、常规基因恢复 | 参考引导 contig；默认流程会按参考裁切 |
-| `--assembly-mode uce` | UCE target capture | UCE core 和有 reads 支持的 flanking sequence |
+| `--assembly-mode original` | exon、SCO 及核/线粒体 marker | 参考引导 contig；默认流程会按参考裁切 |
+| `--assembly-mode uce` | genome skimming 或 target capture 中的 UCE | UCE core 和有 reads 支持的 flanking sequence |
 | `profiling` 子命令 | WGS / metagenome 中任意扩增子 marker | marker group 的相对信号、检出状态和 QC |
-| `population` 子命令 | 二倍体 UCE 群体重测序或 target capture | 公共伪参考、联合 SNP、PCA 和 ADMIXTURE 面板 |
+| `population` 子命令 | 多个已完成 UCE 组装的样本 | 公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入 |
 
 ## 咋整进你那系统里？
 
@@ -78,6 +78,18 @@ cli/geneminer2 \
 
 剩下的目录和文件都在[输出文件说明](manual/ZH_CN/output.md)里，找不着就上那儿翻。
 
+## Original 模式咋回事
+
+`original` 是默认组装模式，面向 exon、SCO 以及核或线粒体 marker 的参考引导恢复；不写 `--assembly-mode` 时即使用它。默认后端是 `original-rust`。如需与固定的上游 GeneMiner2 Python 原版逐项对照，显式加上 `--assembler-implementation original`。`uce-rust` 是 UCE 定向后端；常规 UCE 恢复应使用 `--assembly-mode uce`。
+
+```bash
+cli/geneminer2 \
+  -f samples.tsv -r references -o output -p 8 \
+  --assembly-mode original
+```
+
+`original` 是工作流模式；`--assembler-implementation original` 是该模式下可选的 Python 后端，两者不要混淆。
+
 ## UCE 模式咋回事
 
 UCE 模式会松开短 probe 边界对组装的限制，默认跳过参考引导的 `trim`，优先留下延伸更长、同时还有 reads 支持的候选。refilter 的时候，只要一对儿 mate 里有一个通过 locus 过滤，整对 paired-end reads 都留下，不能把有用的侧翼信息半道扔了。
@@ -88,22 +100,23 @@ UCE 模式会松开短 probe 边界对组装的限制，默认跳过参考引导
 
 `profiling` 是**读段定量模式，不组装**。它针对任意扩增子 marker：先用 GeneMiner2 做一次 k-mer 招募，再将招募 reads 用 Themisto 伪比对至 marker 参考库，最后由 mSWEEP 从共享命中中估计各 reference group 的相对信号。不会运行 `refilter`、`assemble`、`combine` 或 `tree`。
 
-参考库直接通过 `-r` 提供一个 `.fasta` 或 `.fa` 文件；该文件中的每条序列是一个 Themisto color。运行环境需提供 `themisto` 和 `mSWEEP`，可通过 `--profile-themisto`、`--profile-msweep` 显式指定路径。
+参考库直接通过 `-r` 提供一个 `.fasta` 或 `.fa` 文件；同时必须用 `--profile-group-map` 提供两列 TSV：`reference_id<TAB>group`。`reference_id` 是 FASTA 标题的第一个空白前字段，且每条参考序列都必须映射到一个 group；同一 ID 可重复但 group 必须一致。运行环境需提供 `themisto` 和 `mSWEEP`，可通过 `--profile-themisto`、`--profile-msweep` 显式指定路径。
 
 ```bash
 cli/geneminer2 profiling \
   -f samples.tsv \
   -r marker_reference.fasta \
+  --profile-group-map marker_groups.tsv \
   -o output \
   -p 8 \
   --profile-decoy non_target_sequences.fasta
 ```
 
-每个样本的主结果为 `<output>/<sample>/marker_profile/marker_group_abundance.tsv`；`marker_qc.tsv` 记录伪比对和 mSWEEP 统计，`marker_reference_metadata.tsv` 记录 reference color 与 group。`relative_proportion` 是 marker 信号的相对比例，不等同于生物体细胞或个体比例。
+每个样本的主结果为 `<output>/<sample>/marker_profile/marker_group_abundance.tsv`；`marker_qc.tsv` 记录伪比对和 mSWEEP 统计，`marker_reference_metadata.tsv` 记录 reference color 与 group。`evidence_queries` 与 `exclusive_queries` 按单条 FASTA/FASTQ query 记录计数，不是 paired fragment 数。`relative_proportion` 是经过最低独占证据门槛后重新归一化的、尚未校准的 marker 信号比例，不等同于生物体细胞或个体比例。
 
 ## Population 模式咋回事
 
-`population` 会拿已经接受的 UCE contig 和原始 reads，整出一套口径一致的未定相二倍体 SNP 矩阵。它先生成或者复用公共伪参考，再把所有样本统一 mapping、联合检测变异，最后给出 all-SNP、每个 UCE 一个 SNP 和 LD-pruned 三套面板。
+`population` 拿多个已完成 UCE 组装的样本及其原始 reads，整出公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入。它先生成或者复用公共伪参考，再把所有样本统一 mapping、联合检测变异，最后给出 all-SNP、每个 UCE 一个 SNP 和 LD-pruned 三套面板。
 
 UCE 已经组装完了，就这么跑：
 
@@ -122,12 +135,12 @@ cli/geneminer2 population \
 
 ## 实现和文档都搁哪儿
 
-默认会构建 Rust MainFilter、Refilter、Assembler、Population、可选的 `main_assembler-original-rust` 兼容版，还有 Rust 辅助工具。`reference` 模式搁默认的 `auto` 下走 `original-rust`，保留原版逻辑还跑得利索；想跟固定的[上游 GeneMiner2 原版](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py)严格对照，就写 `--assembler-implementation original`；普通基因恢复想试 UCE 那套 Rust，写 `--assembler-implementation uce-rust`；再加 `--reuse-reference-cache` 时，它会复用带格式版本、实现版本、k 和参考文件指纹的二进制 k-mer cache，坏了或过期了就自动重建。`uce` 和 `its2` 模式只认 Rust，Rust 不可用或运行失败就直接报错，不再往 Python 回退。`original` 和 `original-rust` 都只给 `reference` 用。主 CLI 编排器和 consensus 程序还继续用 Python，这块儿没硬改。
+默认构建包含 Rust MainFilter、Refilter、Assembler、Population、marker profiling 辅助工具、`original-rust` 兼容后端和其他 Rust 辅助工具。`--assembly-mode original` 默认选择 `original-rust`；`--assembler-implementation original` 选择固定的[上游 GeneMiner2 Python 原版](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py)，用于严格对照；`uce-rust` 是 UCE 定向后端，常规 UCE 恢复应使用 `--assembly-mode uce`。`--assembly-mode uce` 只使用 `uce-rust`，程序不可用或失败时直接报错，不会回退到 Python。`--reuse-reference-cache` 为 `original-rust` 复用带格式、实现版本、k 和参考文件指纹验证的二进制 k-mer cache；损坏或过期时自动重建。主 CLI 编排器和 consensus 程序仍使用 Python。
 
 - [中文命令行指南](manual/ZH_CN/command_line.md)
 - [中文输出文件说明](manual/ZH_CN/output.md)
 - [UCE 流程说明](docs/uce-workflow_ZH.md)
-- [新旧 Assembler 算法与 Python-Rust 对照](docs/assembler-algorithm_ZH.md)
+- [Assembler 路径与算法说明](docs/assembler-algorithm_ZH.md)
 - [Population 流程说明](docs/population_ZH.md)
 - [MainFilter 性能与兼容性说明](docs/mainfilter-performance.md)
 - [版本更新记录](CHANGELOG.md)

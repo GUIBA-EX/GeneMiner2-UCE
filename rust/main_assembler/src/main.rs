@@ -38,9 +38,9 @@ Assembly:
   -sb, --soft_boundary INT        Reference soft boundary; -1 uses half slice (default: 0)
   -p, --processes INT             Parallel locus workers (default: 1)
 
-UCE:
-  --assembly-mode reference|uce|its2
-                                   Assembly mode (default: reference)
+Assembly mode:
+  --assembly-mode original|uce
+                                   Assembly mode (default: original)
   --uce-path-strategy search|backbone
                                    UCE path handling (default: backbone)
   --uce-backbone-lookahead INT    Bounded branch look-ahead (default: 24)
@@ -142,9 +142,8 @@ fn parse_args() -> Result<Args, String> {
             "-p" | "--processes" => args.threads = parse_number(&arguments, &mut index, flag)?,
             "--assembly-mode" => {
                 args.assembly_mode = match next_value(&arguments, &mut index, flag)?.as_str() {
-                    "reference" => AssemblyMode::Reference,
+                    "original" => AssemblyMode::Reference,
                     "uce" => AssemblyMode::Uce,
-                    "its2" => AssemblyMode::Its2,
                     value => return Err(format!("invalid --assembly-mode: {value}")),
                 }
             }

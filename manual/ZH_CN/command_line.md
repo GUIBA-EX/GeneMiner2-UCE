@@ -99,6 +99,7 @@ references/
 | 子命令 | 功能 |
 | --- | --- |
 | `filter` | 根据参考 k-mer 从原始数据招募 reads |
+| `profiling` | 一次招募 marker reads，免组装估计 group-level marker 信号 |
 | `refilter` | 进一步分配和过滤每个 locus 的 reads |
 | `assemble` | 使用 wDBG 组装目标序列 |
 | `population` | 构建公共 UCE 参考并生成群体 SNP、PCA 和 ADMIXTURE 结果 |
@@ -110,9 +111,9 @@ references/
 
 不显式指定子命令时：
 
-- `--assembly-mode reference`（默认）运行 `filter refilter assemble trim combine tree`；
-- `--assembly-mode uce` 运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围；
-- `--assembly-mode its2` 当前仍沿用 reference 的默认命令链。由于常规 `combine` 只读取每个 locus 的第一条序列，ITS2 分析应显式指定 `filter refilter assemble`，保留全部候选。
+- `--assembly-mode original`（默认）用于 exon、SCO 及核/线粒体 marker 的参考引导恢复，运行 `filter refilter assemble trim combine tree`；
+- `--assembly-mode uce` 用于从 genome skimming 或 target capture 恢复 UCE，运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围；
+- `profiling` 先做一次招募，再由 Themisto 伪比对和 mSWEEP 完成 group profiling；不组装，也不运行下游系统发育步骤。
 
 默认参考模式示例：
 
@@ -124,7 +125,7 @@ cli/geneminer2 \
   -p 8
 ```
 
-## 4. UCE 与 ITS2 组装
+## 4. UCE 组装与 marker profiling
 
 ### 4.1 UCE
 
@@ -146,25 +147,25 @@ cli/geneminer2 \
 
 该策略借鉴 MaSuRCA 的唯一线性延伸和 SPAdes 的局部 bulge 选择思路，但仍保留 GeneMiner2 的 read 支持与深度 guardrails。若需与旧算法做 A/B 对照，使用 `--uce-path-strategy search`；此时 `--uce-side-candidates` 才生效。
 
-详细算法对照、三个参考 assembler 的具体贡献及未采用部分见[新旧 Assembler 算法说明](../../docs/assembler-algorithm_ZH.md)。
+当前 assembler 路径、算法取舍和验证重点见[Assembler 说明](../../docs/assembler-algorithm_ZH.md)。
 
 `--uce-rescue-reads` 在第一轮组装后，以初步 contig 和原始参考再次招募 raw reads，并只执行一轮 re-filtering 和 assembly。rescue 最多并行处理 4 个样本、每个样本最多使用 4 个线程，并受 `-p` 总量约束。
 
 建议在放宽 `-sb`、`-e` 或 assembly k-mer 范围后检查 `uce_assembly_summary.csv`、`uce_rescue_summary.csv` 和下游 alignment。详细输出见[输出文件说明](output.md)。
 
-### 4.2 ITS2
+### 4.2 Marker profiling
 
-ITS2 模式用于同一 locus 可能存在多个真实变体的 target-capture 数据。它只使用 Rust assembler，并将 filter、refilter 和 assembly k-mer 固定为 `21`。refilter 会保留成对 reads；assembler 再根据每个 fragment 与候选序列的兼容性统计总 fragment support、双端同时支持、仅支持单一候选的 diagnostic support，以及 EM 估计的相对丰度。
+`profiling` 是从 WGS 或 metagenome reads 中免组装获取 marker 信息的读段级流程。它先用 GeneMiner2 做一次 k-mer 招募，再用 Themisto 对招募的 query records 做伪比对，最后以 mSWEEP 估计 group-level 的相对 marker 信号。
 
-无法由 reads 区分的序列保留为 equivalence group，而不是强行选成一个变体。每个样本会生成 `its2_assembly_summary.csv`，并在 `results/` 中为每个 locus 写入多条已接受序列和 `<locus>.its2_support.tsv`。当前 `combine` 面向每 locus 单序列的系统发育流程，不会保留这些多变体，因此建议这样运行：
+通过 `-r` 提供一个 `.fa` 或 `.fasta` marker 参考，并必须用 `--profile-group-map` 提供 `reference_id<TAB>group` 两列 TSV。reference ID 是 FASTA 标题第一个空白前字段，每条参考都必须映射到一个 reporting group。`--profile-kmer-size` 为招募和 Themisto 同时设置同一个 15–31 的奇数 k-mer。
 
 ```bash
-cli/geneminer2 filter refilter assemble \
-  -f samples.tsv -r references -o output \
-  -p 8 --assembly-mode its2
+cli/geneminer2 profiling \
+  -f samples.tsv -r marker_reference.fasta \
+  --profile-group-map marker_groups.tsv -o output -p 8
 ```
 
-ITS2 模式不能使用 `--assembler-implementation original` 或 `original-rust`，Rust assembler 不可用或失败时也不会回退。
+主结果是 `<sample>/marker_profile/marker_group_abundance.tsv`，并输出 `marker_qc.tsv` 与 `marker_reference_metadata.tsv`。比例是未校准的 marker 信号比例，不能直接当作细胞或个体比例；证据计数是单条 read/query record，并非 paired fragment。
 
 ## 5. Population 群体遗传分析
 
@@ -277,11 +278,11 @@ cli/geneminer2 stats \
 | `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
 | `-i, --search-depth INT` | 搜索深度，默认 `4096` |
 | `--min-coverage INT` | contig 最低 read depth，默认 `0` |
-| `--assembler-implementation MODE` | `auto`（默认）在 reference 模式使用 `original-rust`，在 UCE 模式使用 `uce-rust`；ITS2 使用专用 Rust profiling 流程；`uce-rust` 选择 UCE 定向的 Rust assembler；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 reference；UCE 和 ITS2 不再回退 Python |
+| `--assembler-implementation MODE` | `auto`（默认）在 reference 模式使用 `original-rust`，在 UCE 模式使用 `uce-rust`；`uce-rust` 选择 UCE 定向的 Rust assembler；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 reference；UCE 不再回退 Python |
 | `--assembler-read-chunk-size INT` | Rust assembler 每批读取的 reads 数，默认 `8192` |
 | `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
 | `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |
-| `--assembly-mode MODE` | `reference`、`uce` 或 `its2`；默认 `reference`；ITS2 固定使用 21-mer 并保留多个候选 |
+| `--assembly-mode MODE` | `reference` 或 `uce`；默认 `reference` |
 | `--uce-path-strategy MODE` | `backbone`（默认）在气泡处提交单一路径且不回溯；`search` 保留旧的分支枚举 |
 | `--uce-backbone-lookahead INT` | backbone 在每个气泡处的线性前瞻步数，默认 `24`，最小为 `1` |
 | `--uce-side-candidates INT` | 仅在 `--uce-path-strategy search` 下使用；每侧候选数默认 `8`，最小为 `3` |

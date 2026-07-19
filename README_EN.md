@@ -20,10 +20,10 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 | Mode | Suitable data | Main result |
 | --- | --- | --- |
-| `--assembly-mode reference` | Genome skimming and conventional gene recovery | Reference-guided contigs with reference trimming in the default workflow |
-| `--assembly-mode uce` | UCE target capture | UCE cores and read-supported flanking sequences |
+| `--assembly-mode original` | Exons, SCOs, and nuclear or mitochondrial markers | Reference-guided contigs with reference trimming in the default workflow |
+| `--assembly-mode uce` | UCE recovery from genome skimming or target capture | UCE cores and read-supported flanking sequences |
 | `profiling` subcommand | Any amplicon marker in WGS or metagenomic data | Relative marker-group signal, detection state, and QC |
-| `population` subcommand | Diploid UCE resequencing or target capture | Cohort pseudo-reference, joint SNPs, PCA, and ADMIXTURE panels |
+| `population` subcommand | Multiple samples with completed UCE assemblies | Cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs |
 
 ## Installation
 
@@ -78,6 +78,18 @@ Inspect these results first:
 
 See the [output guide](manual/EN_US/output.md) for the complete directory layout.
 
+## Original mode
+
+`original` is the default assembly mode for reference-guided recovery of exons, SCOs, and nuclear or mitochondrial markers; it is selected when `--assembly-mode` is omitted. Its default backend is `original-rust`. Use `--assembler-implementation original` for a strict comparison with the fixed upstream GeneMiner2 Python original. `uce-rust` is the UCE-oriented backend; use `--assembly-mode uce` for routine UCE recovery.
+
+```bash
+cli/geneminer2 \
+  -f samples.tsv -r references -o output -p 8 \
+  --assembly-mode original
+```
+
+`original` names the workflow mode, while `--assembler-implementation original` selects the optional Python backend within that mode.
+
 ## UCE mode
 
 UCE mode reduces the influence of short-probe boundaries, skips reference-guided `trim` in the default workflow, and favors longer candidates that retain read support. During refiltering, the complete paired-end fragment is retained whenever either mate passes the locus filter.
@@ -88,22 +100,23 @@ The default Rust assembler follows a backbone strategy without repeated backtrac
 
 `profiling` is a **read-level quantification workflow, not an assembler**. It supports any amplicon marker: GeneMiner2 performs one k-mer recruitment, Themisto pseudoaligns the recruited reads to the marker library, and mSWEEP estimates relative signal among reference groups that share reads. It does not run `refilter`, `assemble`, `combine`, or `tree`.
 
-Pass one `.fasta` or `.fa` marker library directly with `-r`; each reference sequence becomes a Themisto color. `themisto` and `mSWEEP` must be available, either on `PATH` or supplied via `--profile-themisto` and `--profile-msweep`.
+Pass one `.fasta` or `.fa` marker library directly with `-r`, plus a required two-column `--profile-group-map` TSV: `reference_id<TAB>group`. The reference ID is the first whitespace-delimited FASTA-header field, and every reference must map to exactly one group. `themisto` and `mSWEEP` must be available, either on `PATH` or supplied via `--profile-themisto` and `--profile-msweep`.
 
 ```bash
 cli/geneminer2 profiling \
   -f samples.tsv \
   -r marker_reference.fasta \
+  --profile-group-map marker_groups.tsv \
   -o output \
   -p 8 \
   --profile-decoy non_target_sequences.fasta
 ```
 
-The primary per-sample result is `<output>/<sample>/marker_profile/marker_group_abundance.tsv`; `marker_qc.tsv` records pseudoalignment and mSWEEP statistics, while `marker_reference_metadata.tsv` records the reference-color/group mapping. `relative_proportion` is relative marker signal, not a cell or organism proportion.
+The primary per-sample result is `<output>/<sample>/marker_profile/marker_group_abundance.tsv`; `marker_qc.tsv` records pseudoalignment and mSWEEP statistics, while `marker_reference_metadata.tsv` records the reference-color/group mapping. `evidence_queries` and `exclusive_queries` count individual FASTA/FASTQ query records, not paired fragments. `relative_proportion` is an uncalibrated marker-signal proportion renormalized after the minimum-exclusive-evidence rule; it is not a cell or organism proportion.
 
 ## Population mode
 
-`population` builds a consistent unphased diploid SNP matrix from accepted UCE contigs and the original reads. It creates or reuses a cohort pseudo-reference, maps every sample to that reference, performs joint variant calling, and emits all-SNP, one-SNP-per-UCE, and LD-pruned panels.
+`population` uses multiple samples with completed UCE assemblies and their original reads to build a cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs. It creates or reuses the pseudo-reference, maps every sample to it, performs joint variant calling, and emits all-SNP, one-SNP-per-UCE, and LD-pruned panels.
 
 After UCE assembly is complete, run:
 
@@ -122,12 +135,12 @@ Runtime dependencies are minibwa, samtools, bcftools, and PLINK 1.9; ADMIXTURE i
 
 ## Implementation and documentation
 
-The default build includes the Rust MainFilter, Refilter, Assembler, Population workflow, the optional `main_assembler-original-rust` compatibility binary, and Rust helper tools. In `reference` mode, `--assembler-implementation auto` uses `original-rust`, the deterministic single-thread Rust port of the original reference algorithm. Choose `original` for the byte-identical [upstream GeneMiner2 assembler](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py), or `uce-rust` to test the UCE-oriented Rust assembler. With `--reuse-reference-cache`, `original-rust` reuses a binary k-mer cache validated by format version, implementation version, k, and reference-file identity; stale or corrupt files are rebuilt automatically. UCE and ITS2 are Rust-only: an unavailable or failed Rust assembler is reported as an error with no Python fallback. `original` and `original-rust` are reference-only. The main CLI orchestrator and consensus program remain in Python.
+The default build includes the Rust MainFilter, Refilter, Assembler, Population workflow, marker-profiling helper, the `original-rust` compatibility backend, and Rust helper tools. `--assembly-mode original` uses `original-rust` by default; `--assembler-implementation original` selects the fixed [upstream GeneMiner2 Python assembler](https://github.com/sculab/GeneMiner2/blob/36e06feeb99654bdb87f45d4cde225d8c3e311d0/scripts/main_assembler.py) for strict comparison; `--assembler-implementation uce-rust` can test the UCE-oriented backend in original mode. `--assembly-mode uce` uses only `uce-rust`: an unavailable or failed Rust assembler is reported as an error with no Python fallback. With `--reuse-reference-cache`, `original-rust` reuses a binary k-mer cache validated by format version, implementation version, k, and reference-file identity; stale or corrupt files are rebuilt automatically. The main CLI orchestrator and consensus program remain in Python.
 
 - [Command-line guide](manual/EN_US/command_line.md)
 - [Output-file guide](manual/EN_US/output.md)
 - [UCE workflow guide](docs/uce-workflow_EN.md)
-- [Assembler algorithm and Python-Rust comparison (Chinese)](docs/assembler-algorithm_ZH.md)
+- [Assembler paths and algorithms (Chinese)](docs/assembler-algorithm_ZH.md)
 - [Population workflow guide](docs/population_EN.md)
 - [MainFilter performance and compatibility note](docs/mainfilter-performance.md)
 - [Release history](CHANGELOG.md)
