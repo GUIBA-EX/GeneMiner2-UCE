@@ -36,6 +36,9 @@ struct A {
     annotation_min_identity: f64,
     annotation_min_coverage: f64,
     annotation_min_delta: f64,
+    assemble_min_kmer_count: u32,
+    assemble_branch_ratio: f64,
+    assemble_max_fragments: usize,
 }
 fn val(v: &[String], i: &mut usize, n: &str) -> R<String> {
     *i += 1;
@@ -57,11 +60,14 @@ fn args() -> R<A> {
         annotation_min_identity: 0.80,
         annotation_min_coverage: 0.60,
         annotation_min_delta: 0.10,
+        assemble_min_kmer_count: 3,
+        assemble_branch_ratio: 1.5,
+        assemble_max_fragments: 3,
         ..A::default()
     };
     let mut i = 0;
     while i < v.len() {
-        match v[i].as_str(){"--samples"=>a.samples=val(&v,&mut i,"--samples")?.into(),"--output"=>a.out=val(&v,&mut i,"--output")?.into(),"--stage"=>a.stage=val(&v,&mut i,"--stage")?,"--kmer"=>a.k=val(&v,&mut i,"--kmer")?.parse().map_err(|_|"bad --kmer")?,"--min-kmer-count"=>a.min=val(&v,&mut i,"--min-kmer-count")?.parse().map_err(|_|"bad --min-kmer-count")?,"--catalog-pairs"=>a.cap=val(&v,&mut i,"--catalog-pairs")?.parse().map_err(|_|"bad --catalog-pairs")?,"--threads"=>a.threads=val(&v,&mut i,"--threads")?.parse().map_err(|_|"bad --threads")?,"--read-ledger"=>a.ledger=Some(val(&v,&mut i,"--read-ledger")?.into()),"--te-library"=>a.library=Some(val(&v,&mut i,"--te-library")?.into()),"--mainfilter"=>a.mainfilter=val(&v,&mut i,"--mainfilter")?,"--annotation-min-fragment"=>a.annotation_min_fragment=val(&v,&mut i,"--annotation-min-fragment")?.parse().map_err(|_|"bad --annotation-min-fragment")?,"--annotation-max-fragment"=>a.annotation_max_fragment=val(&v,&mut i,"--annotation-max-fragment")?.parse().map_err(|_|"bad --annotation-max-fragment")?,"--annotation-min-support"=>a.annotation_min_support=val(&v,&mut i,"--annotation-min-support")?.parse().map_err(|_|"bad --annotation-min-support")?,"--annotation-min-identity"=>a.annotation_min_identity=val(&v,&mut i,"--annotation-min-identity")?.parse().map_err(|_|"bad --annotation-min-identity")?,"--annotation-min-coverage"=>a.annotation_min_coverage=val(&v,&mut i,"--annotation-min-coverage")?.parse().map_err(|_|"bad --annotation-min-coverage")?,"--annotation-min-delta"=>a.annotation_min_delta=val(&v,&mut i,"--annotation-min-delta")?.parse().map_err(|_|"bad --annotation-min-delta")?,"-h"|"--help"=>return Err("Usage: main_repeat --samples taxa.tsv --output DIR --mainfilter PATH [--stage all|discover|curate|annotate|quantify]".into()),x=>return Err(format!("unknown option {x}"))};
+        match v[i].as_str(){"--samples"=>a.samples=val(&v,&mut i,"--samples")?.into(),"--output"=>a.out=val(&v,&mut i,"--output")?.into(),"--stage"=>a.stage=val(&v,&mut i,"--stage")?,"--kmer"=>a.k=val(&v,&mut i,"--kmer")?.parse().map_err(|_|"bad --kmer")?,"--min-kmer-count"=>a.min=val(&v,&mut i,"--min-kmer-count")?.parse().map_err(|_|"bad --min-kmer-count")?,"--catalog-pairs"=>a.cap=val(&v,&mut i,"--catalog-pairs")?.parse().map_err(|_|"bad --catalog-pairs")?,"--threads"=>a.threads=val(&v,&mut i,"--threads")?.parse().map_err(|_|"bad --threads")?,"--read-ledger"=>a.ledger=Some(val(&v,&mut i,"--read-ledger")?.into()),"--te-library"=>a.library=Some(val(&v,&mut i,"--te-library")?.into()),"--mainfilter"=>a.mainfilter=val(&v,&mut i,"--mainfilter")?,"--annotation-min-fragment"=>a.annotation_min_fragment=val(&v,&mut i,"--annotation-min-fragment")?.parse().map_err(|_|"bad --annotation-min-fragment")?,"--annotation-max-fragment"=>a.annotation_max_fragment=val(&v,&mut i,"--annotation-max-fragment")?.parse().map_err(|_|"bad --annotation-max-fragment")?,"--annotation-min-support"=>a.annotation_min_support=val(&v,&mut i,"--annotation-min-support")?.parse().map_err(|_|"bad --annotation-min-support")?,"--annotation-min-identity"=>a.annotation_min_identity=val(&v,&mut i,"--annotation-min-identity")?.parse().map_err(|_|"bad --annotation-min-identity")?,"--annotation-min-coverage"=>a.annotation_min_coverage=val(&v,&mut i,"--annotation-min-coverage")?.parse().map_err(|_|"bad --annotation-min-coverage")?,"--annotation-min-delta"=>a.annotation_min_delta=val(&v,&mut i,"--annotation-min-delta")?.parse().map_err(|_|"bad --annotation-min-delta")?,"--assemble-min-kmer-count"=>a.assemble_min_kmer_count=val(&v,&mut i,"--assemble-min-kmer-count")?.parse().map_err(|_|"bad --assemble-min-kmer-count")?,"--assemble-branch-ratio"=>a.assemble_branch_ratio=val(&v,&mut i,"--assemble-branch-ratio")?.parse().map_err(|_|"bad --assemble-branch-ratio")?,"--assemble-max-fragments"=>a.assemble_max_fragments=val(&v,&mut i,"--assemble-max-fragments")?.parse().map_err(|_|"bad --assemble-max-fragments")?,"-h"|"--help"=>return Err("Usage: main_repeat --samples taxa.tsv --output DIR --mainfilter PATH [--stage all|discover|curate|annotate|quantify]".into()),x=>return Err(format!("unknown option {x}"))};
         i += 1
     }
     if a.samples.as_os_str().is_empty() || a.out.as_os_str().is_empty() {
@@ -85,6 +91,10 @@ fn args() -> R<A> {
         || !(0.0..=1.0).contains(&a.annotation_min_identity)
         || !(0.0..=1.0).contains(&a.annotation_min_coverage)
         || a.annotation_min_delta < 0.0
+        || a.assemble_min_kmer_count == 0
+        || a.assemble_branch_ratio < 1.0
+        || a.assemble_max_fragments == 0
+        || a.assemble_max_fragments > 8
     {
         return Err("invalid annotation or discovery parameters".into());
     }
@@ -706,6 +716,7 @@ fn discover(a: &A, ss: &[S], led: &AHashMap<String, AHashSet<u64>>) -> R<()> {
     Ok(())
 }
 type SeedIndex = AHashMap<u64, Vec<usize>>;
+type Adjacency = AHashMap<Vec<u8>, [u32; 4]>;
 
 fn seed_index_dir(a: &A, dir: &Path) -> R<(Vec<String>, SeedIndex)> {
     let mut files: Vec<_> = fs::read_dir(dir)
@@ -791,6 +802,10 @@ fn eligible(s: &S, deny: &AHashSet<u64>, out: &Path) -> R<(PathBuf, Option<PathB
 struct Audit {
     specific: Vec<u64>,
     ambiguous: Vec<u64>,
+    mapped_bases: Vec<u64>,
+    covered_kmers: Vec<AHashSet<u64>>,
+    identity_sum: Vec<f64>,
+    identity_n: Vec<u64>,
     links: BTreeMap<(usize, usize), (u64, u64)>,
 }
 fn groups_for(seq: &[u8], k: usize, index: &AHashMap<u64, Vec<usize>>) -> BTreeSet<usize> {
@@ -839,6 +854,10 @@ fn audit(
     let mut out = Audit {
         specific: vec![0; count],
         ambiguous: vec![0; count],
+        mapped_bases: vec![0; count],
+        covered_kmers: (0..count).map(|_| AHashSet::new()).collect(),
+        identity_sum: vec![0.0; count],
+        identity_n: vec![0; count],
         ..Audit::default()
     };
     if !path1.exists() {
@@ -853,7 +872,38 @@ fn audit(
             .unwrap_or_default();
         let all: BTreeSet<_> = left.union(&right).copied().collect();
         if all.len() == 1 {
-            out.specific[*all.iter().next().unwrap()] += 1;
+            let group = *all.iter().next().unwrap();
+            out.specific[group] += 1;
+            let left_maps = left.contains(&group);
+            let right_maps = right.contains(&group);
+            if left_maps {
+                out.mapped_bases[group] += one.seq.len() as u64;
+            }
+            if right_maps {
+                out.mapped_bases[group] += two.as_ref().map(|x| x.seq.len() as u64).unwrap_or(0);
+            }
+            if left_maps {
+                kmers(&one.seq, k, |x| {
+                    if index
+                        .get(&x)
+                        .is_some_and(|v| v.iter().all(|&owner| owner == group))
+                    {
+                        out.covered_kmers[group].insert(x);
+                    }
+                });
+            }
+            if right_maps {
+                if let Some(mate) = two.as_ref() {
+                    kmers(&mate.seq, k, |x| {
+                        if index
+                            .get(&x)
+                            .is_some_and(|v| v.iter().all(|&owner| owner == group))
+                        {
+                            out.covered_kmers[group].insert(x);
+                        }
+                    });
+                }
+            }
         } else if all.len() > 1 {
             for i in all {
                 out.ambiguous[i] += 1;
@@ -872,6 +922,217 @@ fn audit(
         }
         for edge in edges {
             out.links.entry(edge).or_default().1 += 1;
+        }
+    }
+    Ok(out)
+}
+struct FragmentRecord {
+    group: usize,
+    seq: Vec<u8>,
+}
+struct FragmentMapIndex {
+    records: Vec<FragmentRecord>,
+    positions: AHashMap<u64, Vec<(usize, usize)>>,
+}
+fn fragment_map_index(dir: &Path, groups: &[String], k: usize) -> R<FragmentMapIndex> {
+    let mut records: Vec<FragmentRecord> = Vec::new();
+    let mut positions: AHashMap<u64, Vec<(usize, usize)>> = AHashMap::new();
+    for (group, name) in groups.iter().enumerate() {
+        for (_, seq) in fasta_records(&dir.join(format!("{name}.fasta")))? {
+            if seq.len() < k {
+                continue;
+            }
+            let record = records.len();
+            records.push(FragmentRecord { group, seq });
+            let mut pos = 0;
+            kmers(&records[record].seq, k, |x| {
+                let hits = positions.entry(x).or_default();
+                // Cap positions per fragment: alternative paths retain anchors.
+                if hits.iter().filter(|&&(other, _)| other == record).count() < 8 {
+                    hits.push((record, pos));
+                }
+                pos += 1;
+            });
+        }
+    }
+    Ok(FragmentMapIndex { records, positions })
+}
+fn anchored_alignment_one(
+    seq: &[u8],
+    group: usize,
+    map: &FragmentMapIndex,
+    k: usize,
+) -> Option<(usize, f64)> {
+    let mut offsets: AHashMap<(usize, isize), u32> = AHashMap::new();
+    let mut read_pos = 0;
+    kmers(seq, k, |x| {
+        if let Some(hits) = map.positions.get(&x) {
+            for &(record, ref_pos) in hits {
+                if map.records[record].group == group {
+                    *offsets
+                        .entry((record, ref_pos as isize - read_pos as isize))
+                        .or_default() += 1;
+                }
+            }
+        }
+        read_pos += 1;
+    });
+    let mut candidates: Vec<_> = offsets
+        .into_iter()
+        .map(|((record, offset), support)| (record, offset, support))
+        .collect();
+    candidates.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    candidates
+        .into_iter()
+        .take(32)
+        .filter_map(|(record, offset, support)| {
+            let (identity, coverage) = diagonal_similarity(seq, &map.records[record].seq, offset);
+            let aligned = (coverage * seq.len() as f64).round() as usize;
+            (aligned >= k && identity >= 0.80)
+                .then_some((aligned, identity, support, record, offset))
+        })
+        .max_by(|left, right| {
+            left.2
+                .cmp(&right.2)
+                .then_with(|| left.1.partial_cmp(&right.1).unwrap())
+                .then_with(|| left.0.cmp(&right.0))
+                .then_with(|| right.3.cmp(&left.3))
+                .then_with(|| right.4.cmp(&left.4))
+        })
+        .map(|x| (x.0, x.1))
+}
+fn anchored_alignment(
+    seq: &[u8],
+    group: usize,
+    map: &FragmentMapIndex,
+    k: usize,
+) -> Option<(usize, f64)> {
+    let forward = anchored_alignment_one(seq, group, map, k);
+    let reverse =
+        anchored_alignment_one(rc(&String::from_utf8_lossy(seq)).as_bytes(), group, map, k);
+    match (forward, reverse) {
+        (Some(a), Some(b)) => Some(if a.1 >= b.1 { a } else { b }),
+        (Some(hit), None) | (None, Some(hit)) => Some(hit),
+        (None, None) => None,
+    }
+}
+fn audit_sample(
+    sample: &S,
+    deny: &AHashSet<u64>,
+    k: usize,
+    index: &AHashMap<u64, Vec<usize>>,
+    fragments: &FragmentMapIndex,
+    count: usize,
+) -> R<(Audit, u64)> {
+    let mut out = Audit {
+        specific: vec![0; count],
+        ambiguous: vec![0; count],
+        mapped_bases: vec![0; count],
+        covered_kmers: (0..count).map(|_| AHashSet::new()).collect(),
+        identity_sum: vec![0.0; count],
+        identity_n: vec![0; count],
+        ..Audit::default()
+    };
+    let mut reader = PairReader::new(&sample.r1, sample.r2.as_deref())?;
+    let mut effective = 0_u64;
+    while let Some((one, two)) = reader.next_pair()? {
+        if deny.contains(&pair_hash(&one.id)) {
+            continue;
+        }
+        effective += 1;
+        let left = groups_for(&one.seq, k, index);
+        let right = two
+            .as_ref()
+            .map(|x| groups_for(&x.seq, k, index))
+            .unwrap_or_default();
+        let all: BTreeSet<_> = left.union(&right).copied().collect();
+        if all.len() == 1 {
+            let group = *all.iter().next().unwrap();
+            let left_alignment = left
+                .contains(&group)
+                .then(|| anchored_alignment(&one.seq, group, fragments, k))
+                .flatten();
+            let right_alignment = right
+                .contains(&group)
+                .then(|| {
+                    two.as_ref()
+                        .and_then(|mate| anchored_alignment(&mate.seq, group, fragments, k))
+                })
+                .flatten();
+            if left_alignment.is_some() || right_alignment.is_some() {
+                out.specific[group] += 1;
+            }
+            for (read, alignment) in [
+                (&one.seq, left_alignment),
+                (
+                    two.as_ref().map(|x| &x.seq).unwrap_or(&Vec::new()),
+                    right_alignment,
+                ),
+            ] {
+                if let Some((aligned, identity)) = alignment {
+                    out.mapped_bases[group] += aligned as u64;
+                    out.identity_sum[group] += identity;
+                    out.identity_n[group] += 1;
+                    kmers(read, k, |x| {
+                        if index
+                            .get(&x)
+                            .is_some_and(|v| v.iter().all(|&owner| owner == group))
+                        {
+                            out.covered_kmers[group].insert(x);
+                        }
+                    });
+                }
+            }
+        } else if all.len() > 1 {
+            for group in all {
+                out.ambiguous[group] += 1;
+            }
+        }
+    }
+    Ok((out, effective))
+}
+fn fragment_kmer_counts(
+    dir: &Path,
+    k: usize,
+    index: &SeedIndex,
+    groups: &[String],
+) -> R<AHashMap<String, usize>> {
+    let mut out = AHashMap::new();
+    for (group, id) in groups.iter().enumerate() {
+        let mut seen = AHashSet::new();
+        for (_, sequence) in fasta_records(&dir.join(format!("{id}.fasta")))? {
+            kmers(&sequence, k, |x| {
+                if index
+                    .get(&x)
+                    .is_some_and(|owners| owners.iter().all(|&owner| owner == group))
+                {
+                    seen.insert(x);
+                }
+            });
+        }
+        out.insert(id.clone(), seen.len());
+    }
+    Ok(out)
+}
+
+fn fragment_lengths(dir: &Path) -> R<AHashMap<String, usize>> {
+    let mut out = AHashMap::new();
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().is_some_and(|x| x == "fasta") {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let length = fasta_records(&path)?
+                .iter()
+                .map(|x| x.1.len())
+                .max()
+                .unwrap_or(0);
+            out.insert(id, length);
         }
     }
     Ok(out)
@@ -1388,49 +1649,104 @@ fn oriented_reads(reads: &[Vec<u8>]) -> Vec<Vec<u8>> {
     }
     out
 }
-fn extend_fragment(seed: &[u8], reads: &[Vec<u8>], k: usize, max_len: usize) -> Vec<u8> {
-    let mut fragment = seed.to_vec();
-    let reads = oriented_reads(reads);
-    for right in [true, false] {
-        while fragment.len() < max_len {
-            let key = if right {
-                &fragment[fragment.len() - (k - 1)..]
-            } else {
-                &fragment[..k - 1]
-            };
-            let mut count = [0_u32; 4];
-            for read in &reads {
-                if read.len() < k {
-                    continue;
-                }
-                for i in 0..=read.len() - k {
-                    if right && &read[i..i + k - 1] == key {
-                        if let Some(base) = enc(read[i + k - 1]) {
-                            count[base as usize] += 1;
-                        }
-                    }
-                    if !right && &read[i + 1..i + k] == key {
-                        if let Some(base) = enc(read[i]) {
-                            count[base as usize] += 1;
-                        }
-                    }
-                }
+fn local_adjacency(reads: &[Vec<u8>], k: usize) -> (Adjacency, Adjacency) {
+    let mut right = AHashMap::new();
+    let mut left = AHashMap::new();
+    for read in oriented_reads(reads) {
+        if read.len() < k {
+            continue;
+        }
+        for i in 0..=read.len() - k {
+            if let Some(base) = enc(read[i + k - 1]) {
+                right.entry(read[i..i + k - 1].to_vec()).or_insert([0; 4])[base as usize] += 1;
             }
-            let mut rank: Vec<_> = count.iter().enumerate().collect();
-            rank.sort_by_key(|(_, n)| Reverse(**n));
-            if rank[0].1 < &2 || rank[0].1 == rank[1].1 {
-                break;
-            }
-            let base = b"ACGT"[rank[0].0];
-            if right {
-                fragment.push(base);
-            } else {
-                fragment.insert(0, base);
+            if let Some(base) = enc(read[i]) {
+                left.entry(read[i + 1..i + k].to_vec()).or_insert([0; 4])[base as usize] += 1;
             }
         }
     }
-    fragment
+    (right, left)
 }
+fn extend_fragments(
+    seed: &[u8],
+    reads: &[Vec<u8>],
+    k: usize,
+    max_len: usize,
+    min_count: u32,
+    branch_ratio: f64,
+    max_fragments: usize,
+) -> Vec<Vec<u8>> {
+    // Construct the local DBG adjacency once. Keep cumulative edge support so a
+    // retained bubble path is selected by evidence, never lexical sequence order.
+    let (right_edges, left_edges) = local_adjacency(reads, k);
+    let mut paths = vec![(seed.to_vec(), 0_u64)];
+    for right in [true, false] {
+        let mut active = paths;
+        for _ in 0..max_len.saturating_sub(seed.len()) {
+            let mut next: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+            let mut progressed = false;
+            for (fragment, score) in active {
+                if fragment.len() < k - 1 || fragment.len() >= max_len {
+                    next.entry(fragment)
+                        .and_modify(|x| *x = (*x).max(score))
+                        .or_insert(score);
+                    continue;
+                }
+                let key = if right {
+                    fragment[fragment.len() - (k - 1)..].to_vec()
+                } else {
+                    fragment[..k - 1].to_vec()
+                };
+                let counts = if right {
+                    right_edges.get(&key)
+                } else {
+                    left_edges.get(&key)
+                };
+                let mut rank: Vec<_> = counts
+                    .into_iter()
+                    .flat_map(|x| x.iter().enumerate())
+                    .filter(|(_, n)| **n >= min_count)
+                    .collect();
+                rank.sort_by_key(|(_, n)| Reverse(**n));
+                if rank.is_empty() {
+                    next.entry(fragment)
+                        .and_modify(|x| *x = (*x).max(score))
+                        .or_insert(score);
+                    continue;
+                }
+                let keep =
+                    if rank.len() > 1 && (*rank[0].1 as f64 / *rank[1].1 as f64) < branch_ratio {
+                        rank.len().min(max_fragments)
+                    } else {
+                        1
+                    };
+                for (base, support) in rank.into_iter().take(keep) {
+                    let mut child = fragment.clone();
+                    if right {
+                        child.push(b"ACGT"[base]);
+                    } else {
+                        child.insert(0, b"ACGT"[base]);
+                    }
+                    let child_score = score + *support as u64;
+                    next.entry(child)
+                        .and_modify(|x| *x = (*x).max(child_score))
+                        .or_insert(child_score);
+                }
+                progressed = true;
+            }
+            active = next.into_iter().collect();
+            active.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+            active.truncate(max_fragments);
+            if !progressed {
+                break;
+            }
+        }
+        paths = active;
+    }
+    paths.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    paths.into_iter().map(|x| x.0).collect()
+}
+
 fn diagonal_similarity(query: &[u8], target: &[u8], delta: isize) -> (f64, f64) {
     let begin_q = if delta < 0 { (-delta) as usize } else { 0 };
     let begin_t = if delta > 0 { delta as usize } else { 0 };
@@ -1493,7 +1809,11 @@ fn best_library_hit(
 }
 fn annotation_artifact_hash(root: &Path) -> R<u64> {
     let mut state = 0xcbf29ce484222325_u64;
-    for name in ["annotated_catalog.tsv", "annotation_evidence.tsv"] {
+    for name in [
+        "annotated_catalog.tsv",
+        "annotation_evidence.tsv",
+        "fragment_metrics.tsv",
+    ] {
         state = mix_hash(state, name.as_bytes());
         state = mix_hash(state, &file_hash(&root.join(name))?.to_le_bytes());
     }
@@ -1557,12 +1877,19 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
     let mut evidence = BufWriter::new(
         File::create(temp.join("annotation_evidence.tsv")).map_err(|e| e.to_string())?,
     );
+    let mut metrics =
+        BufWriter::new(File::create(temp.join("fragment_metrics.tsv")).map_err(|e| e.to_string())?);
+    writeln!(
+        metrics,
+        "equivalence_id\tfragment_id\tlength_bp\tunique_pairs\tassembly_state"
+    )
+    .unwrap();
     writeln!(
         catalog,
         "equivalence_id\tclass\tannotation_confidence\tdecision"
     )
     .unwrap();
-    writeln!(evidence, "equivalence_id\tfragment_length\tunique_pairs\tperiod_bp\tbest_library_id\tbest_library_class\talignment_identity\talignment_coverage\tscore_delta\tfinal_class\tannotation_confidence\tdecision\treason").unwrap();
+    writeln!(evidence, "equivalence_id\trepresentative_fragment_id\tfragment_length\tunique_pairs\tperiod_bp\tbest_library_id\tbest_library_class\talignment_identity\talignment_coverage\tscore_delta\tfinal_class\tannotation_confidence\tdecision\treason").unwrap();
     for (i, group) in groups.iter().enumerate() {
         let seed_path = curate.join("library").join(format!("{group}.fasta"));
         let seed = fasta_records(&seed_path)?
@@ -1570,17 +1897,45 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
             .next()
             .map(|x| x.1)
             .unwrap_or_default();
-        let fragment = if seed.len() >= a.k {
-            extend_fragment(&seed, &reads[i], a.k, a.annotation_max_fragment)
+        let fragments = if seed.len() >= a.k {
+            extend_fragments(
+                &seed,
+                &reads[i],
+                a.k,
+                a.annotation_max_fragment,
+                a.assemble_min_kmer_count,
+                a.assemble_branch_ratio,
+                a.assemble_max_fragments,
+            )
         } else {
-            Vec::new()
+            vec![seed.clone()]
         };
-        let period_bp = period(&String::from_utf8_lossy(&fragment));
-        let hit = if fragment.len() >= a.annotation_min_fragment {
-            best_library_hit(&fragment, library.as_ref(), a.k)
-        } else {
-            None
-        };
+        let (fragment_id, fragment) = fragments
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, x)| x.len())
+            .map(|(n, x)| (n + 1, x.clone()))
+            .unwrap_or((0, Vec::new()));
+        let periodic = fragments
+            .iter()
+            .enumerate()
+            .filter_map(|(n, x)| period(&String::from_utf8_lossy(x)).map(|p| (n + 1, p)))
+            .next();
+        let period_bp = periodic.map(|x| x.1);
+        let hit = fragments
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.len() >= a.annotation_min_fragment)
+            .filter_map(|(n, x)| best_library_hit(x, library.as_ref(), a.k).map(|hit| (n + 1, hit)))
+            .max_by(|left, right| left.1 .4.partial_cmp(&right.1 .4).unwrap());
+        let evidence_fragment_id = periodic
+            .map(|x| x.0)
+            .or_else(|| hit.as_ref().map(|x| x.0))
+            .unwrap_or(fragment_id);
+        let evidence_fragment_len = fragments
+            .get(evidence_fragment_id.saturating_sub(1))
+            .map(|x| x.len())
+            .unwrap_or(0);
         let (
             class,
             confidence,
@@ -1618,7 +1973,7 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
                 0.0,
                 0.0,
             )
-        } else if let Some((id, class, identity, coverage, score, second_score)) = hit {
+        } else if let Some((_, (id, class, identity, coverage, score, second_score))) = hit {
             if pairs[i] as usize >= a.annotation_min_support
                 && identity >= a.annotation_min_identity
                 && coverage >= a.annotation_min_coverage
@@ -1680,20 +2035,44 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
                 File::create(temp.join("fragments").join(format!("{group}.fasta")))
                     .map_err(|e| e.to_string())?,
             );
-            writeln!(file, ">{group}\n{}", String::from_utf8_lossy(&fragment)).unwrap();
+            for (fragment_i, sequence) in fragments.iter().enumerate() {
+                writeln!(
+                    file,
+                    ">{group}|fragment_{}\n{}",
+                    fragment_i + 1,
+                    String::from_utf8_lossy(sequence)
+                )
+                .unwrap();
+            }
+        }
+        for (fragment_i, sequence) in fragments.iter().enumerate() {
+            let assembly_state = if sequence.len() <= seed.len() {
+                "seed_only"
+            } else {
+                "assembled"
+            };
+            writeln!(
+                metrics,
+                "{group}\tfragment_{}\t{}\t{}\t{assembly_state}",
+                fragment_i + 1,
+                sequence.len(),
+                pairs[i]
+            )
+            .unwrap();
         }
         writeln!(catalog, "{group}\t{class}\t{confidence}\t{decision}").unwrap();
-        writeln!(evidence, "{group}\t{}\t{}\t{}\t{hit_id}\t{hit_class}\t{identity:.6}\t{coverage:.6}\t{score_delta:.6}\t{class}\t{confidence}\t{decision}\t{reason}", fragment.len(), pairs[i], period_bp.map(|x| x.to_string()).unwrap_or_else(|| ".".into())).unwrap();
+        writeln!(evidence, "{group}\t{evidence_fragment_id}\t{}\t{}\t{}\t{hit_id}\t{hit_class}\t{identity:.6}\t{coverage:.6}\t{score_delta:.6}\t{class}\t{confidence}\t{decision}\t{reason}", evidence_fragment_len, pairs[i], period_bp.map(|x| x.to_string()).unwrap_or_else(|| ".".into())).unwrap();
     }
     drop(catalog);
     drop(evidence);
+    drop(metrics);
     let artifact_hash = annotation_artifact_hash(&temp)?;
     let mut manifest =
         BufWriter::new(File::create(temp.join("manifest.tsv")).map_err(|e| e.to_string())?);
-    writeln!(manifest, "schema_version\tstage\tcurate_manifest_hash\tte_library_hash\tmin_fragment\tmax_fragment\tmin_support\tmin_identity\tmin_coverage\tmin_delta\tartifact_hash").unwrap();
+    writeln!(manifest, "schema_version\tstage\tcurate_manifest_hash\tte_library_hash\tmin_fragment\tmax_fragment\tmin_support\tmin_identity\tmin_coverage\tmin_delta\tassemble_min_kmer_count\tassemble_branch_ratio\tassemble_max_fragments\tartifact_hash").unwrap();
     writeln!(
         manifest,
-        "1\tannotate\t{:016x}\t{:016x}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{artifact_hash:016x}",
+        "1\tannotate\t{:016x}\t{:016x}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{:.6}\t{}\t{artifact_hash:016x}",
         file_hash(&curate.join("manifest.tsv"))?,
         a.library
             .as_deref()
@@ -1705,7 +2084,10 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
         a.annotation_min_support,
         a.annotation_min_identity,
         a.annotation_min_coverage,
-        a.annotation_min_delta
+        a.annotation_min_delta,
+        a.assemble_min_kmer_count,
+        a.assemble_branch_ratio,
+        a.assemble_max_fragments
     )
     .unwrap();
     commit(&temp, &final_d, "annotate")
@@ -1732,6 +2114,10 @@ fn validate_annotate(a: &A) -> R<()> {
         || manifest_value(&fields, "min_identity")? != format!("{:.6}", a.annotation_min_identity)
         || manifest_value(&fields, "min_coverage")? != format!("{:.6}", a.annotation_min_coverage)
         || manifest_value(&fields, "min_delta")? != format!("{:.6}", a.annotation_min_delta)
+        || manifest_number::<u32>(&fields, "assemble_min_kmer_count")? != a.assemble_min_kmer_count
+        || manifest_value(&fields, "assemble_branch_ratio")?
+            != format!("{:.6}", a.assemble_branch_ratio)
+        || manifest_number::<usize>(&fields, "assemble_max_fragments")? != a.assemble_max_fragments
         || manifest_hash(&fields, "artifact_hash")? != annotation_artifact_hash(&root)?
     {
         return Err(
@@ -1758,29 +2144,17 @@ fn annotation_status(a: &A) -> R<AHashMap<String, (String, String, String)>> {
 }
 fn quantify(a: &A, ss: &[S]) -> R<()> {
     validate_annotate(a)?;
-    let curate = a.out.join("02_curate");
-    let (groups, index) = seed_index_dir(a, &curate.join("library"))?;
+    let annotate = a.out.join("03_annotate");
+    let (groups, index) = seed_index_dir(a, &annotate.join("fragments"))?;
+    if groups.is_empty() {
+        return Err("annotation has no fragments; rerun --stage annotate".into());
+    }
+    let lengths = fragment_lengths(&annotate.join("fragments"))?;
+    let fragment_kmers = fragment_kmer_counts(&annotate.join("fragments"), a.k, &index, &groups)?;
+    let fragment_map = fragment_map_index(&annotate.join("fragments"), &groups, a.k)?;
     let status = curation_status(a)?;
     let annotation = annotation_status(a)?;
-    let mut effective = AHashMap::new();
-    for (n, line) in fs::read_to_string(curate.join("candidate_samples.tsv"))
-        .map_err(|e| e.to_string())?
-        .lines()
-        .enumerate()
-    {
-        if n == 0 {
-            continue;
-        }
-        let f: Vec<_> = line.split('\t').collect();
-        if f.len() != 4 {
-            return Err("malformed candidate samples".into());
-        }
-        effective.insert(
-            f[0].to_string(),
-            f[2].parse::<u64>()
-                .map_err(|_| "malformed candidate samples".to_string())?,
-        );
-    }
+    let denied = ledger(a.ledger.as_deref())?;
     let final_d = a.out.join("04_quantify");
     let temp = a.out.join(format!(".quantify.tmp.{}", std::process::id()));
     if temp.exists() {
@@ -1789,30 +2163,49 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
     fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
     let mut out =
         BufWriter::new(File::create(temp.join("repeat_signal.tsv")).map_err(|e| e.to_string())?);
-    writeln!(out, "sample_id\ttaxon_id\tequivalence_id\teffective_pairs\tspecific_pairs\tambiguous_pairs\tsignal_rpm\tstate\tconfidence\tdecision\tclass\tannotation_confidence\tannotation_decision").unwrap();
+    writeln!(out, "sample_id\ttaxon_id\tequivalence_id\teffective_pairs\tspecific_pairs\tambiguous_pairs\tsignal_rpm\tmapped_bases\tmean_depth\tkmer_breadth\tanchor_identity\tstate\tconfidence\tdecision\tclass\tannotation_confidence\tannotation_decision").unwrap();
+    let mut coverage = BufWriter::new(
+        File::create(temp.join("fragment_coverage.tsv")).map_err(|e| e.to_string())?,
+    );
+    writeln!(coverage, "sample_id\tequivalence_id\teq_representative_length\teq_mapped_bases\teq_mean_depth\teq_kmer_breadth\tanchor_identity\tspecific_pairs\tambiguous_pairs").unwrap();
     let mut matrix: BTreeMap<(String, usize), Vec<(f64, String)>> = BTreeMap::new();
-    for s in ss {
-        let n = *effective
-            .get(&s.id)
-            .ok_or_else(|| format!("missing candidate record for {}", s.id))?;
-        let rdir = curate
-            .join("candidate_recruit")
-            .join(&s.id)
-            .join("filtered");
-        let result = audit(
-            &rdir.join("all_1.fq"),
-            s.r2.as_ref().map(|_| rdir.join("all_2.fq")).as_deref(),
-            a.k,
-            &index,
-            groups.len(),
-        )?;
+    let audits: Vec<(Audit, u64)> = ss
+        .par_iter()
+        .map(|sample| {
+            audit_sample(
+                sample,
+                denied.get(&sample.id).unwrap_or(&AHashSet::new()),
+                a.k,
+                &index,
+                &fragment_map,
+                groups.len(),
+            )
+        })
+        .collect::<R<Vec<_>>>()?;
+    for (sample, (result, effective)) in ss.iter().zip(audits) {
         for (i, group) in groups.iter().enumerate() {
-            let rpm = if n == 0 {
+            let rpm = if effective == 0 {
                 0.0
             } else {
-                1e6 * result.specific[i] as f64 / n as f64
+                1e6 * result.specific[i] as f64 / effective as f64
             };
-            let call = state(n, result.specific[i], result.ambiguous[i]);
+            let length = *lengths.get(group).unwrap_or(&0);
+            let depth = if length == 0 {
+                0.0
+            } else {
+                result.mapped_bases[i] as f64 / length as f64
+            };
+            let breadth = result.covered_kmers[i].len() as f64
+                / *fragment_kmers.get(group).unwrap_or(&1).max(&1) as f64;
+            let call = state(effective, result.specific[i], result.ambiguous[i]);
+            let anchor_identity = if result.identity_n[i] > 0 {
+                format!(
+                    "{:.6}",
+                    result.identity_sum[i] / result.identity_n[i] as f64
+                )
+            } else {
+                "NA".into()
+            };
             let (confidence, decision) = status
                 .get(group)
                 .cloned()
@@ -1825,14 +2218,20 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
                         "missing_annotation".into(),
                     )
                 });
+            writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{rpm:.6}\t{}\t{depth:.6}\t{breadth:.6}\t{anchor_identity}\t{call}\t{confidence}\t{decision}\t{class}\t{annotation_confidence}\t{annotation_decision}", sample.id, sample.taxon, group, effective, result.specific[i], result.ambiguous[i], result.mapped_bases[i]).unwrap();
             writeln!(
-                out,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{rpm:.6}\t{call}\t{confidence}\t{decision}\t{class}\t{annotation_confidence}\t{annotation_decision}",
-                s.id, s.taxon, group, n, result.specific[i], result.ambiguous[i]
+                coverage,
+                "{}\t{}\t{}\t{}\t{depth:.6}\t{breadth:.6}\t{anchor_identity}\t{}\t{}",
+                sample.id,
+                group,
+                length,
+                result.mapped_bases[i],
+                result.specific[i],
+                result.ambiguous[i]
             )
             .unwrap();
             matrix
-                .entry((s.taxon.clone(), i))
+                .entry((sample.taxon.clone(), i))
                 .or_default()
                 .push((rpm, call.into()));
         }
@@ -1929,6 +2328,61 @@ mod tests {
     fn pair_hash_is_stable() {
         assert_eq!(pair_hash("read-1"), pair_hash("read-1"));
         assert_ne!(pair_hash("read-1"), pair_hash("read-2"));
+    }
+
+    #[test]
+    fn fragment_index_caps_positions_per_fragment() {
+        let root =
+            std::env::temp_dir().join(format!("main_repeat_fragments_{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("EQ00001.fasta"),
+            ">a\nAAAAAAAAAAAA\n>b\nAAAAAAAAAAAA\n",
+        )
+        .unwrap();
+        let index = fragment_map_index(&root, &["EQ00001".into()], 4).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let key = {
+            let mut out = 0;
+            kmers(b"AAAA", 4, |x| out = x);
+            out
+        };
+        let hits = index.positions.get(&key).unwrap();
+        assert!(hits.iter().any(|x| x.0 == 0));
+        assert!(hits.iter().any(|x| x.0 == 1));
+    }
+
+    #[test]
+    fn anchored_mapping_accepts_reverse_complement_reads() {
+        let seq = b"AAGTCCTC".to_vec();
+        let mut positions = AHashMap::new();
+        let mut pos = 0;
+        kmers(&seq, 4, |x| {
+            positions.entry(x).or_insert_with(Vec::new).push((0, pos));
+            pos += 1;
+        });
+        let map = FragmentMapIndex {
+            records: vec![FragmentRecord { group: 0, seq }],
+            positions,
+        };
+        let hit = anchored_alignment(b"AAGTCCTC", 0, &map, 4).unwrap();
+        let reverse = anchored_alignment(b"GAGGACTT", 0, &map, 4).unwrap();
+        assert_eq!(hit.0, 8);
+        assert_eq!(reverse.0, 8);
+        assert!(hit.1 > 0.99 && reverse.1 > 0.99);
+    }
+
+    #[test]
+    fn bounded_local_assembly_retains_supported_bubble_paths() {
+        let reads = vec![
+            b"AACCGGTTA".to_vec(),
+            b"AACCGGTTA".to_vec(),
+            b"AACCGGTTC".to_vec(),
+            b"AACCGGTTC".to_vec(),
+        ];
+        let paths = extend_fragments(b"AACCGGTT", &reads, 5, 12, 2, 1.5, 3);
+        assert!(paths.len() >= 2);
+        assert!(paths.iter().all(|x| x.len() <= 12));
     }
 
     #[test]

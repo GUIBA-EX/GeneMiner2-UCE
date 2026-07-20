@@ -30,8 +30,8 @@ discover → curate → annotate → quantify
 
 - **discover**：以 taxon 为单位均衡抽样，发现 atomic seed groups。
 - **curate**：只运行一次 MainFilter，保留 candidate reads 和 paired-end linkage 证据，建立 exact-equivalence（EQ）library。
-- **annotate**：为每个 EQ 生成长度受限、受 reads 支持的 fragment；识别 tandem/satellite 特征，并可进行保守的 library 同源注释。
-- **quantify**：复用 curate 的 candidate reads，输出样本 RPM 与存在状态；不再次运行 MainFilter。
+- **annotate**：为每个 EQ 构建最多三个有界、read 支持的局部 fragment；歧义分支保留为备选而不合并，并进行 tandem/satellite 与保守的 library 同源注释。
+- **quantify**：将全部 eligible 输入 read pairs 回帖到注释 fragment 集（不限于 MainFilter 招募 reads），输出 RPM、mapped bases、k-mer breadth 和片段平均深度；不再次运行 MainFilter。
 
 默认 `--te-stage all` 依次完成四步。也可用 `--te-stage discover|curate|annotate|quantify` 重跑单步；后续阶段会验证上游 manifest，输入或参数不一致时必须从相应上游阶段重跑。
 
@@ -55,11 +55,17 @@ te_out/
 ├── 03_annotate/
 │   ├── fragments/EQ00001.fasta  read-supported fragment（若可生成）
 │   ├── annotation_evidence.tsv  fragment 与同源证据
+│   ├── fragment_metrics.tsv    局部片段支持与状态
 │   ├── annotated_catalog.tsv    最终类别、置信度和决策
 │   └── manifest.tsv
 └── 04_quantify/
-    ├── repeat_signal.tsv        每 sample × EQ 的定量与注释
+    ├── repeat_signal.tsv        每 sample × EQ 的 RPM、覆盖度与注释
+    ├── fragment_coverage.tsv    全部 eligible reads 的 EQ 汇总覆盖
     └── taxon_repeat_matrix.tsv  taxon 中位 RPM 与状态
 ```
 
 `signal_rpm = 1,000,000 × specific_pairs / effective_pairs`。`PRESENT` 要求至少 100 个 effective pairs、3 个 specific pairs，且 specific 支持比例不少于 0.70。对于 UCE capture 数据，结果只能解释为 off-target repeat signal，不代表无偏的全基因组 TE 含量。
+
+## 局部组装与回帖
+
+默认局部组装器每个 EQ 至多保留三个非冗余片段假设；在无支持处停止，不会因 PE link 连接不同 EQ。可用 `--te-assemble-min-kmer-count`、`--te-assemble-branch-ratio`、`--te-assemble-max-fragments` 调整。有 ledger 时，定量扫描排除 ledger 后的所有 reads。`mean_depth` 为 mapped bases/保留片段长度；`anchor_identity` 为通过 k-mer 锚定的无 gap 局部比对平均 identity，不是 gapped 比对 identity，也不能解释为全基因组拷贝数。

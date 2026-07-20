@@ -30,8 +30,8 @@ discover → curate → annotate → quantify
 
 - **discover** taxon-balances sampling and finds atomic seed groups.
 - **curate** runs MainFilter once, retains candidate reads and paired-end linkage evidence, and builds an exact-equivalence (EQ) library.
-- **annotate** creates bounded, read-supported fragments per EQ; it detects tandem/satellite features and can perform conservative library-homology annotation.
-- **quantify** reuses curated candidate reads to report sample RPM and calls; it never reruns MainFilter.
+- **annotate** builds up to three bounded, read-supported local fragments per EQ. Ambiguous local bubbles are retained as alternatives rather than merged; it then detects tandem/satellite features and performs conservative library-homology annotation.
+- **quantify** maps every eligible input read pair back to the annotated fragment set (not only MainFilter recruits), reports RPM, mapped bases, and fragment mean depth; it never reruns MainFilter.
 
 The default `--te-stage all` runs all four stages. `--te-stage discover|curate|annotate|quantify` reruns one stage. Downstream stages validate upstream manifests, so changed inputs or parameters require rerunning the appropriate upstream stage.
 
@@ -55,11 +55,17 @@ te_out/
 ├── 03_annotate/
 │   ├── fragments/EQ00001.fasta  read-supported fragment (when available)
 │   ├── annotation_evidence.tsv  fragment and homology evidence
+│   ├── fragment_metrics.tsv    local-fragment support and state
 │   ├── annotated_catalog.tsv    final class, confidence, and decision
 │   └── manifest.tsv
 └── 04_quantify/
-    ├── repeat_signal.tsv        per-sample × EQ quantification and annotation
+    ├── repeat_signal.tsv        per-sample × EQ RPM, coverage, and annotation
+    ├── fragment_coverage.tsv    EQ-level coverage summary from all eligible reads
     └── taxon_repeat_matrix.tsv  taxon median RPM and call
 ```
 
 `signal_rpm = 1,000,000 × specific_pairs / effective_pairs`. `PRESENT` requires at least 100 effective pairs, 3 specific pairs, and at least 70% specific support. For UCE capture data, interpret results only as off-target repeat signal, not unbiased genome-wide TE content.
+
+## Local assembly and mapping
+
+The default local assembler retains at most three non-redundant fragment hypotheses per EQ. It stops at unsupported sequence and does not join different EQs from PE links. `--te-assemble-min-kmer-count`, `--te-assemble-branch-ratio`, and `--te-assemble-max-fragments` tune this bounded walk. Quantification scans all reads remaining after the optional ledger exclusion. `mean_depth` is mapped bases divided by retained fragment length and `kmer_breadth` is the fraction of unique fragment k-mers observed in specific reads; `anchor_identity` is the mean identity of accepted k-mer-anchored ungapped local alignments, not a gapped alignment identity or genome-wide copy-number estimate.

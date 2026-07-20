@@ -1484,6 +1484,9 @@ def run_te(args):
         '--annotation-min-identity', str(args.te_annotate_min_identity),
         '--annotation-min-coverage', str(args.te_annotate_min_coverage),
         '--annotation-min-delta', str(args.te_annotate_min_delta),
+        '--assemble-min-kmer-count', str(args.te_assemble_min_kmer_count),
+        '--assemble-branch-ratio', str(args.te_assemble_branch_ratio),
+        '--assemble-max-fragments', str(args.te_assemble_max_fragments),
     ]
     if args.te_read_ledger:
         command.extend(['--read-ledger', args.te_read_ledger])
@@ -2633,6 +2636,9 @@ if __name__ == '__main__':
     group_te.add_argument('--te-annotate-min-identity', default=0.80, type=float, help='Minimum gapless identity for a confident TE-library annotation (default = 0.80)', metavar='FLOAT')
     group_te.add_argument('--te-annotate-min-coverage', default=0.60, type=float, help='Minimum fragment coverage for a confident TE-library annotation (default = 0.60)', metavar='FLOAT')
     group_te.add_argument('--te-annotate-min-delta', default=0.10, type=float, help='Minimum best-versus-second-class score margin (default = 0.10)', metavar='FLOAT')
+    group_te.add_argument('--te-assemble-min-kmer-count', default=3, type=int, help='Minimum local assembly k-mer count (default = 3)', metavar='INT')
+    group_te.add_argument('--te-assemble-branch-ratio', default=1.5, type=float, help='Minimum best/second branch support ratio before committing a local path (default = 1.5)', metavar='FLOAT')
+    group_te.add_argument('--te-assemble-max-fragments', default=3, type=int, help='Maximum non-redundant local fragments retained per EQ (default = 3)', metavar='INT')
 
     group_population = parser.add_argument_group('arguments for population SNP analysis')
     group_population.add_argument('--engine', choices=('pseudoref', 'panref', 'panrefv2'), default='pseudoref', help='Population reference engine: accepted-contig pseudoref, legacy panref, or streaming two-pass PanRefV2')

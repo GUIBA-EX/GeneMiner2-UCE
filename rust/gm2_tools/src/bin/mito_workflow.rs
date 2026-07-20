@@ -129,7 +129,7 @@ fn parse_location(raw: &str) -> Option<(Vec<(usize, usize)>, bool)> {
         .filter(|item| !item.is_empty())
         .filter_map(|item| item.parse().ok())
         .collect();
-    if numbers.len() < 2 || numbers.len() % 2 != 0 {
+    if numbers.len() < 2 || !numbers.len().is_multiple_of(2) {
         return None;
     }
     let segments = numbers
@@ -218,13 +218,20 @@ fn prepare(options: &HashMap<String, String>) -> Result<(), String> {
         File::create(output.join("metadata/mitochondrial_genes.tsv"))
             .map_err(|error| error.to_string())?,
     );
-    writeln!(genes, "gene\tstart_0_inclusive\tend_0_exclusive\tstrand\tsegments_0_half_open").map_err(|error| error.to_string())?;
+    writeln!(
+        genes,
+        "gene\tstart_0_inclusive\tend_0_exclusive\tstrand\tsegments_0_half_open"
+    )
+    .map_err(|error| error.to_string())?;
     let mut seen = BTreeMap::<(Vec<(usize, usize)>, bool), String>::new();
     for (_, location, label) in annotated_features(&genbank[..origin]) {
         let Some((segments, reverse)) = parse_location(&location) else {
             continue;
         };
-        if segments.iter().any(|(start, end)| start >= end || *end > genome.len()) {
+        if segments
+            .iter()
+            .any(|(start, end)| start >= end || *end > genome.len())
+        {
             continue;
         }
         if seen.contains_key(&(segments.clone(), reverse)) {
@@ -390,21 +397,13 @@ fn collapse_baits(options: &HashMap<String, String>) -> Result<(), String> {
                 break;
             }
             let mut right = [String::new(), String::new(), String::new(), String::new()];
-            for index in 1..4 {
-                if first
-                    .read_line(&mut left[index])
-                    .map_err(|error| error.to_string())?
-                    == 0
-                {
+            for line in left.iter_mut().skip(1) {
+                if first.read_line(line).map_err(|error| error.to_string())? == 0 {
                     return Err("truncated paired FASTQ".into());
                 }
             }
-            for index in 0..4 {
-                if second
-                    .read_line(&mut right[index])
-                    .map_err(|error| error.to_string())?
-                    == 0
-                {
+            for line in &mut right {
+                if second.read_line(line).map_err(|error| error.to_string())? == 0 {
                     return Err("truncated paired FASTQ".into());
                 }
             }
@@ -535,7 +534,9 @@ mod tests {
         let bait = records.iter().find(|(id, _)| id == "gene_cross").unwrap();
         assert_eq!(bait.1, b"GTACGTACGTA");
         let metadata = fs::read_to_string(output.join("metadata/mitochondrial_genes.tsv")).unwrap();
-        assert!(metadata.starts_with("gene\tstart_0_inclusive\tend_0_exclusive\tstrand\tsegments_0_half_open\n"));
+        assert!(metadata.starts_with(
+            "gene\tstart_0_inclusive\tend_0_exclusive\tstrand\tsegments_0_half_open\n"
+        ));
         assert!(metadata.contains("cross\t16\t3\t1\t16..20,0..3"));
         fs::remove_dir_all(root).unwrap();
     }
