@@ -1,91 +1,117 @@
-use flate2::read::MultiGzDecoder;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use crate::fastx::{open_input, FastxFormat, FastxReader, FastxRecord};
+use std::io::BufRead;
 use std::path::Path;
 
+type FastqRecord = FastxRecord;
+
+/// The finalizer only needs bases after paired identifiers have been checked.
+/// Dropping FASTQ header and quality strings here substantially reduces peak
+/// memory for high-coverage mitochondrial read pools.
 #[derive(Clone, Debug)]
-pub struct FastqRecord {
-    pub header: String,
-    pub sequence: Vec<u8>,
-    pub plus: String,
-    pub quality: String,
+pub struct ReadPair {
+    pub first: Vec<u8>,
+    pub second: Vec<u8>,
 }
 
-fn open_fastq(path: &Path) -> Result<Box<dyn BufRead>, String> {
-    let file = File::open(path).map_err(|error| error.to_string())?;
-    let reader: Box<dyn Read> = if path
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("gz"))
-    {
-        Box::new(MultiGzDecoder::new(file))
-    } else {
-        Box::new(file)
+fn open_fastq(path: &Path) -> Result<FastxReader, String> {
+    FastxReader::open(path, FastxFormat::Fastq).map_err(|error| error.to_string())
+}
+
+fn read_record(reader: &mut FastxReader) -> Result<Option<FastqRecord>, String> {
+    let Some(mut record) = reader.next_record().map_err(|error| error.to_string())? else {
+        return Ok(None);
     };
-    Ok(Box::new(BufReader::new(reader)))
+    // Preserve the previous mitochondrial path's case-normalized comparison.
+    record.sequence.make_ascii_uppercase();
+    Ok(Some(record))
 }
 
-fn read_record(reader: &mut dyn BufRead) -> Result<Option<FastqRecord>, String> {
-    let mut lines = [String::new(), String::new(), String::new(), String::new()];
+fn fragment_id(header: &[u8]) -> Vec<u8> {
+    let header = header.strip_prefix(b"@").unwrap_or(header);
+    let id = header
+        .split(|byte| byte.is_ascii_whitespace())
+        .next()
+        .unwrap_or_default();
+    id.strip_suffix(b"/1")
+        .or_else(|| id.strip_suffix(b"/2"))
+        .unwrap_or(id)
+        .to_vec()
+}
+
+fn read_fastq_line(reader: &mut dyn BufRead, line: &mut Vec<u8>) -> Result<bool, String> {
+    line.clear();
     if reader
-        .read_line(&mut lines[0])
+        .read_until(b'\n', line)
         .map_err(|error| error.to_string())?
         == 0
     {
-        return Ok(None);
+        return Ok(false);
     }
-    for line in lines.iter_mut().skip(1) {
-        if reader.read_line(line).map_err(|error| error.to_string())? == 0 {
-            return Err("truncated FASTQ record".into());
-        }
+    while matches!(line.last(), Some(b'\n' | b'\r')) {
+        line.pop();
     }
-    for line in &mut lines {
-        while line.ends_with(['\n', '\r']) {
-            line.pop();
-        }
-    }
-    if !lines[0].starts_with('@') || !lines[2].starts_with('+') {
-        return Err("invalid FASTQ record".into());
-    }
-    Ok(Some(FastqRecord {
-        header: std::mem::take(&mut lines[0]),
-        sequence: lines[1]
-            .bytes()
-            .map(|base| base.to_ascii_uppercase())
-            .collect(),
-        plus: std::mem::take(&mut lines[2]),
-        quality: std::mem::take(&mut lines[3]),
-    }))
+    Ok(true)
 }
 
-fn fragment_id(header: &str) -> String {
-    header
-        .trim_start_matches('@')
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .trim_end_matches("/1")
-        .trim_end_matches("/2")
-        .to_string()
-}
-
-pub fn read_interleaved_pairs(path: &Path) -> Result<Vec<(FastqRecord, FastqRecord)>, String> {
-    let mut reader = open_fastq(path)?;
-    let mut pairs = Vec::new();
+/// Visit interleaved FASTQ pairs without retaining records.  Eight reusable
+/// buffers avoid per-read header/quality allocation in the common mito path.
+pub fn visit_interleaved_pairs(
+    path: &Path,
+    mut visit: impl FnMut(&[u8], &[u8]),
+) -> Result<usize, String> {
+    let mut reader = open_input(path).map_err(|error| error.to_string())?;
+    let mut left = std::array::from_fn::<_, 4, _>(|_| Vec::with_capacity(512));
+    let mut right = std::array::from_fn::<_, 4, _>(|_| Vec::with_capacity(512));
+    let mut count = 0;
     loop {
-        let Some(first) = read_record(reader.as_mut())? else {
-            break;
-        };
-        let second = read_record(reader.as_mut())?
-            .ok_or("interleaved paired FASTQ contains an odd number of records")?;
-        if fragment_id(&first.header) != fragment_id(&second.header) {
+        // Match FastxReader: ignore empty separators before a FASTQ header.
+        loop {
+            if !read_fastq_line(&mut reader, &mut left[0])? {
+                return Ok(count);
+            }
+            if !left[0].is_empty() {
+                break;
+            }
+        }
+        for line in left.iter_mut().skip(1) {
+            if !read_fastq_line(&mut reader, line)? {
+                return Err("truncated interleaved FASTQ record".into());
+            }
+        }
+        for line in right.iter_mut() {
+            if !read_fastq_line(&mut reader, line)? {
+                return Err("interleaved paired FASTQ contains an odd number of records".into());
+            }
+        }
+        if left[0].first() != Some(&b'@')
+            || right[0].first() != Some(&b'@')
+            || left[2].first() != Some(&b'+')
+            || right[2].first() != Some(&b'+')
+            || left[1].len() != left[3].len()
+            || right[1].len() != right[3].len()
+        {
+            return Err("invalid interleaved FASTQ record".into());
+        }
+        if fragment_id(&left[0]) != fragment_id(&right[0]) {
             return Err(format!(
                 "interleaved mates do not share an identifier: {} and {}",
-                first.header, second.header
+                String::from_utf8_lossy(&left[0]),
+                String::from_utf8_lossy(&right[0])
             ));
         }
-        pairs.push((first, second));
+        visit(&left[1], &right[1]);
+        count += 1;
     }
+}
+
+pub fn read_interleaved_pairs(path: &Path) -> Result<Vec<ReadPair>, String> {
+    let mut pairs = Vec::new();
+    visit_interleaved_pairs(path, |first, second| {
+        pairs.push(ReadPair {
+            first: first.to_vec(),
+            second: second.to_vec(),
+        });
+    })?;
     Ok(pairs)
 }
 
@@ -123,7 +149,7 @@ pub fn count_junction_support(
     }
     let mut reader = open_fastq(reads)?;
     let mut support = 0;
-    while let Some(record) = read_record(reader.as_mut())? {
+    while let Some(record) = read_record(&mut reader)? {
         if record
             .sequence
             .windows(k)
@@ -141,8 +167,29 @@ mod tests {
 
     #[test]
     fn fragment_names_normalize_mates() {
-        assert_eq!(fragment_id("@read42/1 comment"), "read42");
-        assert_eq!(fragment_id("@read42/2"), "read42");
+        assert_eq!(fragment_id(b"@read42/1 comment"), b"read42".to_vec());
+        assert_eq!(fragment_id(b"@read42/2"), b"read42".to_vec());
+    }
+
+    #[test]
+    fn streaming_pair_visitor_preserves_validated_mates() {
+        let path = std::env::temp_dir().join(format!(
+            "gm2_pair_visit_{}_{}.fq",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "\n@x/1\nAAAA\n+\nFFFF\n@x/2\nTTTT\n+\nFFFF\n").unwrap();
+        let mut seen = Vec::new();
+        let count = visit_interleaved_pairs(&path, |first, second| {
+            seen.push((first.to_vec(), second.to_vec()));
+        })
+        .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(seen, vec![(b"AAAA".to_vec(), b"TTTT".to_vec())]);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

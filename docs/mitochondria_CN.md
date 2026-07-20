@@ -30,7 +30,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 → 单一 mitochondrial read pool
 → refilter → Rust UCE 联合图组装
 → 全部 contigs_all 作为样本特异性 seed，从原始 paired reads 再招募一次并联合重组装
-→ overlap、mate-link 与局部 read graph 连接
+→ 严格 overlap、GFA 唯一路径与 mate-link 连接
 → junction-spanning reads 验证闭环
 ```
 
@@ -40,7 +40,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 
 ## 成功标准
 
-闭环结果必须同时满足：单一 component、无 `N`、每个连接都来自 overlap 或唯一 read-graph bridge、首尾闭合，并有至少 `--mito-min-junction-support` 条真实 reads 跨越最终 junction。条件不足时保留 partial 输出，但命令返回失败。
+闭环结果必须同时满足：单一 component、无 `N`、每个连接都来自严格 overlap 或唯一 GFA/read-graph bridge、首尾闭合，并有至少 `--mito-min-junction-support` 条真实 reads 跨越最终 junction。条件不足时保留 partial 输出，但命令返回失败。
 
 ## 常用与专家参数
 

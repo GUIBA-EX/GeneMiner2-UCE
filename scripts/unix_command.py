@@ -120,6 +120,9 @@ def run_mito_finalize(args, samples, require_circular=True):
             "--minimum-junction-support", str(getattr(args, "mito_min_junction_support", 3)),
             "--require-circular", "true" if require_circular else "false",
         ]
+        graph = os.path.join(sample_dir, "assembly_graphs", "mitochondrion.gfa")
+        if os.path.isfile(graph):
+            command.extend(["--graph", graph])
         subprocess.run(command, check=True)
 
     workers = min(max(1, getattr(args, 'p', 1)), len(samples))

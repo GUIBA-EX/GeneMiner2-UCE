@@ -1,6 +1,7 @@
 //! Small mitochondrial companion for GeneMiner2-UCE.
 //! References recruit reads; the existing GM2 UCE assembler builds contigs;
 //! this binary only resolves contig overlaps and read-supported mate bridges.
+use gm2_tools::fastx::{FastxFormat, FastxReader, FastxRecord};
 use gm2_tools::mito_merge::{assemble_and_write, LinkConfig, MitoContig};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -329,6 +330,7 @@ fn finalize(options: &HashMap<String, String>) -> Result<(), String> {
         Path::new(required(options, "--out-dir")),
         contigs,
         Path::new(required(options, "--paired-reads")),
+        options.get("--graph").map(|path| Path::new(path)),
         &config,
     )?;
     let require_circular = options
@@ -351,6 +353,19 @@ fn fastq_pair_id(header: &str) -> String {
         .trim_end_matches("/1")
         .trim_end_matches("/2")
         .to_string()
+}
+
+fn write_fastq_record(writer: &mut BufWriter<File>, record: &FastxRecord) -> Result<(), String> {
+    for line in [
+        &record.header,
+        &record.sequence,
+        &record.plus,
+        &record.quality,
+    ] {
+        writer.write_all(line).map_err(|error| error.to_string())?;
+        writer.write_all(b"\n").map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn collapse_baits(options: &HashMap<String, String>) -> Result<(), String> {
@@ -384,41 +399,32 @@ fn collapse_baits(options: &HashMap<String, String>) -> Result<(), String> {
         if !second_path.is_file() {
             return Err(format!("missing mate FASTQ for {}", first_path.display()));
         }
-        let mut first = BufReader::new(File::open(&first_path).map_err(|error| error.to_string())?);
-        let mut second =
-            BufReader::new(File::open(&second_path).map_err(|error| error.to_string())?);
+        let mut first = FastxReader::open(&first_path, FastxFormat::Fastq)
+            .map_err(|error| error.to_string())?;
+        let mut second = FastxReader::open(&second_path, FastxFormat::Fastq)
+            .map_err(|error| error.to_string())?;
         loop {
-            let mut left = [String::new(), String::new(), String::new(), String::new()];
-            if first
-                .read_line(&mut left[0])
-                .map_err(|error| error.to_string())?
-                == 0
-            {
+            let Some(left) = first.next_record().map_err(|error| error.to_string())? else {
+                if second
+                    .next_record()
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+                {
+                    return Err("paired FASTQ files have different numbers of records".into());
+                }
                 break;
-            }
-            let mut right = [String::new(), String::new(), String::new(), String::new()];
-            for line in left.iter_mut().skip(1) {
-                if first.read_line(line).map_err(|error| error.to_string())? == 0 {
-                    return Err("truncated paired FASTQ".into());
-                }
-            }
-            for line in &mut right {
-                if second.read_line(line).map_err(|error| error.to_string())? == 0 {
-                    return Err("truncated paired FASTQ".into());
-                }
-            }
-            let id = fastq_pair_id(&left[0]);
-            if id != fastq_pair_id(&right[0]) {
+            };
+            let right = second
+                .next_record()
+                .map_err(|error| error.to_string())?
+                .ok_or("paired FASTQ files have different numbers of records")?;
+            let id = fastq_pair_id(&String::from_utf8_lossy(&left.header));
+            if id != fastq_pair_id(&String::from_utf8_lossy(&right.header)) {
                 return Err("bait mate identifiers differ".into());
             }
             if seen.insert(id) {
-                for line in &left {
-                    one.write_all(line.as_bytes())
-                        .map_err(|error| error.to_string())?;
-                }
-                for line in &right {
-                    two.write_all(line.as_bytes())
-                        .map_err(|error| error.to_string())?;
+                for (writer, record) in [(&mut one, &left), (&mut two, &right)] {
+                    write_fastq_record(writer, record)?;
                 }
             }
         }

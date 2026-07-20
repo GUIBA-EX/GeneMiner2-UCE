@@ -30,7 +30,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 → one mitochondrial read pool
 → refilter → joint Rust UCE graph assembly
 → all contigs_all become sample-specific seeds; recruit original paired reads once more and jointly reassemble
-→ overlap, mate-link, and local read-graph joins
+→ strict overlap, unique GFA paths, and mate-link joins
 → junction-spanning read validation of circularity
 ```
 
@@ -40,7 +40,7 @@ All baits are written as one mitochondrial locus. The reference is used only for
 
 ## Success criteria
 
-A circular result must have one component, no `N`, every join supported by an overlap or unique read-graph bridge, a closed terminus, and at least `--mito-min-junction-support` true reads spanning the final junction. Otherwise partial output is retained but the command fails.
+A circular result must have one component, no `N`, every join supported by a strict overlap or unique GFA/read-graph bridge, a closed terminus, and at least `--mito-min-junction-support` true reads spanning the final junction. Otherwise partial output is retained but the command fails.
 
 ## Common and expert parameters
 
