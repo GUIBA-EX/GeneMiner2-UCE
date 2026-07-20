@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
@@ -523,17 +523,14 @@ impl KmerIndex {
         }
     }
 
-    fn insert_long(&mut self, key: Vec<u8>, reference: u32) {
+    fn insert_long(&mut self, key: &[u8], reference: u32) {
         let KmerStore::Long(map) = &mut self.store else {
             unreachable!("long k-mer inserted into short-kmer index");
         };
-        match map.entry(key) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(ReferenceHits::One(reference));
-            }
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                Self::add_reference_hit(entry.get_mut(), reference, &mut self.pending_hits)
-            }
+        if let Some(hit) = map.get_mut(key) {
+            Self::add_reference_hit(hit, reference, &mut self.pending_hits);
+        } else {
+            map.insert(key.to_vec(), ReferenceHits::One(reference));
         }
     }
 
@@ -642,10 +639,16 @@ impl KmerIndex {
                 }
             }
         } else {
+            let mut forward = Vec::with_capacity(self.k);
+            let mut reverse = Vec::with_capacity(self.k);
             for start in 0..=sequence.len() - self.k {
-                if let Some((forward, reverse)) = long_kmer(&sequence[start..start + self.k]) {
+                if long_kmer_into(&sequence[start..start + self.k], &mut forward, &mut reverse) {
                     self.insert_long(
-                        if forward <= reverse { forward } else { reverse },
+                        if forward <= reverse {
+                            &forward
+                        } else {
+                            &reverse
+                        },
                         reference,
                     );
                 }
@@ -689,12 +692,13 @@ impl KmerIndex {
                 }
             }
         } else {
-            let mut starts: Vec<usize> = (0..=tail).step_by(step).collect();
-            if starts.last().copied() != Some(tail) {
-                starts.push(tail);
-            }
-            for start in starts {
-                if let Some((forward, reverse)) = long_kmer(&sequence[start..start + self.k]) {
+            let mut forward = Vec::with_capacity(self.k);
+            let mut reverse = Vec::with_capacity(self.k);
+            for start in (0..=tail)
+                .step_by(step)
+                .chain((!tail.is_multiple_of(step)).then_some(tail))
+            {
+                if long_kmer_into(&sequence[start..start + self.k], &mut forward, &mut reverse) {
                     self.collect_long(
                         if forward <= reverse {
                             &forward
@@ -732,18 +736,30 @@ impl KmerIndex {
 }
 
 // k 太长塞不进 u64 时，老老实实造正反链字符串键。
-fn long_kmer(sequence: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let mut forward = Vec::with_capacity(sequence.len());
-    let mut reverse = Vec::with_capacity(sequence.len());
+fn long_kmer_into(sequence: &[u8], forward: &mut Vec<u8>, reverse: &mut Vec<u8>) -> bool {
+    forward.clear();
+    reverse.clear();
+    if forward.capacity() < sequence.len() {
+        forward.reserve(sequence.len() - forward.capacity());
+    }
+    if reverse.capacity() < sequence.len() {
+        reverse.reserve(sequence.len() - reverse.capacity());
+    }
     for &base in sequence {
-        let code = base_code(base)?;
+        let Some(code) = base_code(base) else {
+            forward.clear();
+            reverse.clear();
+            return false;
+        };
         forward.push(b"ACGT"[code as usize]);
     }
     for &base in sequence.iter().rev() {
-        let code = base_code(base)?;
+        let Some(code) = base_code(base) else {
+            unreachable!("validated above");
+        };
         reverse.push(b"ACGT"[(3 - code) as usize]);
     }
-    Some((forward, reverse))
+    true
 }
 
 struct HitCollector {
@@ -1077,6 +1093,7 @@ struct OutputManager {
     file_budget: usize,
     paired_paths: bool,
     binary: bool,
+    encode_scratch: Vec<u8>,
 }
 
 impl OutputManager {
@@ -1138,6 +1155,7 @@ impl OutputManager {
             file_budget,
             paired_paths: mode == 4 || mode == 5,
             binary: mode == 5,
+            encode_scratch: Vec::with_capacity(4096),
         })
     }
 
@@ -1159,8 +1177,11 @@ impl OutputManager {
         if self.paths.is_empty() {
             return Ok(());
         }
-        let encoded = encode_record(record, self.binary)?;
-        self.write_encoded_key(key, &encoded)
+        encode_record_into(record, self.binary, &mut self.encode_scratch)?;
+        let encoded = std::mem::take(&mut self.encode_scratch);
+        let result = self.write_encoded_key(key, &encoded);
+        self.encode_scratch = encoded;
+        result
     }
 
     fn write_encoded_key(&mut self, key: usize, encoded: &[u8]) -> AppResult<()> {
@@ -1172,7 +1193,7 @@ impl OutputManager {
         if self.buffers[key].len() >= self.file_budget {
             self.flush_key(key)?;
         } else if self.total_buffered >= TOTAL_BUFFER_BUDGET {
-            self.flush()?;
+            self.flush_largest()?;
         }
         Ok(())
     }
@@ -1193,6 +1214,18 @@ impl OutputManager {
         Ok(())
     }
 
+    fn flush_largest(&mut self) -> AppResult<()> {
+        if let Some((key, _)) = self
+            .buffers
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, buffer)| buffer.len())
+        {
+            self.flush_key(key)?;
+        }
+        Ok(())
+    }
+
     fn flush(&mut self) -> AppResult<()> {
         for key in 0..self.paths.len() {
             self.flush_key(key)?;
@@ -1202,8 +1235,8 @@ impl OutputManager {
 }
 
 // 文本输出保留原样，方便人眼复查。
-fn encode_text(record: &Record) -> Vec<u8> {
-    let mut output = Vec::new();
+fn encode_text_into(record: &Record, output: &mut Vec<u8>) {
+    output.clear();
     for line in record
         .lines
         .as_ref()
@@ -1212,14 +1245,14 @@ fn encode_text(record: &Record) -> Vec<u8> {
         output.extend_from_slice(line.as_bytes());
         output.push(b'\n');
     }
-    output
 }
 
-fn encode_record(record: &Record, binary: bool) -> AppResult<Vec<u8>> {
+fn encode_record_into(record: &Record, binary: bool, output: &mut Vec<u8>) -> AppResult<()> {
     if binary {
-        encode_gm2(record)
+        encode_gm2_into(record, output)
     } else {
-        Ok(encode_text(record))
+        encode_text_into(record, output);
+        Ok(())
     }
 }
 
@@ -1245,9 +1278,10 @@ fn append_gm2_sequence_chunk(output: &mut Vec<u8>, last_chunk: &mut u8, chunk: u
 }
 
 // GM2 把序列压紧，磁盘慢的时候少搬点儿字节就挺顶用。
-fn encode_gm2(record: &Record) -> AppResult<Vec<u8>> {
+fn encode_gm2_into(record: &Record, output: &mut Vec<u8>) -> AppResult<()> {
+    output.clear();
     if record.sequence.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     if record.sequence.len() > 0x7f_ffff {
         return Err("GM2 sequence is too long".to_string());
@@ -1258,7 +1292,9 @@ fn encode_gm2(record: &Record) -> AppResult<Vec<u8>> {
         .checked_mul(2)
         .and_then(|size| size.checked_add(6))
         .ok_or_else(|| "GM2 record size overflow".to_string())?;
-    let mut output = Vec::with_capacity(capacity);
+    if output.capacity() < capacity {
+        output.reserve(capacity - output.capacity());
+    }
     output.resize(6, 0);
 
     let mut last_chunk = 0_u8;
@@ -1267,22 +1303,14 @@ fn encode_gm2(record: &Record) -> AppResult<Vec<u8>> {
     for &base in &record.sequence[1..] {
         let value = gm2_base_value(base);
         if value != last_value || duplicate_count == 3 {
-            append_gm2_sequence_chunk(
-                &mut output,
-                &mut last_chunk,
-                (duplicate_count << 5) | last_value,
-            );
+            append_gm2_sequence_chunk(output, &mut last_chunk, (duplicate_count << 5) | last_value);
             last_value = value;
             duplicate_count = 0;
         } else {
             duplicate_count += 1;
         }
     }
-    append_gm2_sequence_chunk(
-        &mut output,
-        &mut last_chunk,
-        (duplicate_count << 5) | last_value,
-    );
+    append_gm2_sequence_chunk(output, &mut last_chunk, (duplicate_count << 5) | last_value);
 
     let has_quality = record
         .quality
@@ -1321,11 +1349,19 @@ fn encode_gm2(record: &Record) -> AppResult<Vec<u8>> {
         ((record.sequence.len() >> 8) & 0xff) as u8,
         (record.sequence.len() & 0xff) as u8,
     ]);
+    Ok(())
+}
+
+#[cfg(test)]
+fn encode_gm2(record: &Record) -> AppResult<Vec<u8>> {
+    let mut output = Vec::new();
+    encode_gm2_into(record, &mut output)?;
     Ok(output)
 }
 
 struct Logger {
-    file: File,
+    file: BufWriter<File>,
+    last_flush: Instant,
 }
 
 impl Logger {
@@ -1335,11 +1371,22 @@ impl Logger {
             .append(true)
             .open(output.join("log.txt"))
             .map_err(|e| e.to_string())?;
-        Ok(Self { file })
+        Ok(Self {
+            file: BufWriter::with_capacity(64 * 1024, file),
+            last_flush: Instant::now(),
+        })
     }
     fn log(&mut self, message: &str) {
         println!("{message}");
         let _ = writeln!(self.file, "{message}");
+        if self.last_flush.elapsed().as_millis() >= 500 {
+            let _ = self.file.flush();
+            self.last_flush = Instant::now();
+        }
+    }
+}
+impl Drop for Logger {
+    fn drop(&mut self) {
         let _ = self.file.flush();
     }
 }
@@ -1432,6 +1479,8 @@ fn run(args: Args) -> AppResult<()> {
     )?;
     let mut counts = vec![0_u64; index.reference_names.len()];
     let mut collector = HitCollector::new(index.reference_names.len());
+    let mut encoded1 = Vec::with_capacity(4096);
+    let mut encoded2 = Vec::with_capacity(4096);
     if args.get_reverse {
         logger.log(
             "Note: -gr is retained for compatibility; canonical k-mers already match both strands.",
@@ -1473,27 +1522,20 @@ fn run(args: Args) -> AppResult<()> {
                     }
                 }
                 let write_per_reference = matches!(args.mode, 0 | 4 | 5);
-                let encoded1 = if write_per_reference {
-                    Some(encode_record(&record1, args.mode == 5)?)
-                } else {
-                    None
-                };
-                let encoded2 = if write_per_reference {
-                    record2
-                        .as_ref()
-                        .map(|record| encode_record(record, args.mode == 5))
-                        .transpose()?
-                } else {
-                    None
-                };
+                if write_per_reference {
+                    encode_record_into(&record1, args.mode == 5, &mut encoded1)?;
+                    if let Some(record) = &record2 {
+                        encode_record_into(record, args.mode == 5, &mut encoded2)?;
+                    }
+                }
                 for &reference in &collector.hits {
                     let reference = reference as usize;
                     counts[reference] += if record2.is_some() { 2 } else { 1 };
-                    if let Some(encoded) = &encoded1 {
-                        output.write_encoded_record(reference, encoded, false)?;
+                    if write_per_reference {
+                        output.write_encoded_record(reference, &encoded1, false)?;
                     }
-                    if let Some(encoded) = &encoded2 {
-                        output.write_encoded_record(reference, encoded, true)?;
+                    if write_per_reference && record2.is_some() {
+                        output.write_encoded_record(reference, &encoded2, true)?;
                     }
                 }
             }

@@ -10,6 +10,8 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 > **v1.3.** MainFilter now uses canonical bidirectional k-mers, compact locus postings, and reusable dictionaries validated by a reference-content SHA-256; filtering output is unchanged for identical inputs and parameters.
 
+> **v1.3.1.** MainFilter further reduces temporary allocation in long-k-mer and GM2/text encoding paths. At the global memory budget, distributed locus output flushes only its largest buffer. A synthetic long-k-mer stress test was about 9% faster; see the [performance notes](docs/development/mainfilter-performance.md).
+
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
 
 ## Features

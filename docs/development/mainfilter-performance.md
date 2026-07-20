@@ -13,6 +13,9 @@
 | Canonical k-mer 索引 | `KmerIndex` | 每个 k-mer 与其反向互补统一为同一 key，单次查询即可覆盖双链。 | `-gr` 保留为兼容参数；旧策略与 canonical 策略在 A/C/G/T/U 窗口上的招募集合相同。 |
 | Packed locus postings | `ReferenceHits`、`packed_hits` | 多 locus 命中在建索引后压为连续 ID 切片，map value 只保留 offset/length。 | ID 顺序与输出顺序不变；范围超过 `u32` 时明确报错。 |
 | v3 内容验证 cache | `reference_content_hash`、dictionary loader | cache 写入 canonical 标志、`k` 和参考内容 SHA-256；首次建索引时哈希与索引共用一次参考遍历。 | 旧、损坏或参考不匹配 cache 自动重建，不会静默复用。 |
+| 长 k-mer scratch buffers | `long_kmer_into`（`k > 32`） | 复用正反链缓冲；索引中已有 key 时不复制序列；采样扫描直接迭代起点而不创建索引 `Vec`。 | canonical key 与尾端补查规则不变；新 key 仍只复制一次以进入索引。 |
+| 定向输出刷新 | `OutputManager` | 达到总缓冲预算时只刷新当前最大的 buffer，保留 64 MiB 内存上限，避免一次刷新所有冷文件。 | 每个文件内容与记录顺序不变；仅改变写入时机。 |
+| 编码与日志缓冲复用 | `encode_*_into`、`Logger` | GM2/text 编码复用 scratch buffer；日志采用 64 KiB 缓冲并按时间或退出时刷新。 | 编码格式和日志内容不变。 |
 
 默认 UCE 设置通常为 `k=31`。因此 DNA 查表和无取模扫描覆盖常用短 k-mer 路径；按输出模式保留文本行适用于所有 k-mer 长度。
 
@@ -37,6 +40,10 @@
 
 这证明该改动在此输入、参数和输出模式下保持结果不变；它不构成对所有测序策略、参考库或参数组合的生物学等价性声明。
 
+### v1.3.1 合成压力测试
+
+在 release 构建、相同机器的合成 FASTQ A/B 测试中，`k=33`、50 万 150 bp reads、仅扫描模式从 **1.11 s** 降至 **1.01 s**（约快 **9%**）。在 128 loci、约 534 MB GM2 分散输出的压力场景中，耗时从 **0.28 s** 降至 **0.27 s**；该约 4% 差异接近文件系统噪声，但两版输出总字节数一致。该测试证明长 k-mer 路径的改动有效；输出优化主要用于限制 I/O 抖动和避免全局 flush，而非承诺固定加速比例。
+
 ### 解释边界
 
 上述数据来自 **target capture**，不能外推为 genome-skimming 的性能承诺。对 genome-skimming，应选取有代表性的样本，在相同参考、`k` 和 `step` 下进行至少三次计时，并逐字节比较每个输出文件。
@@ -48,7 +55,6 @@
 | LRU 持久输出文件句柄 | 不采用 | 在上述实际输出运行中，`openat`/`close` 合计约占筛选时间 0.5%，不足以抵消句柄淘汰、写入顺序和错误处理的复杂度。 |
 | MainFilter 内部多线程或共享跨样本索引 | 不采用 | 增加并发行为和 I/O 争用；当前优先保留容易逐字节验证的单线程实现。 |
 | `FxHashMap` | 不采用 | 单独 A/B 测试仅比 `AHashMap` 快约 1.6%，未达到 5% 的采用阈值。 |
-| 编码缓冲区复用 | 不采用 | 实际输出模式的 A/B 测试没有稳定收益。 |
 | 改大 `step` | 不属于性能优化 | 会改变采样密度和潜在检出率，必须用 UCE recovery/准确性验证决定，而不能只看运行时间。 |
 | SSHash/GGCAT 重构 | 暂不采用 | 这不是简单替换哈希表：需要静态 k-mer ID 到 locus posting 的新索引和缓存格式，应在确认索引查询仍是主瓶颈后独立设计和验证。 |
 

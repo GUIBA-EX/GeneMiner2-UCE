@@ -10,6 +10,8 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 
 > **v1.3。** MainFilter 现使用 canonical k-mer 双链索引、紧凑 locus posting 表和带参考内容 SHA-256 的可复用字典缓存；相同输入与参数下筛选输出保持不变。
 
+> **v1.3.1。** MainFilter 进一步减少长 k-mer 与 GM2/text 编码的临时分配；分散 locus 输出在达到全局内存预算时只刷新最大缓冲区。长 k-mer 合成压力测试约快 9%；完整性能说明见[开发文档](docs/development/mainfilter-performance.md)。
+
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
 ## 功能
