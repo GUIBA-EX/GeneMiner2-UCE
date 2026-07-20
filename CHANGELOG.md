@@ -1,4 +1,11 @@
 # Changelog
+## v1.2 — Gene QC hardening and documentation refresh
+
+- Added two-pass QC to `gene-resolve`: pre-alignment filtering by translated candidate length and distinct-sample occupancy, followed by post-alignment occupancy and effective-codon-site checks. The new `occupancy_qc.tsv` records both decisions and rejection reasons per family.
+- Added `--gene-min-aa-length` and `--gene-min-effective-codon-sites`; occupancy is now explicitly counted by distinct samples, so multiple candidates from one sample cannot inflate a family’s taxon coverage.
+- Modernized the Chinese and English README and workflow guides with task-oriented navigation, concise input/output/boundary summaries, dedicated bilingual mitochondrial guides, and a testing-stage support notice.
+- Removed two unused legacy Python utilities.
+
 ## v1.1 — Gene-family recovery and conservative repeatome analysis
 
 - Added the `gene` workflow for multi-species bait-defined nuclear gene families: candidate recovery, protein-guided miniprot annotation, conservative strict one-to-one clade resolution, and strict or multicopy ASTER2 species-tree inputs with provenance and QC.
