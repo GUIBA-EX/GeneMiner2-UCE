@@ -89,8 +89,12 @@ def prepare_mito_reference(args):
                     "--tile-step", str(args.mito_tile_step)], check=True)
     args.r = reference_dir
 
-def run_mito_finalize(args, samples):
-    """Finalize the single GM2 UCE assembly with overlaps and paired-read links."""
+def run_mito_finalize(args, samples, require_circular=True):
+    """Finalize the single GM2 UCE assembly with overlaps and paired-read links.
+
+    Adaptive stages retain partial assemblies so a later, deeper stage can improve them.
+    The public one-pass workflow still requires a circular result.
+    """
     if not getattr(args, "mito_genbank", ""):
         return
     mito_bin = find_executable("mito_workflow", internal=True)
@@ -114,7 +118,7 @@ def run_mito_finalize(args, samples):
             "--bridge-minimum-depth", str(args.mito_bridge_min_depth),
             "--maximum-bridge", str(args.mito_max_bridge),
             "--minimum-junction-support", str(getattr(args, "mito_min_junction_support", 3)),
-            "--require-circular", "true",
+            "--require-circular", "true" if require_circular else "false",
         ]
         subprocess.run(command, check=True)
 
@@ -312,6 +316,41 @@ def write_fasta_record(out, header, sequence, line_width=80):
         out.write(sequence[i:i + line_width] + '\n')
 
     return True
+
+def build_mito_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
+    """Build one joint mito rescue reference from all baits and all retained contigs."""
+    bait_path = os.path.join(ref_dir, 'mitochondrion.fasta')
+    contig_path = os.path.join(sample_dir, 'contigs_all', 'mitochondrion.fasta')
+    if not os.path.isfile(bait_path) or not os.path.isfile(contig_path):
+        return 0
+
+    if os.path.isdir(rescue_ref_dir):
+        shutil.rmtree(rescue_ref_dir, ignore_errors=True)
+    os.makedirs(rescue_ref_dir, exist_ok=True)
+
+    rescue_path = os.path.join(rescue_ref_dir, 'mitochondrion.fasta')
+    seen = set()
+    added_contigs = 0
+    with open(rescue_path, 'w') as out:
+        with open(bait_path) as bait_in:
+            for title, sequence in SimpleFastaParser(bait_in):
+                sequence = ''.join(sequence.split()).upper()
+                if sequence and sequence not in seen:
+                    seen.add(sequence)
+                    write_fasta_record(out, title, sequence)
+        with open(contig_path) as contig_in:
+            for index, (_, sequence) in enumerate(SimpleFastaParser(contig_in), start=1):
+                sequence = ''.join(sequence.split()).upper()
+                if len(sequence) < min_contig_len or sequence in seen:
+                    continue
+                seen.add(sequence)
+                added_contigs += 1
+                write_fasta_record(out, f'mito_gm2_seed_{index}', sequence)
+
+    if not seen:
+        os.remove(rescue_path)
+    return added_contigs
+
 
 def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
     """拿原参考和靠谱 contig 拼一套 UCE 救援参考。"""
@@ -748,13 +787,13 @@ def get_uce_rescue_parallelism(total_threads, sample_count):
     rescue_workers = max(1, min(4, sample_count, total_threads // rescue_threads))
     return rescue_workers, rescue_threads
 
-def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1, q2, args, rescue_kmer_dict_path):
+def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1, q2, args, rescue_kmer_dict_path, is_mito=False):
     """把 UCE 救援过滤要跑的两趟命令整齐备好。"""
     dict_cmd = [filter_bin, '-r', rescue_ref_dir, '-o', sample_dir, '-kf', str(args.kf),
                 '-s', str(args.step_size), '-gr', '-lkd', rescue_kmer_dict_path, '-m', '2']
     reads_cmd = [filter_bin, '-r', rescue_ref_dir, '-q1', q1, '-q2', q2, '-o', sample_dir,
                  '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                 '-m', '5', '-lb', '-lkd', rescue_kmer_dict_path]
+                 '-m', '4' if is_mito else '5', '-lb', '-lkd', rescue_kmer_dict_path]
 
     if args.max_reads > 0:
         reads_cmd.extend(['-m_reads', str(args.max_reads)])
@@ -817,7 +856,8 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
     is_mito = bool(getattr(args, "is_mito_workflow", False))
     kmer_dict_path = get_reference_kmer_dict_path(args, out_loc)
     args.assembler_reference_cache_dir = get_assembler_reference_cache_dir(args, out_loc)
-    rescue_enabled = args.uce_rescue_reads
+    # Mito always performs one seed-and-recruit round per adaptive depth.
+    rescue_enabled = args.uce_rescue_reads or is_mito
     failed_samples = []
     rescue_workers, rescue_threads = get_uce_rescue_parallelism(args.p, len(samples))
 
@@ -1078,7 +1118,11 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             filtered_dir = os.path.join(sample_dir, 'filtered')
 
             before_rows = read_uce_summary(summary_path)
-            added_contigs = build_uce_rescue_refs(args.r, sample_dir, rescue_ref_dir, args.uce_rescue_min_contig_length)
+            added_contigs = (
+                build_mito_rescue_refs(args.r, sample_dir, rescue_ref_dir, args.uce_rescue_min_contig_length)
+                if is_mito else
+                build_uce_rescue_refs(args.r, sample_dir, rescue_ref_dir, args.uce_rescue_min_contig_length)
+            )
 
             if added_contigs == 0:
                 print(f'No preliminary UCE contigs for {name}; skipping raw-read rescue.')
@@ -1101,6 +1145,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                     q2,
                     args,
                     rescue_kmer_dict_path,
+                    is_mito=is_mito,
                 )
 
                 subprocess.run(dict_cmd, check=True)
@@ -2227,81 +2272,166 @@ def read_single_fasta_sequence(path):
     with open(path) as handle:
         return ''.join(line.strip() for line in handle if not line.startswith('>'))
 
-def circularly_consistent(left, right, minimum_identity=0.9999):
-    """Return true when two circular sequences have the same cut-independent sequence.
+def minimal_circular_rotation(sequence):
+    """Return the lexicographically smallest rotation in linear time (Booth)."""
+    if not sequence:
+        return sequence
+    doubled = sequence + sequence
+    size = len(sequence)
+    left, right, offset = 0, 1, 0
+    while left < size and right < size and offset < size:
+        a = doubled[left + offset]
+        b = doubled[right + offset]
+        if a == b:
+            offset += 1
+            continue
+        if a > b:
+            left += offset + 1
+            if left == right:
+                left += 1
+        else:
+            right += offset + 1
+            if left == right:
+                right += 1
+        offset = 0
+    start = min(left, right)
+    return doubled[start:start + size]
 
-    Exact equality remains the normal fast path.  The seeded comparison also accepts
-    the very small number of consensus differences expected between consecutive
-    read-depth stages, without treating a materially different assembly as stable.
-    """
-    if len(left) != len(right) or not left:
-        return False
-    doubled = right + right
-    if left in doubled:
-        return True
-    seed_length = min(31, len(left))
-    anchors = sorted({0, len(left) // 4, len(left) // 2, len(left) * 3 // 4})
-    starts = set()
-    for anchor in anchors:
-        seed = left[anchor:anchor + seed_length]
-        start = doubled.find(seed)
-        while 0 <= start < len(right):
-            starts.add((start - anchor) % len(right))
-            start = doubled.find(seed, start + 1)
-    for start in starts:
-        candidate = doubled[start:start + len(left)]
-        matches = sum(base == candidate_base for base, candidate_base in zip(left, candidate))
-        if matches / len(left) >= minimum_identity:
-            return True
-    return False
+
+def canonical_circular_sequence(sequence):
+    """Canonicalize cut and strand before strict adaptive-stage comparison."""
+    sequence = sequence.upper()
+    forward = minimal_circular_rotation(sequence)
+    complement = str.maketrans("ACGTRYSWKMBDHVN", "TGCAYRSWMKVHDBN")
+    reverse = minimal_circular_rotation(sequence.translate(complement)[::-1])
+    return min(forward, reverse)
+
+
+def circularly_consistent(left, right):
+    """Return true only for exactly identical circular sequences, independent of cut/strand."""
+    return bool(left) and len(left) == len(right) and (
+        canonical_circular_sequence(left) == canonical_circular_sequence(right)
+    )
+
 
 def mito_stage_is_circular(path):
     try:
         with open(path) as handle:
-            return any(line.strip() == 'status\tcircular' for line in handle)
+            return any(line.strip() == "status\tcircular" for line in handle)
     except OSError:
         return False
 
+
+def _copy_mito_stage(stage_output, base_output, samples):
+    for sample in samples:
+        source = os.path.join(stage_output, sample)
+        destination = os.path.join(base_output, sample)
+        if os.path.isdir(destination):
+            shutil.rmtree(destination)
+        shutil.copytree(source, destination)
+
+
+def mito_stage_status(path):
+    try:
+        with open(path) as handle:
+            for line in handle:
+                key, separator, value = line.rstrip("\n").partition("\t")
+                if key == "status" and separator:
+                    return value
+    except OSError:
+        pass
+    return "missing"
+
+
+def mito_stage_digest(path, status):
+    try:
+        digest = hashlib.sha256(status.encode())
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return ""
+
+
 def run_mito_adaptive(args, samples):
     base_output = args.o.strip()
-    stage_root = os.path.join(base_output, '.mito_adaptive')
+    stage_root = os.path.join(base_output, ".mito_adaptive")
     reference_dir = args.r
     original_max_reads = args.max_reads
+    original_reuse_reference_cache = args.reuse_reference_cache
+    original_reference_cache_dir = getattr(args, "reference_cache_dir", None)
+    # Stage outputs are separate, but their GenBank-derived reference is immutable.
+    args.reuse_reference_cache = True
+    if not getattr(args, "reference_cache_dir", None):
+        args.reference_cache_dir = os.path.join(base_output, ".gm2_reference_cache")
     previous = None
     limit = args.mito_initial_reads
     maximum = args.mito_max_reads
-    while True:
-        stage_output = os.path.join(stage_root, f'{limit}m')
-        args.o = stage_output
-        args.max_reads = limit
-        do_filter_assemble(args, samples, True, True, True)
-        write_uce_outputs(args, samples)
-        run_mito_finalize(args, samples)
-        current = {}
-        for sample in samples:
-            sample_dir = os.path.join(stage_output, sample, 'mito')
-            summary = os.path.join(sample_dir, 'mitochondrial_assembly_summary.tsv')
-            fasta = os.path.join(sample_dir, 'mitochondrial_assembly.fasta')
-            if not mito_stage_is_circular(summary):
-                current[sample] = None
-            else:
-                current[sample] = read_single_fasta_sequence(fasta)
-        if previous and all(current.get(sample) and circularly_consistent(previous[sample], current[sample]) for sample in samples):
+    try:
+        while True:
+            stage_output = os.path.join(stage_root, f"{limit}m")
+            args.o = stage_output
+            args.max_reads = limit
+            do_filter_assemble(args, samples, True, True, True)
+            write_uce_outputs(args, samples)
+            # A partial stage is evidence for the next stage, not a fatal error.
+            run_mito_finalize(args, samples, require_circular=False)
+            current = {}
             for sample in samples:
-                source = os.path.join(stage_output, sample)
-                destination = os.path.join(base_output, sample)
-                if os.path.isdir(destination):
-                    shutil.rmtree(destination)
-                shutil.copytree(source, destination)
-            args.o = base_output
-            args.max_reads = original_max_reads
-            args.r = reference_dir
-            return
-        previous = current
-        if maximum and limit >= maximum:
-            raise RuntimeError(f'mito adaptive stop did not confirm a circular assembly by {limit}M reads')
-        next_limit = limit * 2
-        limit = min(next_limit, maximum) if maximum else next_limit
+                sample_dir = os.path.join(stage_output, sample, "mito")
+                summary = os.path.join(sample_dir, "mitochondrial_assembly_summary.tsv")
+                fasta = os.path.join(sample_dir, "mitochondrial_assembly.fasta")
+                status = mito_stage_status(summary)
+                current[sample] = {
+                    "status": status,
+                    "sequence": read_single_fasta_sequence(fasta) if status == "circular" else "",
+                    "digest": mito_stage_digest(fasta, status),
+                }
+
+            stable = previous and all(
+                current[sample]["status"] == previous[sample]["status"]
+                and (
+                    circularly_consistent(previous[sample]["sequence"], current[sample]["sequence"])
+                    if current[sample]["status"] == "circular"
+                    else bool(current[sample]["digest"])
+                    and current[sample]["digest"] == previous[sample]["digest"]
+                )
+                for sample in samples
+            )
+            if stable:
+                _copy_mito_stage(stage_output, base_output, samples)
+                if all(current[sample]["status"] == "circular" for sample in samples):
+                    return
+                statuses = ", ".join(
+                    f"{sample}={current[sample]["status"]}" for sample in samples
+                )
+                raise RuntimeError(
+                    "mito adaptive stop reached a stable non-circular assembly; "
+                    f"preserved the final partial result ({statuses})"
+                )
+
+            previous = current
+            if maximum and limit >= maximum:
+                # Preserve the most informative stage for inspection and restart.
+                _copy_mito_stage(stage_output, base_output, samples)
+                unresolved = [
+                    sample for sample in samples if current[sample]["status"] != "circular"
+                ]
+                detail = ("; unresolved samples: " + ", ".join(unresolved)
+                          if unresolved else
+                          "; circular assemblies changed between the final two stages")
+                raise RuntimeError(
+                    f"mito adaptive stop did not confirm a stable circular assembly by {limit}M reads{detail}"
+                )
+            next_limit = limit * 2
+            limit = min(next_limit, maximum) if maximum else next_limit
+    finally:
+        args.o = base_output
+        args.max_reads = original_max_reads
+        args.r = reference_dir
+        args.reference_cache_dir = original_reference_cache_dir
+        args.reuse_reference_cache = original_reuse_reference_cache
 
 def run_gene_finalize(args, samples):
     """Summarize original-rust candidate contigs without altering assembly behavior."""
@@ -2763,6 +2893,11 @@ if __name__ == '__main__':
         args.assembly_mode = 'uce'
         if args.ka == 0:
             args.ka = 31
+        # Mito contigs are seeds for a joint graph, not fixed gene-sized products.
+        if args.soft_boundary == 'auto':
+            args.soft_boundary = 'unlimited'
+        if args.assembler_graph_format == 'none':
+            args.assembler_graph_format = 'gfa'
         args.uce_min_read_density = 0
         args.search_depth = max(args.search_depth, 30000)
     elif args.mito_genbank:

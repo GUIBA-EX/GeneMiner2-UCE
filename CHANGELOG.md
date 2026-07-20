@@ -5,6 +5,9 @@
 - Replaced `String`-based FASTQ/FASTA line reading with byte-level parsing, removing per-line UTF-8 validation and a redundant copy; enlarged the gzip and file input buffers to cut read syscall frequency.
 - Added runtime detection of zlib-ng via `dlopen`/`dlsym`: uses its SIMD-accelerated gzip decompression when present in the environment, and falls back transparently to system zlib otherwise with no build-time dependency change.
 - Verified byte-identical filtering output across all output modes and both gzip backends on real UCE target-capture data; documented measured gains in `docs/development/mainfilter-performance.md`.
+- Added a joint mito rescue round: after the first UCE-style assembly pass, all retained contigs become sample-specific seeds that are combined with the GenBank baits into one rescue reference, then recruited and reassembled together with the original paired reads.
+- Replaced the near-identical-consensus adaptive-stop heuristic with an exact, cut- and strand-independent circular sequence comparison; adaptive stages now retain partial assemblies across read-depth increases instead of requiring circularity at every stage, and reuse the immutable GenBank-derived reference cache across stages.
+- Added unit tests for the joint rescue reference builder, the exact circular comparator, and the adaptive stage state machine.
 
 ## v1.3.2 — Rust consensus generation
 

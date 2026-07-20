@@ -28,12 +28,15 @@ cli/geneminer2 mito \
 GenBank gene/rRNA/tRNA + genome/tile baits
 → MainFilter 招募 paired reads
 → 单一 mitochondrial read pool
-→ refilter → Rust UCE assembler
+→ refilter → Rust UCE 联合图组装
+→ 全部 contigs_all 作为样本特异性 seed，从原始 paired reads 再招募一次并联合重组装
 → overlap、mate-link 与局部 read graph 连接
 → junction-spanning reads 验证闭环
 ```
 
 所有 bait 写入一个线粒体 locus。参考仅用于招募与 seed；最终序列不按参考坐标拼接或补洞。mate link 只决定候选邻接和方向，断点碱基必须由同一 filtered read pool 的唯一路径恢复；不能恢复时保持断裂，不插入 `N`。
+
+`mito` 默认启用无限延伸与 GFA 图输出；若参考较远或覆盖较低，建议显式使用较敏感的 `-kf 17–25 -s 1`。每个自适应深度仍受 `--mito-max-reads` 限制；需要扫描完整文库时应将其设为不小于输入量。
 
 ## 成功标准
 
@@ -42,7 +45,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 ## 常用与专家参数
 
 - `--mito-genbank`：必需；带注释的线粒体 GenBank 参考。
-- `--mito-max-reads 320`：自适应流程最大约 1.05M paired-read blocks；连续两个阶段产生相同闭环时提前停止。
+- `--mito-max-reads 320`：自适应流程最大约 1.05M paired-read blocks；连续两个阶段产生严格一致的闭环（忽略切点和链方向）时提前停止。
 - `--no-mito-adaptive-stop`：关闭分阶段早停，改用普通 `--max-reads` 的一次性过滤。
 
 以下为隐藏的专家覆盖参数，仅在明确诊断招募、图连接或闭环失败时调整：`--mito-min-overlap`、`--mito-min-overlap-identity`、`--mito-terminal-window`、`--mito-link-kmer`、`--mito-min-link-hits`、`--mito-min-pair-support`、`--mito-bridge-kmer`、`--mito-bridge-min-depth`、`--mito-max-bridge`、`--mito-min-junction-support`。

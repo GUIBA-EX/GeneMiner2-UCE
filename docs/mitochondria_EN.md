@@ -28,12 +28,15 @@ cli/geneminer2 mito \
 GenBank gene/rRNA/tRNA + genome/tile baits
 → MainFilter paired-read recruitment
 → one mitochondrial read pool
-→ refilter → Rust UCE assembler
+→ refilter → joint Rust UCE graph assembly
+→ all contigs_all become sample-specific seeds; recruit original paired reads once more and jointly reassemble
 → overlap, mate-link, and local read-graph joins
 → junction-spanning read validation of circularity
 ```
 
 All baits are written as one mitochondrial locus. The reference is used only for recruitment and seeding: final sequence is neither coordinate-stitched nor reference-filled. Mate links propose adjacency and orientation only; gap bases must be recovered from a unique path in the same filtered read pool. Unresolved gaps remain broken and are never filled with `N`.
+
+`mito` enables unlimited extension and GFA graph output by default. For distant references or low coverage, explicitly start with sensitive recruitment such as `-kf 17–25 -s 1`. Each adaptive depth is still capped by `--mito-max-reads`; set it at least as high as the input when the full library must be scanned.
 
 ## Success criteria
 
@@ -42,7 +45,7 @@ A circular result must have one component, no `N`, every join supported by an ov
 ## Common and expert parameters
 
 - `--mito-genbank`: required annotated mitochondrial GenBank reference.
-- `--mito-max-reads 320`: at most approximately 1.05M paired-read blocks per adaptive stage; the workflow stops early when two successive stages return the same circular sequence.
+- `--mito-max-reads 320`: at most approximately 1.05M paired-read blocks per adaptive stage; the workflow stops early when two successive stages return an exactly identical circular sequence after cut/strand normalization.
 - `--no-mito-adaptive-stop`: disable staged early stopping and use the normal one-pass `--max-reads` behaviour.
 
 The following hidden expert overrides should be changed only to diagnose a known recruitment, graph-joining, or circularity problem: `--mito-min-overlap`, `--mito-min-overlap-identity`, `--mito-terminal-window`, `--mito-link-kmer`, `--mito-min-link-hits`, `--mito-min-pair-support`, `--mito-bridge-kmer`, `--mito-bridge-min-depth`, `--mito-max-bridge`, and `--mito-min-junction-support`.

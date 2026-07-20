@@ -12,17 +12,18 @@ import unix_command
 
 
 class MitoWorkflowTests(unittest.TestCase):
-    def test_circular_consistency_accepts_rotation_and_near_identical_consensus(self):
+    def test_circular_consistency_accepts_rotation_and_reverse_complement_only(self):
         sequence = "ACGTTGCA" * 1500
         rotated = sequence[137:] + sequence[:137]
         self.assertTrue(unix_command.circularly_consistent(sequence, rotated))
-        near_identical = rotated[:4000] + "A" + rotated[4001:]
-        self.assertTrue(unix_command.circularly_consistent(sequence, near_identical))
+        self.assertTrue(unix_command.circularly_consistent(sequence, "TGCAACGT" * 1500))
+        complement = str.maketrans("ACGT", "TGCA")
+        self.assertTrue(unix_command.circularly_consistent(sequence, sequence.translate(complement)[::-1]))
 
-    def test_circular_consistency_handles_a_difference_in_the_first_seed(self):
+    def test_circular_consistency_rejects_one_base_difference(self):
         sequence = "ACGTTGCA" * 1500
         near_identical = "T" + sequence[1:]
-        self.assertTrue(unix_command.circularly_consistent(sequence, near_identical))
+        self.assertFalse(unix_command.circularly_consistent(sequence, near_identical))
 
     def test_circular_consistency_rejects_materially_different_sequence(self):
         sequence = "ACGTTGCA" * 1500
@@ -51,6 +52,129 @@ class MitoWorkflowTests(unittest.TestCase):
             self.assertEqual(command[command.index("--tile-step") + 1], "600")
             self.assertTrue(args.r.endswith(".gm2_mito_reference"))
             self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_mito_rescue_reference_keeps_all_baits_and_nonredundant_contigs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ref = root / "reference"
+            sample = root / "sample"
+            ref.mkdir()
+            (sample / "contigs_all").mkdir(parents=True)
+            (ref / "mitochondrion.fasta").write_text(">bait_a\nAAAA\n>bait_b\nCCCC\n")
+            (sample / "contigs_all" / "mitochondrion.fasta").write_text(
+                ">duplicate\nAAAA\n>seed_one\nGGGGTTTT\n>short\nAC\n>seed_two\nTTTTGGGG\n"
+            )
+            rescue = root / "rescue"
+            self.assertEqual(unix_command.build_mito_rescue_refs(str(ref), str(sample), str(rescue), 4), 2)
+            content = (rescue / "mitochondrion.fasta").read_text()
+            self.assertIn(">bait_a", content)
+            self.assertIn(">bait_b", content)
+            self.assertIn(">mito_gm2_seed_2", content)
+            self.assertIn(">mito_gm2_seed_4", content)
+            self.assertEqual(content.count("AAAA"), 1)
+
+    def test_mito_rescue_filter_uses_text_paired_output(self):
+        args = SimpleNamespace(kf=25, step_size=1, max_reads=0)
+        _, reads = unix_command.build_uce_rescue_filter_commands(
+            "MainFilterNew", "refs", "sample", "r1.fq", "r2.fq", args, "dict", is_mito=True
+        )
+        self.assertEqual(reads[reads.index("-m") + 1], "4")
+
+    def test_adaptive_stages_allow_partial_and_stop_after_two_exact_circles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls, policies, cache_flags = [], [], []
+            args = SimpleNamespace(
+                o=str(root / "output"), r=str(root / "reference"), max_reads=0,
+                mito_initial_reads=1, mito_max_reads=2, reference_cache_dir=None, reuse_reference_cache=False,
+            )
+
+            def fake_filter(current_args, _samples, *_stages):
+                calls.append(current_args.max_reads)
+                cache_flags.append(current_args.reuse_reference_cache)
+
+            def fake_finalize(current_args, _samples, require_circular=True):
+                policies.append(require_circular)
+                out = Path(current_args.o) / "sample" / "mito"
+                out.mkdir(parents=True, exist_ok=True)
+                sequence = "ACGTTGCA" * 100
+                if current_args.max_reads == 2:
+                    sequence = sequence[17:] + sequence[:17]
+                (out / "mitochondrial_assembly_summary.tsv").write_text("metric\tvalue\nstatus\tcircular\n")
+                (out / "mitochondrial_assembly.fasta").write_text(f">mito\n{sequence}\n")
+
+            with mock.patch.object(unix_command, "do_filter_assemble", side_effect=fake_filter), \
+                 mock.patch.object(unix_command, "write_uce_outputs"), \
+                 mock.patch.object(unix_command, "run_mito_finalize", side_effect=fake_finalize):
+                unix_command.run_mito_adaptive(args, {"sample": ("r1.fq", "r2.fq")})
+
+            self.assertEqual(calls, [1, 2])
+            self.assertEqual(policies, [False, False])
+            self.assertEqual(cache_flags, [True, True])
+            self.assertTrue((root / "output" / "sample" / "mito" / "mitochondrial_assembly.fasta").is_file())
+            self.assertEqual(args.o, str(root / "output"))
+            self.assertEqual(args.max_reads, 0)
+            self.assertIsNone(args.reference_cache_dir)
+            self.assertFalse(args.reuse_reference_cache)
+
+    def test_adaptive_partial_stage_reaches_the_next_depth_before_failing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls, policies = [], []
+            args = SimpleNamespace(
+                o=str(root / "output"), r=str(root / "reference"), max_reads=0,
+                mito_initial_reads=1, mito_max_reads=2, reference_cache_dir=None, reuse_reference_cache=False,
+            )
+
+            def fake_filter(current_args, _samples, *_stages):
+                calls.append(current_args.max_reads)
+
+            def fake_finalize(current_args, _samples, require_circular=True):
+                policies.append(require_circular)
+                out = Path(current_args.o) / "sample" / "mito"
+                out.mkdir(parents=True, exist_ok=True)
+                status = "partial_multi_contig" if current_args.max_reads == 1 else "circular"
+                (out / "mitochondrial_assembly_summary.tsv").write_text(f"metric\tvalue\nstatus\t{status}\n")
+                (out / "mitochondrial_assembly.fasta").write_text(">mito\nACGTTGCAACGTTGCA\n")
+
+            with mock.patch.object(unix_command, "do_filter_assemble", side_effect=fake_filter), \
+                 mock.patch.object(unix_command, "write_uce_outputs"), \
+                 mock.patch.object(unix_command, "run_mito_finalize", side_effect=fake_finalize):
+                with self.assertRaisesRegex(RuntimeError, "stable circular assembly"):
+                    unix_command.run_mito_adaptive(args, {"sample": ("r1.fq", "r2.fq")})
+
+            self.assertEqual(calls, [1, 2])
+            self.assertEqual(policies, [False, False])
+            self.assertTrue((root / "output" / "sample" / "mito" / "mitochondrial_assembly.fasta").is_file())
+
+    def test_adaptive_stable_partial_stops_without_deeper_scan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls = []
+            args = SimpleNamespace(
+                o=str(root / "output"), r=str(root / "reference"), max_reads=0,
+                mito_initial_reads=1, mito_max_reads=8, reference_cache_dir=None, reuse_reference_cache=False,
+            )
+
+            def fake_filter(current_args, _samples, *_stages):
+                calls.append(current_args.max_reads)
+
+            def fake_finalize(current_args, _samples, require_circular=True):
+                out = Path(current_args.o) / "sample" / "mito"
+                out.mkdir(parents=True, exist_ok=True)
+                (out / "mitochondrial_assembly_summary.tsv").write_text(
+                    "metric\tvalue\nstatus\tpartial_multi_contig\n"
+                )
+                (out / "mitochondrial_assembly.fasta").write_text(">contig_1\nAAAA\n>contig_2\nCCCC\n")
+
+            with mock.patch.object(unix_command, "do_filter_assemble", side_effect=fake_filter), \
+                 mock.patch.object(unix_command, "write_uce_outputs"), \
+                 mock.patch.object(unix_command, "run_mito_finalize", side_effect=fake_finalize):
+                with self.assertRaisesRegex(RuntimeError, "stable non-circular assembly"):
+                    unix_command.run_mito_adaptive(args, {"sample": ("r1.fq", "r2.fq")})
+
+            self.assertEqual(calls, [1, 2])
+            self.assertTrue((root / "output" / "sample" / "mito" / "mitochondrial_assembly.fasta").is_file())
 
     @mock.patch.object(unix_command.subprocess, "run")
     @mock.patch.object(unix_command, "find_executable", return_value="/gm2/mito_workflow")

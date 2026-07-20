@@ -42,3 +42,7 @@ output/
 outputs/
 results/
 validation/
+
+# Local vendored checkouts and downloaded test fixtures (too large / nested repos, never committed)
+third_party/
+tests/data/
