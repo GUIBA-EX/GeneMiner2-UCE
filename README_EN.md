@@ -12,6 +12,8 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 > **v1.3.1.** MainFilter further reduces temporary allocation in long-k-mer and GM2/text encoding paths. At the global memory budget, distributed locus output flushes only its largest buffer. A synthetic long-k-mer stress test was about 9% faster; see the [performance notes](docs/development/mainfilter-performance.md).
 
+> **v1.3.2.** The consensus stage, including SAM/CIGAR handling, IUPAC sequence generation, and the optional mutation-density image, now runs in Rust; the main workflow no longer depends on matplotlib or SciPy.
+
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
 
 ## Features

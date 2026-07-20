@@ -1,4 +1,11 @@
 # Changelog
+## v1.3.2 — Rust consensus generation
+
+- Replaced the production `build_consensus` executable with a Rust implementation while preserving its command name and the existing consensus stage in the main CLI.
+- Added SAM and gzip-SAM parsing, CIGAR-aware base/deletion/insertion handling, primary-alignment filtering, multi-reference IUPAC consensus FASTA output, and compatible `.sam.gz` default prefixes.
+- Replaced the optional Python matplotlib/SciPy mutation-density plot with a portable Rust bitmap PNG implementation; the consensus production path no longer requires Python plotting dependencies.
+- Added Rust unit, gzip/multi-reference/indel/primary-alignment, PNG, and legacy-output compatibility regression tests.
+
 ## v1.3 — MainFilter canonical index and safe cache
 
 - Made Rust `MainFilterNew` use canonical k-mers for strand-invariant exact recruitment, retaining the `-gr` flag only as a compatibility alias. Recruitment and per-locus output remain equivalent for identical inputs and parameters.

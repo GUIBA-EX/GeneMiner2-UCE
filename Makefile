@@ -1,4 +1,7 @@
-PY_SRC := build_consensus unix_command
+PY_SRC := unix_command
+CONSENSUS_BIN := cli/bin/build_consensus
+CONSENSUS_RUST_MANIFEST := rust/build_consensus/Cargo.toml
+CONSENSUS_RUST_SOURCES := $(CONSENSUS_RUST_MANIFEST) $(wildcard rust/build_consensus/src/*.rs)
 PY_BIN := $(patsubst %,cli/bin/%,$(PY_SRC))
 RUST_ASSEMBLER_BIN := cli/bin/main_assembler-rust
 ORIGINAL_ASSEMBLER_BIN := cli/bin/main_assembler-original
@@ -30,7 +33,7 @@ FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp script
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(PY_BIN)
+build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(PY_BIN)
 	rm -f -r cli/bin/_internal
 	cp -L -r scripts/dist/unix_command/_internal cli/bin/
 	cd cli && ln -f -r -s bin/unix_command geneminer2
@@ -42,6 +45,7 @@ clean:
 	rm -f -r rust/main_assembler_original/target
 	rm -f -r scripts/dist
 	rm -f -r rust/main_filter_new/target
+	rm -f -r rust/build_consensus/target
 	rm -f -r rust/main_refilter_new/target
 	rm -f -r rust/main_assembler/target
 	rm -f -r rust/main_population/target
@@ -55,6 +59,10 @@ distclean: clean
 
 cli/bin:
 	mkdir -p cli/bin
+
+$(CONSENSUS_BIN): $(CONSENSUS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(CONSENSUS_RUST_MANIFEST)
+	install rust/build_consensus/target/release/build_consensus $(CONSENSUS_BIN)
 
 cli/bin/MainFilterNew: $(FILTER_RUST_SOURCES) $(FILTER_HAXE_SOURCES) | cli/bin
 	if command -v cargo >/dev/null 2>&1; then \
