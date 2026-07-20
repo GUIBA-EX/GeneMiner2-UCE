@@ -1,4 +1,11 @@
 # Changelog
+## v1.1 — Gene-family recovery and conservative repeatome analysis
+
+- Added the `gene` workflow for multi-species bait-defined nuclear gene families: candidate recovery, protein-guided miniprot annotation, conservative strict one-to-one clade resolution, and strict or multicopy ASTER2 species-tree inputs with provenance and QC.
+- Added the standalone `te` workflow for reference-free short-read repeatome analysis: taxon-balanced discovery, exact-equivalence curation, read-supported conservative annotation, and candidate-read RPM quantification without repeated MainFilter runs.
+- Added explicit, reproducible manifests and bounded evidence rules for both workflows; TE annotation never merges repeat equivalence groups and reports weak evidence as unresolved rather than forcing a TE family.
+- Added synchronized Chinese and English README, manual, and dedicated Gene/TE workflow documentation; the release build now includes the new Rust executables.
+
 ## v1.0 — Reference-level profiling, pan-reference population analysis, and mitochondrial workflow
 
 - Reworked marker profiling into a general reference-level evidence workflow: GeneMiner2 recruitment plus Themisto pseudoalignment now reports per-reference hit counts, fractional shared-query support, and singleton support. Removed the mSWEEP dependency, group-abundance output, and associated CLI options; an optional group map is annotation only.

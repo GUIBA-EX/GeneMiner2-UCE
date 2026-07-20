@@ -25,6 +25,8 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 | `profiling` | WGS 或宏基因组中的任意 marker | 每条参考序列的支持证据 |
 | `mito` | 常规环形动物线粒体 | 有 reads 支持的闭环或 partial 组装 |
 | `population` | 已完成 UCE 组装的多个样本 | 公共伪参考、VCF、PCA 与 ADMIXTURE 输入 |
+| `te` | genome skimming 或 WGS 短读长 | 保守的 repeatome library、样本 RPM 与状态 |
+| `gene` | 多物种 bait 定义的核基因家族 | 候选 contig 状态与队列 FASTA/矩阵 |
 
 ## 安装
 
@@ -87,6 +89,47 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 **说明。** UCE 只使用 `uce-rust`。rescue 用第一轮 contig 加原始参考再招一次 reads；质量变差时退回第一轮。见 [Assembler 章节](docs/assembler_ZH.md)。
 
+
+## TE / Repeatome 模式
+
+**用途。** 对 genome-skimming 或 WGS 短读长进行参考无关的 repeatome 分析：`discover` 发现 atomic seeds，`curate` 保守建立 EQ library，`annotate` 添加非破坏性 repeat 注释证据，`quantify` 复用 candidate reads 输出 RPM 与状态。它不是完整 TE 组装、插入位点检测或 TE 系统树流程。
+
+```bash
+cli/geneminer2 te -f te_samples.tsv -o te_output -p 32
+```
+
+TE 使用独立样本表：配对 reads 为 `taxon_id sample_id read1 read2`，单端 reads 为 `taxon_id sample_id read1`；不需要 `-r`。详见 [TE / repeatome 章节](docs/te_ZH.md)。
+
+## Gene 模式
+
+`gene` 用多物种 bait 恢复核基因家族的候选 contig；每个参考 FASTA 是一个 family。候选数仅是组装观察，不是等位基因或真实拷贝数结论。
+
+```bash
+cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8
+```
+
+主要结果在 `gene_output/gene/`：候选状态、family 矩阵、`pseudo_sco/` 与 `multiple_candidate_families/`。可在恢复后自动做蛋白引导注释：
+
+```bash
+cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8 \
+  --gene-protein-reference family_proteins
+```
+
+```bash
+# 注释 → 候选树解析
+cli/geneminer2 gene-annotate --gene-input gene_output/gene \
+  --gene-protein-reference family_proteins -o gene_annotation -p 8
+cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
+
+# 物种树：严格一对一 / 保留多拷贝
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \
+  --gene-species-mode strict --gene-aster astral
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
+  --gene-species-mode multicopy --gene-aster astral
+```
+
+`gene-resolve` 产生 `resolved_1to1/`、`unresolved_multicandidate/`、`family_qc.tsv` 和 `tree_selection_qc.tsv`。strict 输入使用样本名；multicopy 额外使用候选名到样本名映射。`--gene-taper correction_multi.jl` 可做可选 masking；`--gene-ufboot` 只能为 `0`（默认）或 `≥1000`。
+
 ## Mito 模式
 
 **用途。** 仅适用于**常规单条环形动物线粒体基因组**，并要求带注释 GenBank 参考；不适合多分子、严重重排、强异质性、复杂植物或真菌线粒体。
@@ -136,6 +179,8 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 | 线粒体 | [线粒体章节](docs/5.mito.md) |
 | Marker profiling | [Profiling 章节](docs/profiling_ZH.md) |
 | UCE 群体遗传 | [Population 章节](docs/population_ZH.md) |
+| Gene 子命令 | [Gene 章节](docs/gene_ZH.md) |
+| TE / repeatome | [TE / repeatome 章节](docs/te_ZH.md) |
 | 更新记录 | [CHANGELOG](CHANGELOG.md) |
 
 ## 引用与联系

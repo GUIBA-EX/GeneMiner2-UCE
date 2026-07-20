@@ -35,7 +35,7 @@ conda activate geneminer
 
 ```bash
 conda install -c bioconda \
-  aster blast clustalo fasttree iqtree mafft magicblast minimap2 raxml-ng trimal veryfasttree
+  aster blast clustalo fasttree iqtree mafft magicblast miniprot minimap2 raxml-ng trimal veryfasttree
 ```
 
 可选工具：
@@ -64,7 +64,7 @@ cli/geneminer2 -h
 
 ## 2. 输入文件
 
-所有命令均需要以下三个参数：
+多数 reads 恢复命令需要以下三个参数；`gene-annotate`、`gene-resolve` 和 `gene-tree` 改用 `--gene-input` 与 `-o`，不需要 `-f/-r`：
 
 - `-f FILE`：tab 分隔的样本表；
 - `-r DIR`：参考序列目录；
@@ -102,6 +102,11 @@ references/
 | `profiling` | 一次招募 marker reads，免组装估计 group-level marker 信号 |
 | `refilter` | 进一步分配和过滤每个 locus 的 reads |
 | `assemble` | 使用 wDBG 组装目标序列 |
+| `gene` | 恢复核基因家族候选 contig |
+| `gene-annotate` | 使用蛋白参考进行 miniprot 注释 |
+| `gene-resolve` | 比对、建基因树并解析严格一对一子树 |
+| `gene-tree` | 从 strict 或 multicopy gene trees 推断物种树 |
+| `te` | 从短读长数据发现、整理、注释并定量保守 repeatome 单元 |
 | `population` | 构建公共 UCE 参考并生成群体 SNP、PCA 和 ADMIXTURE 结果 |
 | `consensus` | 在杂合位点生成一致性序列 |
 | `trim` | 按参考序列裁切侧翼 |
@@ -149,6 +154,38 @@ cli/geneminer2 profiling \
 ```
 
 输入、decoy、cache、QC 与定量解释见[Profiling 章节](../../docs/profiling_ZH.md)。
+
+### 4.3 Gene 家族恢复与解析
+
+`gene` 是独立完整流程：每个 bait FASTA 为一个 family，可含多个物种。它固定使用 `original-rust`，输出候选而不直接宣称单拷贝。
+
+```bash
+cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8
+cli/geneminer2 gene-annotate --gene-input gene_output/gene \
+  --gene-protein-reference family_proteins -o gene_annotation -p 8
+cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
+```
+
+`gene-resolve` 需要 MAFFT 与 IQ-TREE；可用 `--gene-taper correction_multi.jl` 做 masking。`--gene-ufboot` 只能为 `0`（默认）或 `≥1000`。输出中的 `family_qc.tsv` 是对齐 QC，`tree_selection_qc.tsv` 记录 strict 子树和占有率。
+
+```bash
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \
+  --gene-species-mode strict --gene-aster astral
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
+  --gene-species-mode multicopy --gene-aster astral
+```
+
+strict 使用每树一条/样本的 ASTRAL 输入；multicopy 同时传入候选到样本的映射。两条路线均需要 ASTER2 `astral`。
+
+### 4.4 TE / repeatome
+
+`te` 是独立完整流程，不需要 `-r`。它使用四列样本表：`taxon_id sample_id read1 read2`（单端时省略第四列），并按 `discover → curate → annotate → quantify` 运行。
+
+```bash
+cli/geneminer2 te -f te_samples.tsv -o te_output -p 32
+```
+
+`--te-library` 可选地提供 `name#Class/Subclass` 格式的已分类 TE FASTA；注释不会合并 EQ 或替代完整 TE 注释。输出解释、阈值与重跑规则见 [TE / repeatome 章节](../../docs/te_ZH.md)。
 
 ## 5. Population 群体遗传分析
 

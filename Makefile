@@ -21,13 +21,18 @@ MERGE_SEQ_BIN := cli/bin/merge_seq
 BUILD_TRIMED_BIN := cli/bin/build_trimed
 GM2_STATS_BIN := cli/bin/gm2_stats
 MITO_WORKFLOW_BIN := cli/bin/mito_workflow
+GENE_WORKFLOW_BIN := cli/bin/gene_workflow
 MARKER_PROFILE_BIN := cli/bin/marker_profile
+REPEAT_BIN := cli/bin/main_repeat
+REPEAT_RUST_MANIFEST := rust/main_repeat/Cargo.toml
+REPEAT_RUST_SOURCES := $(REPEAT_RUST_MANIFEST) $(wildcard rust/main_repeat/src/*.rs)
 FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(PY_BIN)
-	for target in $(PY_SRC); do cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/$$target/_internal; done
+build: cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(PY_BIN)
+	rm -f -r cli/bin/_internal
+	cp -L -r scripts/dist/unix_command/_internal cli/bin/
 	cd cli && ln -f -r -s bin/unix_command geneminer2
 
 clean:
@@ -40,6 +45,7 @@ clean:
 	rm -f -r rust/main_refilter_new/target
 	rm -f -r rust/main_assembler/target
 	rm -f -r rust/main_population/target
+	rm -f -r rust/main_repeat/target
 	rm -f -r rust/gm2_tools/target
 
 distclean: clean
@@ -73,17 +79,18 @@ $(ORIGINAL_RUST_ASSEMBLER_BIN): $(ORIGINAL_RUST_ASSEMBLER_SOURCES) | cli/bin
 cython:
 	cd scripts && cythonize -i main_refilter_ext.pyx
 
-$(REFILTER_BIN): scripts/main_refilter_new.py rust/main_refilter_new/Cargo.toml rust/main_refilter_new/src/main.rs | cython
+$(REFILTER_BIN): scripts/main_refilter_new.py rust/main_refilter_new/Cargo.toml rust/main_refilter_new/src/main.rs | cli/bin
 	if command -v cargo >/dev/null 2>&1; then \
 		cargo build --release --manifest-path rust/main_refilter_new/Cargo.toml; \
 		install -D -t cli/bin rust/main_refilter_new/target/release/main_refilter_new; \
 	else \
+		$(MAKE) cython; \
 		(cd scripts && pyinstaller -D -y --optimize 2 main_refilter_new.py); \
 		install -D -t cli/bin scripts/dist/main_refilter_new/main_refilter_new; \
 		cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/main_refilter_new/_internal; \
 	fi
 
-$(ORIGINAL_ASSEMBLER_BIN): $(ORIGINAL_ASSEMBLER_SOURCE) | cython cli/bin
+$(ORIGINAL_ASSEMBLER_BIN): $(ORIGINAL_ASSEMBLER_SOURCE) | cli/bin
 	cd scripts && pyinstaller -D -y --optimize 2 main_assembler_original.py
 	install scripts/dist/main_assembler_original/main_assembler_original $(ORIGINAL_ASSEMBLER_BIN)
 	cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/main_assembler_original/_internal
@@ -122,10 +129,18 @@ $(MITO_WORKFLOW_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin mito_workflow
 	install rust/gm2_tools/target/release/mito_workflow $(MITO_WORKFLOW_BIN)
 
+$(GENE_WORKFLOW_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin gene_workflow
+	install rust/gm2_tools/target/release/gene_workflow $(GENE_WORKFLOW_BIN)
+
 $(MARKER_PROFILE_BIN): rust/marker_profile/Cargo.toml rust/marker_profile/src/main.rs | cli/bin
 	cargo build --release --manifest-path rust/marker_profile/Cargo.toml
 	install rust/marker_profile/target/release/marker_profile $(MARKER_PROFILE_BIN)
 
-$(PY_BIN): cli/bin/%: scripts/%.py | cython
+$(REPEAT_BIN): $(REPEAT_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(REPEAT_RUST_MANIFEST)
+	install rust/main_repeat/target/release/main_repeat $(REPEAT_BIN)
+
+$(PY_BIN): cli/bin/%: scripts/%.py | cli/bin
 	cd scripts && pyinstaller -D -y --optimize 2 $(notdir $<)
 	install -D -t cli/bin scripts/dist/$(notdir $@)/$(notdir $@)

@@ -25,6 +25,8 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 | `profiling` | Any marker in WGS or metagenomic data | Per-reference support evidence |
 | `mito` | Ordinary circular animal mitochondria | Read-supported circular or partial assembly |
 | `population` | Multiple samples with completed UCE assemblies | Cohort pseudo-reference, VCF, PCA, and ADMIXTURE inputs |
+| `te` | Genome-skimming or WGS short reads | Conservative repeatome library, sample RPM, and calls |
+| `gene` | Nuclear gene families defined by multi-species baits | Candidate-contig status and cohort FASTA/matrices |
 
 ## Installation
 
@@ -87,6 +89,47 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 **Notes.** UCE uses `uce-rust` only. Rescue recruits again with first-round contigs plus original references and reverts on worse quality. See the [Assembler chapter](docs/assembler_EN.md).
 
+
+## TE / repeatome mode
+
+**Purpose.** A reference-free repeatome workflow for genome-skimming or WGS short reads. `discover` finds atomic seeds, `curate` builds an EQ library without merging TE families, `annotate` adds non-destructive repeat evidence, and `quantify` reuses candidate reads for RPM and calls. It is not a complete-TE, insertion-site calling, or TE-phylogeny workflow.
+
+```bash
+cli/geneminer2 te -f te_samples.tsv -o te_output -p 32
+```
+
+TE uses its own manifest: `taxon_id sample_id read1 read2` for paired reads, or `taxon_id sample_id read1` for single-end reads. No `-r` is required. See the [TE / repeatome chapter](docs/te_EN.md).
+
+## Gene mode
+
+`gene` recovers candidate contigs for nuclear gene families from multi-species baits; one reference FASTA defines one family. Candidate count is assembly evidence, not an allele or copy-number call.
+
+```bash
+cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8
+```
+
+Main products are under `gene_output/gene/`: candidate states, family matrices, `pseudo_sco/`, and `multiple_candidate_families/`. Protein-guided annotation is optional:
+
+```bash
+cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8 \
+  --gene-protein-reference family_proteins
+```
+
+```bash
+# Annotation → tree-based candidate resolution
+cli/geneminer2 gene-annotate --gene-input gene_output/gene \
+  --gene-protein-reference family_proteins -o gene_annotation -p 8
+cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
+
+# Species tree: strict one-to-one / multicopy
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \
+  --gene-species-mode strict --gene-aster astral
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
+  --gene-species-mode multicopy --gene-aster astral
+```
+
+`gene-resolve` writes `resolved_1to1/`, `unresolved_multicandidate/`, `family_qc.tsv`, and `tree_selection_qc.tsv`. Strict ASTRAL input uses sample labels; multicopy adds a candidate-to-sample map. `--gene-taper correction_multi.jl` enables optional masking; `--gene-ufboot` must be `0` (default) or `>=1000`.
+
 ## Mito mode
 
 **Purpose.** Limited to **ordinary single circular animal mitochondrial genomes** with an annotated GenBank reference. It is not intended for multipartite genomes, major rearrangements, strong heteroplasmy, or complex plant and fungal mitochondria.
@@ -136,6 +179,8 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 | Mitochondria | [Mitochondrial chapter](docs/5.mito.md) |
 | Marker profiling | [Profiling chapter](docs/profiling_EN.md) |
 | UCE population genetics | [Population chapter](docs/population_EN.md) |
+| Gene subcommands | [Gene chapter](docs/gene_EN.md) |
+| TE / repeatome | [TE / repeatome chapter](docs/te_EN.md) |
 | Release history | [CHANGELOG](CHANGELOG.md) |
 
 ## Citation and contact

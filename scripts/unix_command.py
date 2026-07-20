@@ -6,6 +6,7 @@ import hashlib
 import math
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import threading
@@ -18,6 +19,11 @@ assemble  Gene assembly using wDBG
 mito      Mitochondrial GB mining, UCE assembly, overlap merging and circularity QC
 profiling Marker read-level profiling (one recruitment, no assembly)
 population Build a cohort UCE reference and generate complete, one-per-UCE and LD-pruned SNP panels
+gene-annotate Run protein-guided miniprot annotation on recovered gene candidates
+gene-resolve Resolve annotated gene candidates into strict SC-OG and unresolved family sets
+gene-tree    Infer a species tree from resolved strict or multicopy gene trees
+te        Reference-free short-read repeatome discovery, curation, annotation, and quantification
+gene      Recover candidate nuclear gene-family copies with original-rust and write conservative cohort summaries
 consensus Consensus generation on heterozygous sites
 trim      Flank sequence removal
 combine   Gene alignment, concatenation and cleanup
@@ -1029,6 +1035,10 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 """开整前把旧组装产物清出去，省得串锅。"""
                 if os.path.isdir(out_dir):
                     shutil.rmtree(out_dir, ignore_errors=True)
+                for candidate_dir in ('contigs_all', 'contigs_all_low'):
+                    path = os.path.join(sample_dir, candidate_dir)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
                 graph_dir = os.path.join(sample_dir, 'assembly_graphs')
                 if os.path.isdir(graph_dir):
                     shutil.rmtree(graph_dir, ignore_errors=True)
@@ -1457,6 +1467,28 @@ def run_population(args):
     if args.population_skip_admixture:
         command.append('--skip-admixture')
 
+    subprocess.run(command, check=True)
+
+def run_te(args):
+    """Run the reference-free short-read repeatome workflow."""
+    repeat_bin = find_executable('main_repeat', internal=True)
+    mainfilter_bin = find_executable('MainFilterNew', internal=True)
+    command = [
+        repeat_bin, '--samples', args.f, '--output', args.o.strip(),
+        '--stage', args.te_stage, '--threads', str(args.p),
+        '--kmer', str(args.te_kmer), '--min-kmer-count', str(args.te_min_kmer_count),
+        '--catalog-pairs', str(args.te_catalog_pairs), '--mainfilter', mainfilter_bin,
+        '--annotation-min-fragment', str(args.te_annotate_min_fragment),
+        '--annotation-max-fragment', str(args.te_annotate_max_fragment),
+        '--annotation-min-support', str(args.te_annotate_min_support),
+        '--annotation-min-identity', str(args.te_annotate_min_identity),
+        '--annotation-min-coverage', str(args.te_annotate_min_coverage),
+        '--annotation-min-delta', str(args.te_annotate_min_delta),
+    ]
+    if args.te_read_ledger:
+        command.extend(['--read-ledger', args.te_read_ledger])
+    if args.te_library:
+        command.extend(['--te-library', args.te_library])
     subprocess.run(command, check=True)
 
 def run_stats(args, samples):
@@ -2268,9 +2300,135 @@ def run_mito_adaptive(args, samples):
         next_limit = limit * 2
         limit = min(next_limit, maximum) if maximum else next_limit
 
+def run_gene_finalize(args, samples):
+    """Summarize original-rust candidate contigs without altering assembly behavior."""
+    gene_bin = find_executable('gene_workflow', internal=True)
+    gene_root = os.path.join(args.o.strip(), 'gene')
+    if os.path.isdir(gene_root):
+        shutil.rmtree(gene_root, ignore_errors=True)
+    os.makedirs(gene_root, exist_ok=True)
+
+    def classify_sample(sample):
+        sample_dir = os.path.join(args.o.strip(), sample)
+        command = [
+            gene_bin, 'classify', '--reference', args.r,
+            '--contigs', os.path.join(sample_dir, 'contigs_all'),
+            '--sample', sample, '--out', gene_root,
+        ]
+        subprocess.run(command, check=True)
+
+    ordered_samples = sorted(samples)
+    workers = min(max(1, args.p), len(ordered_samples))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(classify_sample, sample): sample for sample in ordered_samples}
+        for future in as_completed(futures):
+            sample = futures[future]
+            try:
+                future.result()
+            except Exception as error:
+                raise RuntimeError(f'gene candidate classification failed for {sample}: {error}') from error
+
+    command = [gene_bin, 'cohort', '--reference', args.r, '--out', gene_root]
+    for sample in ordered_samples:
+        command.extend(['--sample', sample])
+    subprocess.run(command, check=True)
+    if args.gene_protein_reference:
+        if not os.path.isdir(args.gene_protein_reference):
+            raise RuntimeError('--gene-protein-reference must be a directory')
+        annotation_dir = os.path.join(args.o.strip(), 'gene_annotation')
+        if os.path.isdir(annotation_dir):
+            shutil.rmtree(annotation_dir, ignore_errors=True)
+        subprocess.run([gene_bin, 'annotate', '--input', gene_root, '--protein-reference', args.gene_protein_reference, '--out', annotation_dir, '--miniprot', args.gene_miniprot, '--threads', str(max(1, args.p))], check=True)
+
+
+def run_gene_annotate(args):
+    gene_bin = find_executable('gene_workflow', internal=True)
+    if not os.path.isdir(args.gene_input):
+        raise RuntimeError('--gene-input must be a gene output directory')
+    if not os.path.isdir(args.gene_protein_reference):
+        raise RuntimeError('gene-annotate requires --gene-protein-reference')
+    subprocess.run([gene_bin, 'annotate', '--input', args.gene_input, '--protein-reference', args.gene_protein_reference, '--out', args.o.strip(), '--miniprot', args.gene_miniprot, '--threads', str(max(1, args.p))], check=True)
+
+
+def run_gene_resolve(args):
+    gene_bin = find_executable('gene_workflow', internal=True)
+    if not os.path.isdir(args.gene_input):
+        raise RuntimeError('--gene-input must be an annotation directory')
+    command = [gene_bin, 'resolve', '--input', args.gene_input, '--out', args.o.strip(), '--mafft', args.gene_mafft, '--iqtree', args.gene_iqtree, '--threads', str(max(1, args.p)), '--min-taxa', str(args.gene_min_taxa)]
+    if args.gene_outgroup:
+        if not os.path.isfile(args.gene_outgroup):
+            raise RuntimeError('--gene-outgroup must be a readable file')
+        command.extend(['--outgroup', args.gene_outgroup])
+    if args.gene_ufboot:
+        command.extend(['--ufboot', str(args.gene_ufboot)])
+    if args.gene_taper:
+        if not os.path.isfile(args.gene_taper):
+            raise RuntimeError('--gene-taper must be a readable correction_multi.jl script')
+        command.extend(['--taper-script', args.gene_taper, '--julia', args.gene_julia])
+    subprocess.run(command, check=True)
+
+
+def gene_file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_gene_tree(args):
+    resolved = args.gene_input
+    if not os.path.isdir(resolved):
+        raise RuntimeError('--gene-input must be a gene-resolve output directory')
+    if args.gene_species_mode == 'strict':
+        trees = os.path.join(resolved, 'astral_input', 'resolved_1to1.trees')
+        output_name = 'gene_strict_aster.tree'
+    else:
+        trees = os.path.join(resolved, 'astralpro_input', 'multicopy.trees')
+        mapping = os.path.join(resolved, 'astralpro_input', 'leaf_to_species.tsv')
+        output_name = 'gene_multicopy_aster.tree'
+        if not os.path.isfile(mapping):
+            raise RuntimeError(f'Missing multicopy leaf map: {mapping}')
+    if not os.path.isfile(trees) or os.path.getsize(trees) == 0:
+        raise RuntimeError(f'No usable {args.gene_species_mode} gene trees found: {trees}')
+    os.makedirs(args.o.strip(), exist_ok=True)
+    executable = shutil.which(args.gene_aster) if not os.path.isabs(args.gene_aster) else args.gene_aster
+    if not executable or not os.path.isfile(executable):
+        raise RuntimeError(f'Cannot find ASTER2 executable: {args.gene_aster}')
+    output = os.path.join(args.o.strip(), output_name)
+    log = os.path.join(args.o.strip(), output_name + '.log')
+    if os.path.isfile(output):
+        os.remove(output)
+    command = [executable, '-i', trees, '-o', output, '-t', str(max(1, args.p))]
+    if args.gene_species_mode == 'multicopy':
+        command.extend(['-a', mapping])
+    with open(log, 'w') as log_handle:
+        subprocess.run(command, check=True, stdout=log_handle, stderr=subprocess.STDOUT)
+    if not os.path.isfile(output) or os.path.getsize(output) == 0:
+        raise RuntimeError(f'ASTER2 completed without a species tree; inspect {log}')
+    with open(output, 'r') as tree_handle:
+        tree = next((line.strip() for line in tree_handle if line.strip()), '')
+    if not tree.startswith('(') or not tree.endswith(';'):
+        raise RuntimeError(f'ASTER2 output is not a Newick tree; inspect {log}')
+    provenance = os.path.join(args.o.strip(), 'gene_tree_provenance.tsv')
+    with open(provenance, 'w', newline='') as handle:
+        writer = csv.writer(handle, delimiter='\t')
+        writer.writerow(('field', 'value'))
+        writer.writerow(('mode', args.gene_species_mode))
+        writer.writerow(('aster_executable', os.path.realpath(executable)))
+        writer.writerow(('command', shlex.join(command)))
+        writer.writerow(('gene_trees', os.path.realpath(trees)))
+        writer.writerow(('gene_trees_sha256', gene_file_sha256(trees)))
+        if args.gene_species_mode == 'multicopy':
+            writer.writerow(('leaf_to_species', os.path.realpath(mapping)))
+            writer.writerow(('leaf_to_species_sha256', gene_file_sha256(mapping)))
+        writer.writerow(('species_tree', os.path.realpath(output)))
+        writer.writerow(('species_tree_sha256', gene_file_sha256(output)))
+
+
 def execute_tasks(args, samples):
     """照命令顺序调度整条流程，哪步出岔子都稳当收口。"""
-    if not os.path.isdir(args.r):
+    if 'te' not in args.command and 'gene-tree' not in args.command and 'gene-resolve' not in args.command and 'gene-annotate' not in args.command and not os.path.isdir(args.r):
         print(f"Reference directory '{args.r}' does not exist")
         return 2
 
@@ -2281,13 +2439,27 @@ def execute_tasks(args, samples):
     do_refilter = 'refilter' in commands
     do_assemble = 'assemble' in commands
     do_population = 'population' in commands
+    do_te = 'te' in commands
     do_consensus = 'consensus' in commands
     do_trim = 'trim' in commands
     do_combine = 'combine' in commands
     do_tree = 'tree' in commands
     do_stats = 'stats' in commands
+    do_gene = bool(getattr(args, 'is_gene_workflow', False))
+    do_gene_resolve = 'gene-resolve' in commands
+    do_gene_annotate = 'gene-annotate' in commands
+    do_gene_tree = 'gene-tree' in commands
 
     try:
+        if do_gene_annotate:
+            run_gene_annotate(args)
+            return 0
+        if do_gene_resolve:
+            run_gene_resolve(args)
+            return 0
+        if do_gene_tree:
+            run_gene_tree(args)
+            return 0
         if getattr(args, 'is_mito_workflow', False) and getattr(args, 'mito_adaptive_stop', False):
             run_mito_adaptive(args, samples)
             return 0
@@ -2303,6 +2475,15 @@ def execute_tasks(args, samples):
 
             if do_assemble and getattr(args, 'is_mito_workflow', False):
                 run_mito_finalize(args, samples)
+
+            if do_assemble and do_gene:
+                run_gene_finalize(args, samples)
+
+        if do_te:
+            if len(commands) != 1:
+                raise RuntimeError('te is a complete workflow and cannot be combined with other subcommands')
+            run_te(args)
+            return 0
 
         if do_population:
             if do_assemble and args.assembly_mode != 'uce':
@@ -2351,13 +2532,13 @@ if __name__ == '__main__':
                                      description="GeneMiner2-UCE extracts phylogenetic marker loci for UCE workflows.",
                                      epilog=HELP_EPILOG)
     parser.add_argument('command',
-                        choices=('filter', 'refilter', 'assemble', 'mito', 'profiling', 'population', 'consensus', 'trim', 'combine', 'tree', 'stats'),
+                        choices=('filter', 'refilter', 'assemble', 'mito', 'gene', 'gene-annotate', 'gene-resolve', 'gene-tree', 'profiling', 'population', 'te', 'consensus', 'trim', 'combine', 'tree', 'stats'),
                         help='One or several of the following actions, separated by space:' + COMMAND_HELP,
                         metavar='command',
                         nargs='*')
 
     group_io = parser.add_argument_group('input/output parameters')
-    group_io.add_argument('-f', help='Sample list file', metavar='FILE', required=True)
+    group_io.add_argument('-f', help='Sample list file', metavar='FILE', required=False, default='')
     group_io.add_argument('-r', help='Reference directory; optional with mito, which derives it from --mito-genbank', metavar='DIR', required=False, default='')
     group_io.add_argument('--mito-genbank', default='', help='Annotated mitochondrial GenBank reference; enables the mito workflow', metavar='FILE')
     group_io.add_argument('--mito-flank', default=150, type=int, help=argparse.SUPPRESS, metavar='INT')
@@ -2378,6 +2559,18 @@ if __name__ == '__main__':
     group_io.add_argument('--no-mito-adaptive-stop', dest='mito_adaptive_stop', action='store_false', default=True, help='Disable default staged mito adaptive stopping')
     group_io.add_argument('-o', help='Output directory', metavar='DIR', required=True)
     group_io.add_argument('-p', default=1, help='Number of parallel processes', metavar='INT', type=int)
+    group_io.add_argument('--gene-protein-reference', default='', help='Optional per-family protein FASTA directory; enables gene annotation', metavar='DIR')
+    group_io.add_argument('--gene-miniprot', default='miniprot', help='miniprot executable for --gene-protein-reference', metavar='FILE')
+    group_io.add_argument('--gene-input', default='', help='Gene workflow input directory (annotation for gene-resolve; resolve output for gene-tree)', metavar='DIR')
+    group_io.add_argument('--gene-mafft', default='mafft', help='MAFFT executable for gene-resolve', metavar='FILE')
+    group_io.add_argument('--gene-iqtree', default='iqtree', help='IQ-TREE executable for gene-resolve', metavar='FILE')
+    group_io.add_argument('--gene-min-taxa', default=4, type=int, help='Minimum taxa per resolved SC-OG (default = 4)', metavar='INT')
+    group_io.add_argument('--gene-outgroup', default='', help='Optional TSV/CSV whose first column lists outgroup samples', metavar='FILE')
+    group_io.add_argument('--gene-ufboot', default=0, type=int, help='Optional IQ-TREE UFBoot replicates; use 0 or >=1000 (default = 0)', metavar='INT')
+    group_io.add_argument('--gene-taper', default='', help='Optional TAPER correction_multi.jl script for AA-alignment masking', metavar='FILE')
+    group_io.add_argument('--gene-julia', default='julia', help='Julia executable used with --gene-taper', metavar='FILE')
+    group_io.add_argument('--gene-species-mode', choices=('strict', 'multicopy'), default='strict', help='gene-tree route: strict uses resolved SC-OGs; multicopy uses all family trees', metavar='MODE')
+    group_io.add_argument('--gene-aster', default='astral', help='ASTER2 astral executable for both gene-tree routes', metavar='FILE')
 
     group_filter = parser.add_argument_group('arguments for filtering')
     group_filter.add_argument('-kf', default=31, help='Filter k-mer size', metavar='INT', type=int)
@@ -2424,6 +2617,20 @@ if __name__ == '__main__':
     group_assembly.add_argument('--uce-rescue-reads', action='store_true', default=False, help='UCE mode only: after the first assembly, recruit raw reads once using preliminary contigs plus original references, then re-filter and re-assemble')
     group_assembly.add_argument('--uce-rescue-min-contig-length', default=60, help='Minimum preliminary contig length used as a UCE raw-read rescue reference (default = 60)', metavar='INT', type=int)
     group_assembly.add_argument('--uce-rescue-min-density-ratio', default=0.5, help='Minimum rescue/before read-density ratio kept after UCE raw-read rescue (default = 0.5)', metavar='FLOAT', type=float)
+
+    group_te = parser.add_argument_group('arguments for reference-free repeatome analysis')
+    group_te.add_argument('--te-stage', choices=('all', 'discover', 'curate', 'annotate', 'quantify'), default='all', help='Repeatome stage: discover, curate, annotate, or quantify (default = all)')
+    group_te.add_argument('--te-kmer', default=25, type=int, help='Canonical k-mer length for repeat seeds (default = 25)', metavar='INT')
+    group_te.add_argument('--te-min-kmer-count', default=8, type=int, help='Minimum sampled k-mer count retained in the repeat catalog (default = 8)', metavar='INT')
+    group_te.add_argument('--te-catalog-pairs', default=10000, type=int, help='Read-pair quota per taxon for catalog discovery (default = 10000)', metavar='INT')
+    group_te.add_argument('--te-read-ledger', default='', help='Optional TSV of high-confidence read IDs to exclude: sample_id read_id', metavar='FILE')
+    group_te.add_argument('--te-library', default='', help='Optional classified TE-library FASTA used during the annotate stage (headers: name#Class/Subclass)', metavar='FILE')
+    group_te.add_argument('--te-annotate-min-fragment', default=80, type=int, help='Minimum read-supported fragment length for homology annotation (default = 80)', metavar='INT')
+    group_te.add_argument('--te-annotate-max-fragment', default=800, type=int, help='Maximum bounded annotation-fragment length (default = 800)', metavar='INT')
+    group_te.add_argument('--te-annotate-min-support', default=5, type=int, help='Minimum unique read-pair support for a confident annotation (default = 5)', metavar='INT')
+    group_te.add_argument('--te-annotate-min-identity', default=0.80, type=float, help='Minimum gapless identity for a confident TE-library annotation (default = 0.80)', metavar='FLOAT')
+    group_te.add_argument('--te-annotate-min-coverage', default=0.60, type=float, help='Minimum fragment coverage for a confident TE-library annotation (default = 0.60)', metavar='FLOAT')
+    group_te.add_argument('--te-annotate-min-delta', default=0.10, type=float, help='Minimum best-versus-second-class score margin (default = 0.10)', metavar='FLOAT')
 
     group_population = parser.add_argument_group('arguments for population SNP analysis')
     group_population.add_argument('--engine', choices=('pseudoref', 'panref', 'panrefv2'), default='pseudoref', help='Population reference engine: accepted-contig pseudoref, legacy panref, or streaming two-pass PanRefV2')
@@ -2489,8 +2696,36 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     args.is_mito_workflow = False
+    args.is_gene_workflow = False
 
-    if 'mito' in args.command:
+    if 'gene-annotate' in args.command:
+        if len(args.command) != 1 or not args.gene_input or not args.gene_protein_reference:
+            parser.error('gene-annotate requires --gene-input and --gene-protein-reference only')
+    elif 'gene-resolve' in args.command:
+        if len(args.command) != 1:
+            parser.error('gene-resolve is a complete workflow and cannot be combined with other subcommands')
+        if not args.gene_input:
+            parser.error('gene-resolve requires --gene-input')
+        if args.gene_min_taxa < 2:
+            parser.error('--gene-min-taxa must be at least 2')
+        if args.gene_ufboot != 0 and args.gene_ufboot < 1000:
+            parser.error('--gene-ufboot must be 0 or at least 1000')
+    elif 'gene-tree' in args.command:
+        if len(args.command) != 1:
+            parser.error('gene-tree is a complete workflow and cannot be combined with other subcommands')
+        if not args.gene_input:
+            parser.error('gene-tree requires --gene-input')
+    elif 'gene' in args.command:
+        if len(args.command) != 1:
+            parser.error('gene is a complete workflow and cannot be combined with other subcommands')
+        if args.assembly_mode != 'original':
+            parser.error('gene requires --assembly-mode original')
+        if args.assembler_implementation not in ('auto', 'original-rust'):
+            parser.error('gene requires the original-rust assembler')
+        args.is_gene_workflow = True
+        args.command = ('filter', 'refilter', 'assemble')
+        args.assembler_implementation = 'original-rust'
+    elif 'mito' in args.command:
         args.is_mito_workflow = True
         if len(args.command) != 1:
             parser.error("mito is a complete workflow and cannot be combined with other subcommands")
@@ -2520,8 +2755,11 @@ if __name__ == '__main__':
         args.search_depth = max(args.search_depth, 30000)
     elif args.mito_genbank:
         parser.error('--mito-genbank is only valid with the mito subcommand')
-    elif not args.r:
-        parser.error("-r is required unless the mito subcommand is used")
+    elif not args.r and 'te' not in args.command and 'gene-tree' not in args.command and 'gene-resolve' not in args.command and 'gene-annotate' not in args.command:
+        parser.error("-r is required unless the mito or te subcommand is used")
+
+    if not args.f and 'gene-tree' not in args.command and 'gene-resolve' not in args.command and 'gene-annotate' not in args.command:
+        parser.error('-f is required unless gene-resolve is used')
 
     if args.reference_cache_dir and not args.reuse_reference_cache:
         parser.error('--reference-cache-dir requires --reuse-reference-cache')
@@ -2613,8 +2851,11 @@ if __name__ == '__main__':
     except RuntimeError as e:
         parser.error(str(e))
 
-    samples = prepare_workdir(args)
+    if 'gene-annotate' in args.command or 'gene-resolve' in args.command or 'gene-tree' in args.command:
+        print(f'Running tasks: {args.command[0]}')
+        sys.exit(execute_tasks(args, {}))
 
+    samples = prepare_workdir(args)
     if samples:
         print(f'Running tasks: {", ".join(args.command)}')
         print()

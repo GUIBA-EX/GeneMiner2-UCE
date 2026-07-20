@@ -35,7 +35,7 @@ The phylogenetic workflow calls a subset of the following external programs, dep
 
 ```bash
 conda install -c bioconda \
-  aster blast clustalo fasttree iqtree mafft magicblast minimap2 raxml-ng trimal veryfasttree
+  aster blast clustalo fasttree iqtree mafft magicblast miniprot minimap2 raxml-ng trimal veryfasttree
 ```
 
 Optional and population-specific tools:
@@ -64,7 +64,7 @@ Run `make` again after updating the source.
 
 ## 2. Input files
 
-Every command requires:
+Most read-recovery commands require the following. `gene-annotate`, `gene-resolve`, and `gene-tree` instead use `--gene-input` and `-o`, without `-f/-r`:
 
 - `-f FILE`: tab-delimited sample table;
 - `-r DIR`: reference-sequence directory;
@@ -102,6 +102,11 @@ One or more subcommands can be listed in execution order:
 | `profiling` | Recruit marker reads once and estimate group-level marker signal without assembly |
 | `refilter` | Refine per-locus read assignment and filtering |
 | `assemble` | Assemble target sequences with the wDBG assembler |
+| `gene` | Recover candidate contigs for nuclear gene families |
+| `gene-annotate` | Run miniprot annotation from protein references |
+| `gene-resolve` | Align candidates, infer gene trees, and select strict one-to-one clades |
+| `gene-tree` | Infer a species tree from strict or multicopy gene trees |
+| `te` | Discover, curate, annotate, and quantify conservative repeatome units from short reads |
 | `population` | Build a cohort UCE reference and generate SNP, PCA, and ADMIXTURE results |
 | `consensus` | Generate consensus sequences at heterozygous sites |
 | `trim` | Remove flanks relative to reference sequences |
@@ -149,6 +154,38 @@ cli/geneminer2 profiling \
 ```
 
 Inputs, decoys, cache control, QC, and quantitative interpretation are in the [Profiling chapter](../../docs/profiling_EN.md).
+
+### 4.3 Gene-family recovery and resolution
+
+`gene` is a complete workflow: one bait FASTA defines one family and may contain multiple species. It fixes the backend to `original-rust`, retains candidate contigs, and does not directly claim single-copy status.
+
+```bash
+cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8
+cli/geneminer2 gene-annotate --gene-input gene_output/gene \
+  --gene-protein-reference family_proteins -o gene_annotation -p 8
+cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
+```
+
+`gene-resolve` requires MAFFT and IQ-TREE; `--gene-taper correction_multi.jl` enables optional masking. `--gene-ufboot` must be `0` (default) or `>=1000`. `family_qc.tsv` is alignment QC, while `tree_selection_qc.tsv` records selected strict clades and occupancy.
+
+```bash
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \
+  --gene-species-mode strict --gene-aster astral
+cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
+  --gene-species-mode multicopy --gene-aster astral
+```
+
+The strict route supplies one leaf per sample to ASTER2. The multicopy route also supplies the candidate-to-sample map. Both require ASTER2 `astral`.
+
+### 4.4 TE / repeatome
+
+`te` is a complete standalone workflow and does not require `-r`. It uses a four-field manifest, `taxon_id sample_id read1 read2` (omit the fourth field for single-end data), and runs `discover → curate → annotate → quantify`.
+
+```bash
+cli/geneminer2 te -f te_samples.tsv -o te_output -p 32
+```
+
+`--te-library` optionally supplies a classified `name#Class/Subclass` FASTA. Annotation never merges EQs and does not replace complete-TE annotation. See the [TE / repeatome chapter](../../docs/te_EN.md) for thresholds, rerun rules, and output interpretation.
 
 ## 5. Population-genetic analysis
 
