@@ -125,6 +125,7 @@ class RustMainFilterTests(unittest.TestCase):
             self.assertNotIn("@pair2/1", locus_a_r1)
             self.assertIn("@pair1/2", locus_a_r2)
             self.assertIn("@pair3/2", locus_a_r2)
+            self.assertIn("Gzip backend:", (text_output / "log.txt").read_text())
 
             gm2_output = work / "gm2"
             subprocess.run(

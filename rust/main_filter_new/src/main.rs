@@ -2,7 +2,7 @@ use ahash::AHashMap;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::env;
-use std::ffi::{c_char, c_int, c_void, CString};
+use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +15,8 @@ const FLAG_CANONICAL_KMERS: u16 = 1;
 const MEBIBYTE_READS: u64 = 1_048_576;
 const TOTAL_BUFFER_BUDGET: usize = 64 * 1024 * 1024;
 const MIN_FILE_BUDGET: usize = 128 * 1024;
+// 输入端也留一根粗管子:少喊几次 gzread/read,解压和系统调用的开销摊得更薄。
+const READ_BUFFER_SIZE: usize = 1024 * 1024;
 
 type AppResult<T> = Result<T, String>;
 
@@ -177,30 +179,118 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
     Ok(parsed)
 }
 
+// 系统 zlib 静态链进来,当兜底;zlib-ng 有没有得等运行时探测才知道。
 #[link(name = "z")]
 extern "C" {
     fn gzopen(path: *const c_char, mode: *const c_char) -> *mut c_void;
     fn gzread(file: *mut c_void, buffer: *mut c_void, length: u32) -> c_int;
     fn gzclose(file: *mut c_void) -> c_int;
+    fn gzbuffer(file: *mut c_void, size: c_uint) -> c_int;
+}
+
+type GzOpenFn = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_void;
+type GzReadFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u32) -> c_int;
+type GzCloseFn = unsafe extern "C" fn(*mut c_void) -> c_int;
+type GzBufferFn = unsafe extern "C" fn(*mut c_void, c_uint) -> c_int;
+
+#[derive(Clone, Copy)]
+struct ZlibBackend {
+    open: GzOpenFn,
+    read: GzReadFn,
+    close: GzCloseFn,
+    buffer: GzBufferFn,
+    name: &'static str,
+}
+
+fn stock_zlib_backend() -> ZlibBackend {
+    ZlibBackend {
+        open: gzopen,
+        read: gzread,
+        close: gzclose,
+        buffer: gzbuffer,
+        name: "system zlib",
+    }
+}
+
+// dlopen 一个符号,类型对不上就当没找到,不瞎猜。
+#[cfg(unix)]
+unsafe fn dlsym_typed<F: Copy>(handle: *mut c_void, symbol: &str) -> Option<F> {
+    let symbol = CString::new(symbol).ok()?;
+    let pointer = libc::dlsym(handle, symbol.as_ptr());
+    if pointer.is_null() {
+        None
+    } else {
+        Some(std::mem::transmute_copy(&pointer))
+    }
+}
+
+// 运行时找 zlib-ng(原生 API,zng_ 前缀符号):装了就用它的 SIMD 加速解压,
+// 没装、或者库里缺符号,就用上面静态链的系统 zlib,两者对上层完全透明。
+#[cfg(unix)]
+fn detect_zlib_ng() -> Option<ZlibBackend> {
+    const CANDIDATE_LIBRARY_NAMES: &[&str] = &["libz-ng.so.2", "libz-ng.so.1", "libz-ng.so"];
+    for library_name in CANDIDATE_LIBRARY_NAMES {
+        let library_name = CString::new(*library_name).expect("static string contains no NUL");
+        let handle = unsafe { libc::dlopen(library_name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if handle.is_null() {
+            continue;
+        }
+        let resolved = unsafe {
+            (
+                dlsym_typed::<GzOpenFn>(handle, "zng_gzopen"),
+                dlsym_typed::<GzReadFn>(handle, "zng_gzread"),
+                dlsym_typed::<GzCloseFn>(handle, "zng_gzclose"),
+                dlsym_typed::<GzBufferFn>(handle, "zng_gzbuffer"),
+            )
+        };
+        if let (Some(open), Some(read), Some(close), Some(buffer)) = resolved {
+            // 故意不 dlclose:句柄要活到进程退出,函数指针才一直有效。
+            return Some(ZlibBackend {
+                open,
+                read,
+                close,
+                buffer,
+                name: "zlib-ng",
+            });
+        }
+        unsafe { libc::dlclose(handle) };
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn detect_zlib_ng() -> Option<ZlibBackend> {
+    None
+}
+
+static ZLIB_BACKEND: std::sync::OnceLock<ZlibBackend> = std::sync::OnceLock::new();
+
+fn zlib_backend() -> ZlibBackend {
+    *ZLIB_BACKEND.get_or_init(|| detect_zlib_ng().unwrap_or_else(stock_zlib_backend))
 }
 
 struct GzipReader {
     handle: *mut c_void,
+    backend: ZlibBackend,
 }
 
 impl GzipReader {
     fn open(path: &Path) -> io::Result<Self> {
+        let backend = zlib_backend();
         let path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
         let mode = CString::new("rb").expect("static string contains no NUL");
-        let handle = unsafe { gzopen(path.as_ptr(), mode.as_ptr()) };
+        let handle = unsafe { (backend.open)(path.as_ptr(), mode.as_ptr()) };
         if handle.is_null() {
             Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "cannot open gzip file",
             ))
         } else {
-            Ok(Self { handle })
+            // 把压缩端缓冲从默认 8KiB 拉大,少喊几次底层 read(2)。
+            // 必须在第一次 gzread 之前调用,失败也无妨,大不了退回默认缓冲区大小。
+            unsafe { (backend.buffer)(handle, READ_BUFFER_SIZE as c_uint) };
+            Ok(Self { handle, backend })
         }
     }
 }
@@ -211,7 +301,7 @@ impl Read for GzipReader {
             return Ok(0);
         }
         let size = buffer.len().min(c_int::MAX as usize) as u32;
-        let result = unsafe { gzread(self.handle, buffer.as_mut_ptr().cast(), size) };
+        let result = unsafe { (self.backend.read)(self.handle, buffer.as_mut_ptr().cast(), size) };
         if result < 0 {
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -226,7 +316,7 @@ impl Read for GzipReader {
 impl Drop for GzipReader {
     fn drop(&mut self) {
         if !self.handle.is_null() {
-            unsafe { gzclose(self.handle) };
+            unsafe { (self.backend.close)(self.handle) };
         }
     }
 }
@@ -269,12 +359,12 @@ fn open_input(path: &Path) -> io::Result<BufReader<Box<dyn Read>>> {
     } else {
         Box::new(File::open(path)?)
     };
-    Ok(BufReader::new(input))
+    Ok(BufReader::with_capacity(READ_BUFFER_SIZE, input))
 }
 
 #[derive(Clone, Debug)]
 struct Record {
-    lines: Option<Vec<String>>,
+    lines: Option<Vec<Vec<u8>>>,
     sequence: Vec<u8>,
     quality: Option<Vec<u8>>,
 }
@@ -282,7 +372,7 @@ struct Record {
 struct SequenceReader {
     input: BufReader<Box<dyn Read>>,
     kind: FileKind,
-    pending_header: Option<String>,
+    pending_header: Option<Vec<u8>>,
     finished: bool,
     keep_text_lines: bool,
 }
@@ -298,12 +388,16 @@ impl SequenceReader {
         })
     }
 
-    fn read_line(&mut self) -> AppResult<Option<String>> {
-        let mut line = String::new();
-        if self.input.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+    // 按字节读一行,省掉 String 的 UTF-8 校验,也不用先读进 String 再 trim().to_string() 拷贝两遍。
+    fn read_line(&mut self) -> AppResult<Option<Vec<u8>>> {
+        let mut line = Vec::new();
+        if self.input.read_until(b'\n', &mut line).map_err(|e| e.to_string())? == 0 {
             return Ok(None);
         }
-        Ok(Some(line.trim().to_string()))
+        while matches!(line.last(), Some(b'\n' | b'\r')) {
+            line.pop();
+        }
+        Ok(Some(line))
     }
 
     fn next_record(&mut self) -> AppResult<Option<Record>> {
@@ -322,7 +416,7 @@ impl SequenceReader {
         } else {
             loop {
                 match self.read_line()? {
-                    Some(line) if line.starts_with('>') => break line,
+                    Some(line) if line.first() == Some(&b'>') => break line,
                     Some(line) if line.is_empty() => continue,
                     Some(_) => return Err("FASTA sequence encountered before a header".to_string()),
                     None => {
@@ -336,11 +430,11 @@ impl SequenceReader {
         let mut sequence = Vec::new();
         loop {
             match self.read_line()? {
-                Some(line) if line.starts_with('>') => {
+                Some(line) if line.first() == Some(&b'>') => {
                     self.pending_header = Some(line);
                     break;
                 }
-                Some(line) => sequence.extend(line.bytes().map(|base| base.to_ascii_uppercase())),
+                Some(line) => sequence.extend(line.iter().map(|base| base.to_ascii_uppercase())),
                 None => {
                     self.finished = true;
                     break;
@@ -350,7 +444,7 @@ impl SequenceReader {
         Ok(Some(Record {
             lines: self
                 .keep_text_lines
-                .then(|| vec![header, String::from_utf8_lossy(&sequence).into_owned()]),
+                .then(|| vec![header, sequence.clone()]),
             sequence,
             quality: None,
         }))
@@ -373,26 +467,21 @@ impl SequenceReader {
         let quality_line = self
             .read_line()?
             .ok_or_else(|| "truncated FASTQ quality".to_string())?;
-        if !header.starts_with('@') || !plus.starts_with('+') {
+        if header.first() != Some(&b'@') || plus.first() != Some(&b'+') {
             return Err("malformed FASTQ record".to_string());
         }
         let sequence: Vec<u8> = sequence_line
-            .bytes()
+            .iter()
             .map(|base| base.to_ascii_uppercase())
             .collect();
-        let quality = quality_line.into_bytes();
+        let quality = quality_line;
         if quality.len() != sequence.len() {
             return Err("FASTQ sequence and quality lengths differ".to_string());
         }
         Ok(Some(Record {
-            lines: self.keep_text_lines.then(|| {
-                vec![
-                    header,
-                    String::from_utf8_lossy(&sequence).into_owned(),
-                    plus,
-                    String::from_utf8_lossy(&quality).into_owned(),
-                ]
-            }),
+            lines: self
+                .keep_text_lines
+                .then(|| vec![header, sequence.clone(), plus, quality.clone()]),
             sequence,
             quality: Some(quality),
         }))
@@ -1086,9 +1175,27 @@ fn read_dictionary_hits(
     Ok(hits)
 }
 
+// 每次落盘的文件句柄留着复用,免得成千上万次 flush 都重新 open/close 一遍。
+#[cfg(unix)]
+fn raise_fd_limit() {
+    unsafe {
+        let mut limit: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 && limit.rlim_cur < limit.rlim_max
+        {
+            let mut raised = limit;
+            raised.rlim_cur = limit.rlim_max;
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raised);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
+
 struct OutputManager {
     paths: Vec<PathBuf>,
     buffers: Vec<Vec<u8>>,
+    handles: Vec<Option<File>>,
     total_buffered: usize,
     file_budget: usize,
     paired_paths: bool,
@@ -1151,6 +1258,7 @@ impl OutputManager {
         Ok(Self {
             paths,
             buffers: vec![Vec::new(); buffer_count],
+            handles: (0..buffer_count).map(|_| None).collect(),
             total_buffered: 0,
             file_budget,
             paired_paths: mode == 4 || mode == 5,
@@ -1202,11 +1310,15 @@ impl OutputManager {
         if self.buffers[key].is_empty() {
             return Ok(());
         }
-        let mut out = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.paths[key])
-            .map_err(|e| e.to_string())?;
+        if self.handles[key].is_none() {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.paths[key])
+                .map_err(|e| e.to_string())?;
+            self.handles[key] = Some(file);
+        }
+        let out = self.handles[key].as_mut().expect("handle just populated");
         out.write_all(&self.buffers[key])
             .map_err(|e| e.to_string())?;
         self.total_buffered -= self.buffers[key].len();
@@ -1242,7 +1354,7 @@ fn encode_text_into(record: &Record, output: &mut Vec<u8>) {
         .as_ref()
         .expect("text output requires record lines")
     {
-        output.extend_from_slice(line.as_bytes());
+        output.extend_from_slice(line);
         output.push(b'\n');
     }
 }
@@ -1468,6 +1580,9 @@ fn run(args: Args) -> AppResult<()> {
             return Err("all read files must use the same FASTA/FASTQ format".to_string());
         }
     }
+    if args.q1.iter().chain(args.q2.iter()).any(|path| is_gzip(path)) {
+        logger.log(&format!("Gzip backend: {}.", zlib_backend().name));
+    }
     // GM2 和只扫描模式不留文本行，少分配几套没用的 String。
     let keep_text_lines = matches!(args.mode, 0 | 1 | 4);
     let mut output = OutputManager::new(
@@ -1572,6 +1687,8 @@ fn run(args: Args) -> AppResult<()> {
 }
 
 fn main() {
+    // 输出文件句柄常驻复用,先把 fd 上限尽量抬到硬上限,避免 locus 数一多就撞到 "too many open files"。
+    raise_fd_limit();
     let argv: Vec<String> = env::args().skip(1).collect();
     let args = match parse_args(argv) {
         Ok(args) => args,

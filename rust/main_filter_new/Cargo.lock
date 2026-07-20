@@ -92,6 +92,7 @@ name = "main_filter_new"
 version = "0.4.0"
 dependencies = [
  "ahash",
+ "libc",
  "sha2",
 ]
 

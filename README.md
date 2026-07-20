@@ -14,6 +14,8 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 
 > **v1.3.2。** consensus 阶段的 SAM 回贴、CIGAR 解析、IUPAC 序列与可选变异密度图已迁移至 Rust；主流程不再依赖 matplotlib 或 SciPy。
 
+> **v1.4。** MainFilter 输出改为常驻文件句柄、FASTQ/FASTA 解析改为字节级读取，并在运行时探测 zlib-ng（有则用其 SIMD 加速解压，无则回退系统 zlib）；相同输入与参数下筛选输出保持逐字节一致。
+
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
 ## 功能

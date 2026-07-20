@@ -14,6 +14,8 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 > **v1.3.2.** The consensus stage, including SAM/CIGAR handling, IUPAC sequence generation, and the optional mutation-density image, now runs in Rust; the main workflow no longer depends on matplotlib or SciPy.
 
+> **v1.4.** MainFilter output now keeps file handles open across flushes, FASTQ/FASTA parsing is byte-level, and the gzip backend is detected at runtime (zlib-ng's SIMD decompression when present, system zlib otherwise); filtering output is unchanged, byte-for-byte, for identical inputs and parameters.
+
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
 
 ## Features

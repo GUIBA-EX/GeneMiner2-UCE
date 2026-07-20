@@ -1,4 +1,11 @@
 # Changelog
+## v1.4 — MainFilter I/O and gzip backend acceleration
+
+- Kept `MainFilterNew` output file handles open for the life of the run instead of reopening on every buffer flush, and raised the process file-descriptor limit at startup to accommodate large per-locus output sets.
+- Replaced `String`-based FASTQ/FASTA line reading with byte-level parsing, removing per-line UTF-8 validation and a redundant copy; enlarged the gzip and file input buffers to cut read syscall frequency.
+- Added runtime detection of zlib-ng via `dlopen`/`dlsym`: uses its SIMD-accelerated gzip decompression when present in the environment, and falls back transparently to system zlib otherwise with no build-time dependency change.
+- Verified byte-identical filtering output across all output modes and both gzip backends on real UCE target-capture data; documented measured gains in `docs/development/mainfilter-performance.md`.
+
 ## v1.3.2 — Rust consensus generation
 
 - Replaced the production `build_consensus` executable with a Rust implementation while preserving its command name and the existing consensus stage in the main CLI.
