@@ -166,7 +166,7 @@ cli/geneminer2 gene-annotate --gene-input gene_output/gene \
 cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
 ```
 
-`gene-resolve` 需要 MAFFT 与 IQ-TREE；可用 `--gene-taper correction_multi.jl` 做 masking。`--gene-ufboot` 只能为 `0`（默认）或 `≥1000`。输出中的 `family_qc.tsv` 是对齐 QC，`tree_selection_qc.tsv` 记录 strict 子树和占有率。
+`gene-resolve` 需要 MAFFT 与 IQ-TREE；可用 `--gene-taper correction_multi.jl` 做 masking。它先按不同样本数和 `--gene-min-aa-length`（默认 30 aa）做 pre-alignment QC，再以 `--gene-min-effective-codon-sites`（默认 30）和占有率做 post-alignment QC；详情见 `occupancy_qc.tsv`。`--gene-ufboot` 只能为 `0`（默认）或 `≥1000`。`family_qc.tsv` 是通过 post-alignment QC 的对齐统计，`tree_selection_qc.tsv` 记录 strict 子树和占有率。
 
 ```bash
 cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \

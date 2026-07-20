@@ -30,7 +30,7 @@ struct Call {
 
 fn usage() -> ! {
     eprintln!(
-        "Usage:\n  gene_workflow classify --reference DIR --contigs DIR --sample NAME --out DIR\n  gene_workflow cohort --reference DIR --out DIR --sample NAME [--sample NAME ...]\n  gene_workflow annotate --input DIR --protein-reference DIR --out DIR --miniprot FILE [--threads N]\n  gene_workflow resolve --input DIR --out DIR --mafft FILE --iqtree FILE --min-taxa N [--threads N] [--outgroup FILE] [--ufboot N] [--taper-script FILE --julia FILE]"
+        "Usage:\n  gene_workflow classify --reference DIR --contigs DIR --sample NAME --out DIR\n  gene_workflow cohort --reference DIR --out DIR --sample NAME [--sample NAME ...]\n  gene_workflow annotate --input DIR --protein-reference DIR --out DIR --miniprot FILE [--threads N]\n  gene_workflow resolve --input DIR --out DIR --mafft FILE --iqtree FILE --min-taxa N [--threads N] [--outgroup FILE] [--ufboot N] [--min-aa-length N] [--min-effective-codon-sites N] [--taper-script FILE --julia FILE]"
     );
     std::process::exit(2);
 }
@@ -79,6 +79,28 @@ fn option_string(options: &HashMap<String, Vec<String>>, name: &str) -> String {
             eprintln!("Missing required option {name}");
             usage();
         })
+}
+
+fn option_positive_usize(
+    options: &HashMap<String, Vec<String>>,
+    name: &str,
+    default: usize,
+) -> usize {
+    let value = options
+        .get(name)
+        .and_then(|values| values.first())
+        .map(String::as_str)
+        .unwrap_or("");
+    if value.is_empty() {
+        return default;
+    }
+    match value.parse::<usize>() {
+        Ok(n) if n > 0 => n,
+        _ => {
+            eprintln!("{name} must be a positive integer");
+            usage();
+        }
+    }
 }
 
 fn family_id(path: &Path) -> Option<String> {
@@ -930,6 +952,20 @@ fn tree_copy_counts(tree: &resolve::Tree, outgroups: &BTreeSet<String>) -> BTree
     counts
 }
 
+fn distinct_sample_count(records: &[(String, String)]) -> usize {
+    records
+        .iter()
+        .filter_map(|(header, _)| header.split('|').next())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn median_sequence_length(records: &[(String, String)]) -> usize {
+    let mut lengths: Vec<_> = records.iter().map(|(_, sequence)| sequence.len()).collect();
+    lengths.sort_unstable();
+    lengths.get(lengths.len() / 2).copied().unwrap_or(0)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_workflow(
     input: PathBuf,
@@ -938,6 +974,8 @@ fn resolve_workflow(
     iqtree: String,
     threads: String,
     min_taxa: usize,
+    min_aa_length: usize,
+    min_effective_codon_sites: usize,
     outgroup: Option<PathBuf>,
     ufboot: usize,
     taper_script: Option<PathBuf>,
@@ -996,9 +1034,11 @@ fn resolve_workflow(
     let mut leaf_map = BufWriter::new(File::create(pro_dir.join("leaf_to_species.tsv"))?);
     let mut pro_trees = BufWriter::new(File::create(pro_dir.join("multicopy.trees"))?);
     let mut family_qc = BufWriter::new(File::create(out.join("family_qc.tsv"))?);
+    let mut occupancy_qc = BufWriter::new(File::create(out.join("occupancy_qc.tsv"))?);
     let mut selection_qc = BufWriter::new(File::create(out.join("tree_selection_qc.tsv"))?);
     writeln!(manifest, "family_id\tstatus\tclade\ttaxa\treason")?;
     writeln!(family_qc, "family_id\tstatus\tinput_candidates\taa_alignment_columns\tcodon_alignment_columns\teffective_codon_columns\teffective_codon_fraction\ttaper_applied")?;
+    writeln!(occupancy_qc, "family_id\tstage\tinput_candidates\tretained_candidates\tdistinct_samples\tmedian_sequence_length\tminimum_required\tstatus\treason")?;
     writeln!(selection_qc, "family_id\ttree_samples\tsingle_candidate_samples\tmulti_candidate_samples\tselected_clade\tclade_taxa\tclade_occupancy\tclade_support\tselected_leaves")?;
     for entry in fs::read_dir(&cds)? {
         let fasta = entry?.path();
@@ -1009,22 +1049,42 @@ fn resolve_workflow(
         let family_work = work.join(&family);
         fs::create_dir_all(&family_work)?;
         let aa_input = family_work.join("proteins.fasta");
-        let aa_records: Vec<(String, String)> = records
-            .iter()
-            .filter_map(|(header, cds)| {
-                let protein = translate_cds(cds);
-                if protein.contains('X') || protein.contains('*') {
-                    None
-                } else {
-                    Some((header.clone(), protein))
-                }
-            })
-            .collect();
-        if aa_records.len() < min_taxa {
-            writeln!(
-                manifest,
-                "{family}\tunresolved\t\t\ttoo_few_translatable_candidates"
-            )?;
+        let mut aa_records = Vec::new();
+        let mut invalid_translation = 0usize;
+        let mut short_protein = 0usize;
+        for (header, cds) in &records {
+            let protein = translate_cds(cds);
+            if protein.contains('X') || protein.contains('*') {
+                invalid_translation += 1;
+            } else if protein.len() < min_aa_length {
+                short_protein += 1;
+            } else {
+                aa_records.push((header.clone(), protein));
+            }
+        }
+        let pre_samples = distinct_sample_count(&aa_records);
+        let pre_median_length = median_sequence_length(&aa_records);
+        let pre_reason = if pre_samples < min_taxa {
+            "too_few_pre_alignment_taxa"
+        } else if aa_records.is_empty() {
+            "no_pre_alignment_proteins"
+        } else {
+            "pass"
+        };
+        writeln!(
+            occupancy_qc,
+            "{family}\tpre_alignment\t{}\t{}\t{pre_samples}\t{pre_median_length}\t{min_taxa}\t{}\t{pre_reason}",
+            records.len(),
+            aa_records.len(),
+            if pre_reason == "pass" { "pass" } else { "fail" },
+        )?;
+        if pre_reason != "pass" {
+            let reason = if invalid_translation > 0 || short_protein > 0 {
+                format!("{pre_reason};invalid_translation={invalid_translation};short_protein={short_protein}")
+            } else {
+                pre_reason.to_owned()
+            };
+            writeln!(manifest, "{family}\tunresolved\t\t\t{reason}")?;
             fs::copy(&fasta, unresolved.join(format!("{family}.fasta")))?;
             continue;
         }
@@ -1099,30 +1159,44 @@ fn resolve_workflow(
             .map(|(h, q)| (h.clone(), q.clone()))
             .collect();
         let aln = family_work.join("aligned.codon.fasta");
-        let mut codon_records = 0usize;
+        let codon_alignment: Vec<(String, String)> = aligned_records
+            .iter()
+            .filter_map(|(header, aligned)| {
+                cds_by_header
+                    .get(header)
+                    .and_then(|cds| codon_backtranslate(aligned, cds))
+                    .map(|codon| (header.clone(), codon))
+            })
+            .collect();
         {
             let mut writer = BufWriter::new(File::create(&aln)?);
-            for (header, aligned) in &aligned_records {
-                let Some(cds) = cds_by_header.get(header) else {
-                    continue;
-                };
-                let Some(codon) = codon_backtranslate(aligned, cds) else {
-                    continue;
-                };
+            for (header, codon) in &codon_alignment {
                 writeln!(writer, ">{header}\n{codon}")?;
-                codon_records += 1;
             }
         }
-        if codon_records < min_taxa {
-            writeln!(
-                manifest,
-                "{family}\tunresolved\t\t\ttoo_few_codon_backtranslated_candidates"
-            )?;
+        let aa_qc = alignment_qc(&aligned_records);
+        let codon_qc = codon_alignment_qc(&codon_alignment);
+        let post_samples = distinct_sample_count(&codon_alignment);
+        let post_median_length = median_sequence_length(&codon_alignment) / 3;
+        let post_reason = if post_samples < min_taxa {
+            "too_few_post_alignment_taxa"
+        } else if codon_qc.1 < min_effective_codon_sites {
+            "too_few_effective_codon_sites"
+        } else {
+            "pass"
+        };
+        writeln!(
+            occupancy_qc,
+            "{family}\tpost_alignment\t{}\t{}\t{post_samples}\t{post_median_length}\t{min_effective_codon_sites}\t{}\t{post_reason}",
+            aa_records.len(),
+            codon_alignment.len(),
+            if post_reason == "pass" { "pass" } else { "fail" },
+        )?;
+        if post_reason != "pass" {
+            writeln!(manifest, "{family}\tunresolved\t\t\t{post_reason}")?;
             fs::copy(&fasta, unresolved.join(format!("{family}.fasta")))?;
             continue;
         }
-        let aa_qc = alignment_qc(&read_raw_fasta(&aa_for_backtranslation)?);
-        let codon_qc = codon_alignment_qc(&read_raw_fasta(&aln)?);
         writeln!(
             family_qc,
             "{family}\talignment_pass\t{}\t{}\t{}\t{}\t{:.6}\t{}",
@@ -1279,6 +1353,8 @@ fn main() -> io::Result<()> {
                     }
                 }
             },
+            option_positive_usize(&options, "--min-aa-length", 30),
+            option_positive_usize(&options, "--min-effective-codon-sites", 30),
             options
                 .get("--outgroup")
                 .and_then(|v| v.first())
@@ -1356,6 +1432,17 @@ mod tests {
                 .unwrap();
         let child = tree.nodes[tree.root].children[1];
         assert_eq!(clade_support(&tree, tree.root, Some(child)), "88.200");
+    }
+
+    #[test]
+    fn occupancy_counts_distinct_samples_not_candidate_records() {
+        let records = vec![
+            ("A|family|candidate_1".into(), "A".repeat(30)),
+            ("A|family|candidate_2".into(), "A".repeat(60)),
+            ("B|family|candidate_1".into(), "A".repeat(90)),
+        ];
+        assert_eq!(distinct_sample_count(&records), 2);
+        assert_eq!(median_sequence_length(&records), 60);
     }
 
     #[test]

@@ -43,7 +43,7 @@ cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
 
 ## Resolve and QC
 
-`gene-resolve` runs a fast ML tree by default. `--gene-ufboot` accepts only `0` (default) or `>=1000`; only the latter supplies usable branch support in `tree_selection_qc.tsv`.
+`gene-resolve` runs a fast ML tree by default. It applies two conservative QC rounds: pre-alignment retains only translatable candidates at least `--gene-min-aa-length` long (30 aa by default) and checks `--gene-min-taxa` by **distinct sample**; post-alignment checks occupancy again after MAFFT/TAPER and codon backtranslation, and requires at least `--gene-min-effective-codon-sites` effective codon sites (30 by default). `--gene-ufboot` accepts only `0` (default) or `>=1000`; only the latter supplies usable branch support in `tree_selection_qc.tsv`.
 
 ```bash
 cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8 \
@@ -54,7 +54,8 @@ cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8 \
 
 - `--gene-outgroup`: first TSV/CSV column lists outgroup sample IDs; they must be monophyletic in a gene tree.
 - `--gene-taper`: runs TAPER after AA MSA; malformed, duplicate, or missing headers are rejected to unresolved.
-- `family_qc.tsv`: alignment QC only (`alignment_pass`), not an overall resolve-success call.
+- `occupancy_qc.tsv`: pre/post retained candidates, distinct-sample occupancy, median length, thresholds, and rejection reason per family; multiple candidates from one sample count once.
+- `family_qc.tsv`: alignment QC only for families passing post-alignment QC (`alignment_pass`), not an overall resolve-success call.
 - `tree_selection_qc.tsv`: candidate occupancy, multicandidate-sample count, and branch support per strict clade.
 - `resolve_manifest.tsv`: final resolved/unresolved reason for each family.
 
@@ -72,6 +73,7 @@ gene_resolved/
 ├── unresolved_multicandidate/     # multicopy, conflicting, or failed families
 ├── astral_input/resolved_1to1.trees
 ├── astralpro_input/{multicopy.trees,leaf_to_species.tsv}
+├── occupancy_qc.tsv
 ├── family_qc.tsv
 ├── tree_selection_qc.tsv
 └── resolve_manifest.tsv

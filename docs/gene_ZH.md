@@ -43,7 +43,7 @@ cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
 
 ## Resolve 与 QC
 
-`gene-resolve` 默认仅做快速 ML tree。`--gene-ufboot` 只能为 `0`（默认）或 `≥1000`；后者才在 `tree_selection_qc.tsv` 中提供可用的 branch support。可选参数：
+`gene-resolve` 默认仅做快速 ML tree。它在树推断前后执行两轮保守 QC：pre-alignment 仅保留可翻译且长度不少于 `--gene-min-aa-length`（默认 30 aa）的候选，并按**不同样本数**检查 `--gene-min-taxa`；post-alignment 在 MAFFT/TAPER 与密码子回译后再次检查样本占有率，并要求至少 `--gene-min-effective-codon-sites`（默认 30）个有效 codon 位点。`--gene-ufboot` 只能为 `0`（默认）或 `≥1000`；后者才在 `tree_selection_qc.tsv` 中提供可用的 branch support。可选参数：
 
 ```bash
 cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8 \
@@ -54,7 +54,8 @@ cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8 \
 
 - `--gene-outgroup`：TSV/CSV 第一列为 outgroup sample ID；要求其在 gene tree 上单系。
 - `--gene-taper`：在蛋白 MSA 后运行 TAPER；异常、重复或缺失 header 的输出会被拒绝并写入 unresolved。
-- `family_qc.tsv`：仅为对齐 QC（`alignment_pass`），不是整条 resolve 成功标志。
+- `occupancy_qc.tsv`：每个 family 的 pre/post 保留候选数、不同样本数、中位长度、阈值和拒绝原因；同一样本的多个候选只计一次占有率。
+- `family_qc.tsv`：仅为通过 post-alignment 检查的对齐 QC（`alignment_pass`），不是整条 resolve 成功标志。
 - `tree_selection_qc.tsv`：每个 strict 子树的候选占有率、多候选样本数与 branch support。
 - `resolve_manifest.tsv`：每个 family 的最终 resolved/unresolved 原因。
 
@@ -72,6 +73,7 @@ gene_resolved/
 ├── unresolved_multicandidate/     # 多拷贝、冲突或失败 family
 ├── astral_input/resolved_1to1.trees
 ├── astralpro_input/{multicopy.trees,leaf_to_species.tsv}
+├── occupancy_qc.tsv
 ├── family_qc.tsv
 ├── tree_selection_qc.tsv
 └── resolve_manifest.tsv

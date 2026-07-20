@@ -166,7 +166,7 @@ cli/geneminer2 gene-annotate --gene-input gene_output/gene \
 cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
 ```
 
-`gene-resolve` requires MAFFT and IQ-TREE; `--gene-taper correction_multi.jl` enables optional masking. `--gene-ufboot` must be `0` (default) or `>=1000`. `family_qc.tsv` is alignment QC, while `tree_selection_qc.tsv` records selected strict clades and occupancy.
+`gene-resolve` requires MAFFT and IQ-TREE; `--gene-taper correction_multi.jl` enables optional masking. It applies pre-alignment QC by distinct-sample occupancy and `--gene-min-aa-length` (30 aa by default), then post-alignment QC by occupancy and `--gene-min-effective-codon-sites` (30 by default); see `occupancy_qc.tsv`. `--gene-ufboot` must be `0` (default) or `>=1000`. `family_qc.tsv` is alignment QC for post-QC families, while `tree_selection_qc.tsv` records selected strict clades and occupancy.
 
 ```bash
 cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \

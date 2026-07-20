@@ -2354,7 +2354,7 @@ def run_gene_resolve(args):
     gene_bin = find_executable('gene_workflow', internal=True)
     if not os.path.isdir(args.gene_input):
         raise RuntimeError('--gene-input must be an annotation directory')
-    command = [gene_bin, 'resolve', '--input', args.gene_input, '--out', args.o.strip(), '--mafft', args.gene_mafft, '--iqtree', args.gene_iqtree, '--threads', str(max(1, args.p)), '--min-taxa', str(args.gene_min_taxa)]
+    command = [gene_bin, 'resolve', '--input', args.gene_input, '--out', args.o.strip(), '--mafft', args.gene_mafft, '--iqtree', args.gene_iqtree, '--threads', str(max(1, args.p)), '--min-taxa', str(args.gene_min_taxa), '--min-aa-length', str(args.gene_min_aa_length), '--min-effective-codon-sites', str(args.gene_min_effective_codon_sites)]
     if args.gene_outgroup:
         if not os.path.isfile(args.gene_outgroup):
             raise RuntimeError('--gene-outgroup must be a readable file')
@@ -2564,7 +2564,9 @@ if __name__ == '__main__':
     group_io.add_argument('--gene-input', default='', help='Gene workflow input directory (annotation for gene-resolve; resolve output for gene-tree)', metavar='DIR')
     group_io.add_argument('--gene-mafft', default='mafft', help='MAFFT executable for gene-resolve', metavar='FILE')
     group_io.add_argument('--gene-iqtree', default='iqtree', help='IQ-TREE executable for gene-resolve', metavar='FILE')
-    group_io.add_argument('--gene-min-taxa', default=4, type=int, help='Minimum taxa per resolved SC-OG (default = 4)', metavar='INT')
+    group_io.add_argument('--gene-min-taxa', default=4, type=int, help='Minimum distinct samples required before and after alignment (default = 4)', metavar='INT')
+    group_io.add_argument('--gene-min-aa-length', default=30, type=int, help='Minimum translated candidate length retained before alignment (default = 30)', metavar='INT')
+    group_io.add_argument('--gene-min-effective-codon-sites', default=30, type=int, help='Minimum post-alignment effective codon sites (default = 30)', metavar='INT')
     group_io.add_argument('--gene-outgroup', default='', help='Optional TSV/CSV whose first column lists outgroup samples', metavar='FILE')
     group_io.add_argument('--gene-ufboot', default=0, type=int, help='Optional IQ-TREE UFBoot replicates; use 0 or >=1000 (default = 0)', metavar='INT')
     group_io.add_argument('--gene-taper', default='', help='Optional TAPER correction_multi.jl script for AA-alignment masking', metavar='FILE')
@@ -2708,6 +2710,10 @@ if __name__ == '__main__':
             parser.error('gene-resolve requires --gene-input')
         if args.gene_min_taxa < 2:
             parser.error('--gene-min-taxa must be at least 2')
+        if args.gene_min_aa_length < 1:
+            parser.error('--gene-min-aa-length must be positive')
+        if args.gene_min_effective_codon_sites < 1:
+            parser.error('--gene-min-effective-codon-sites must be positive')
         if args.gene_ufboot != 0 and args.gene_ufboot < 1000:
             parser.error('--gene-ufboot must be 0 or at least 1000')
     elif 'gene-tree' in args.command:
