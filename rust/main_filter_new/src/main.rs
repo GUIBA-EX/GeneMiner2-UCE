@@ -1,4 +1,5 @@
 use ahash::AHashMap;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CString};
@@ -9,8 +10,8 @@ use std::process;
 use std::time::Instant;
 
 const CACHE_MAGIC: &[u8; 4] = b"GM2K";
-const CACHE_VERSION: u16 = 2;
-const FLAG_REVERSE_INDEXED: u16 = 1;
+const CACHE_VERSION: u16 = 3;
+const FLAG_CANONICAL_KMERS: u16 = 1;
 const MEBIBYTE_READS: u64 = 1_048_576;
 const TOTAL_BUFFER_BUDGET: usize = 64 * 1024 * 1024;
 const MIN_FILE_BUDGET: usize = 128 * 1024;
@@ -347,9 +348,9 @@ impl SequenceReader {
             }
         }
         Ok(Some(Record {
-            lines: self.keep_text_lines.then(|| {
-                vec![header, String::from_utf8_lossy(&sequence).into_owned()]
-            }),
+            lines: self
+                .keep_text_lines
+                .then(|| vec![header, String::from_utf8_lossy(&sequence).into_owned()]),
             sequence,
             quality: None,
         }))
@@ -429,7 +430,10 @@ fn base_code(base: u8) -> Option<u8> {
 #[derive(Clone, Copy, Debug)]
 enum ReferenceHits {
     One(u32),
-    Many(u32),
+    // Used only while building: each k-mer accumulates its locus IDs once.
+    Pending(u32),
+    // Final/read-only representation: a slice in packed_hits.
+    Packed { offset: u32, len: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -446,14 +450,12 @@ impl KmerStore {
             Self::Long(AHashMap::new())
         }
     }
-
     fn len(&self) -> usize {
         match self {
             Self::Short(map) => map.len(),
             Self::Long(map) => map.len(),
         }
     }
-
     fn reserve(&mut self, additional: usize) {
         match self {
             Self::Short(map) => map.reserve(additional),
@@ -465,41 +467,45 @@ impl KmerStore {
 #[derive(Clone, Debug)]
 struct KmerIndex {
     k: usize,
-    reverse_indexed: bool,
     reference_names: Vec<String>,
     store: KmerStore,
-    shared_hits: Vec<Vec<u32>>,
+    pending_hits: Vec<Vec<u32>>,
+    packed_hits: Vec<u32>,
 }
 
 impl KmerIndex {
-    fn new(k: usize, reverse_indexed: bool, reference_names: Vec<String>) -> Self {
+    fn new(k: usize, reference_names: Vec<String>) -> Self {
         Self {
             k,
-            reverse_indexed,
             reference_names,
             store: KmerStore::new(k),
-            shared_hits: Vec::new(),
+            pending_hits: Vec::new(),
+            packed_hits: Vec::new(),
         }
     }
-
     fn len(&self) -> usize {
         self.store.len()
     }
 
-    fn add_reference_hit(hit: &mut ReferenceHits, reference: u32, shared_hits: &mut Vec<Vec<u32>>) {
+    fn add_reference_hit(
+        hit: &mut ReferenceHits,
+        reference: u32,
+        pending_hits: &mut Vec<Vec<u32>>,
+    ) {
         match *hit {
             ReferenceHits::One(previous) if previous != reference => {
-                let index = shared_hits.len() as u32;
-                shared_hits.push(vec![previous, reference]);
-                *hit = ReferenceHits::Many(index);
+                let index = pending_hits.len() as u32;
+                pending_hits.push(vec![previous, reference]);
+                *hit = ReferenceHits::Pending(index);
             }
-            ReferenceHits::Many(index) => {
-                let hits = &mut shared_hits[index as usize];
+            ReferenceHits::Pending(index) => {
+                let hits = &mut pending_hits[index as usize];
                 if hits.last().copied() != Some(reference) {
                     hits.push(reference);
                 }
             }
             ReferenceHits::One(_) => {}
+            ReferenceHits::Packed { .. } => unreachable!("cannot extend finalized reference hits"),
         }
     }
 
@@ -512,7 +518,7 @@ impl KmerIndex {
                 entry.insert(ReferenceHits::One(reference));
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
-                Self::add_reference_hit(entry.get_mut(), reference, &mut self.shared_hits)
+                Self::add_reference_hit(entry.get_mut(), reference, &mut self.pending_hits)
             }
         }
     }
@@ -526,27 +532,79 @@ impl KmerIndex {
                 entry.insert(ReferenceHits::One(reference));
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
-                Self::add_reference_hit(entry.get_mut(), reference, &mut self.shared_hits)
+                Self::add_reference_hit(entry.get_mut(), reference, &mut self.pending_hits)
             }
         }
     }
 
     fn store_loaded_hits(&mut self, hits: Vec<u32>) -> AppResult<ReferenceHits> {
-        match hits.len() {
-            0 => Err("dictionary k-mer has no reference hits".to_string()),
-            1 => Ok(ReferenceHits::One(hits[0])),
-            _ => {
-                let index = self.shared_hits.len() as u32;
-                self.shared_hits.push(hits);
-                Ok(ReferenceHits::Many(index))
+        if hits.is_empty() {
+            return Err("dictionary k-mer has no reference hits".to_string());
+        }
+        if hits.len() == 1 {
+            return Ok(ReferenceHits::One(hits[0]));
+        }
+        let offset = u32::try_from(self.packed_hits.len())
+            .map_err(|_| "packed reference hits exceed u32 range".to_string())?;
+        let len = u32::try_from(hits.len())
+            .map_err(|_| "reference hit list exceeds u32 range".to_string())?;
+        offset
+            .checked_add(len)
+            .ok_or_else(|| "packed reference hit range exceeds u32 range".to_string())?;
+        self.packed_hits.extend(hits);
+        Ok(ReferenceHits::Packed { offset, len })
+    }
+
+    fn pack_pending_hit(
+        hit: &mut ReferenceHits,
+        pending_hits: &[Vec<u32>],
+        packed_hits: &mut Vec<u32>,
+    ) -> AppResult<()> {
+        if let ReferenceHits::Pending(index) = *hit {
+            let values = &pending_hits[index as usize];
+            let offset = u32::try_from(packed_hits.len())
+                .map_err(|_| "packed reference hits exceed u32 range".to_string())?;
+            let len = u32::try_from(values.len())
+                .map_err(|_| "reference hit list exceeds u32 range".to_string())?;
+            offset
+                .checked_add(len)
+                .ok_or_else(|| "packed reference hit range exceeds u32 range".to_string())?;
+            packed_hits.extend_from_slice(values);
+            *hit = ReferenceHits::Packed { offset, len };
+        }
+        Ok(())
+    }
+
+    fn finalize_hits(&mut self) -> AppResult<()> {
+        match &mut self.store {
+            KmerStore::Short(map) => {
+                for hit in map.values_mut() {
+                    Self::pack_pending_hit(hit, &self.pending_hits, &mut self.packed_hits)?;
+                }
+            }
+            KmerStore::Long(map) => {
+                for hit in map.values_mut() {
+                    Self::pack_pending_hit(hit, &self.pending_hits, &mut self.packed_hits)?;
+                }
             }
         }
+        self.pending_hits.clear();
+        self.pending_hits.shrink_to_fit();
+        Ok(())
     }
 
     fn hit_slice<'a>(&'a self, hits: &'a ReferenceHits) -> &'a [u32] {
         match hits {
             ReferenceHits::One(reference) => std::slice::from_ref(reference),
-            ReferenceHits::Many(index) => &self.shared_hits[*index as usize],
+            ReferenceHits::Packed { offset, len } => {
+                let end = offset
+                    .checked_add(*len)
+                    .expect("validated packed reference-hit range");
+                &self.packed_hits[*offset as usize..end as usize]
+            }
+            ReferenceHits::Pending(_) => {
+                unreachable!("reference hits must be finalized before querying")
+            }
         }
     }
 
@@ -575,10 +633,7 @@ impl KmerIndex {
                     reverse = (reverse >> 2) | (((3 - code) as u64) << reverse_shift);
                     valid += 1;
                     if valid >= self.k {
-                        self.insert_short(forward, reference);
-                        if self.reverse_indexed {
-                            self.insert_short(reverse, reference);
-                        }
+                        self.insert_short(forward.min(reverse), reference);
                     }
                 } else {
                     forward = 0;
@@ -589,84 +644,48 @@ impl KmerIndex {
         } else {
             for start in 0..=sequence.len() - self.k {
                 if let Some((forward, reverse)) = long_kmer(&sequence[start..start + self.k]) {
-                    self.insert_long(forward, reference);
-                    if self.reverse_indexed {
-                        self.insert_long(reverse, reference);
-                    }
+                    self.insert_long(
+                        if forward <= reverse { forward } else { reverse },
+                        reference,
+                    );
                 }
             }
         }
     }
 
-    fn collect_hits(
-        &self,
-        sequence: &[u8],
-        step: usize,
-        scan_reverse: bool,
-        collector: &mut HitCollector,
-    ) {
-        // read 从头趟一遍，按步长挑窗口；最后那个窗口也捎上，别漏了尾巴。
+    fn collect_hits(&self, sequence: &[u8], step: usize, collector: &mut HitCollector) {
+        // Canonical k-mers preserve bidirectional matching while one lookup per window suffices.
         if sequence.len() < self.k {
             return;
         }
         let tail = sequence.len() - self.k;
         if self.k <= 32 {
-            if scan_reverse {
-                let mask = self.short_mask();
-                let reverse_shift = 2 * (self.k - 1);
-                let mut forward = 0_u64;
-                let mut reverse = 0_u64;
-                let mut valid = 0_usize;
-                let mut next_probe = 0_usize;
-                for (end, &base) in sequence.iter().enumerate() {
-                    if let Some(code) = base_code(base) {
-                        forward = ((forward << 2) | code as u64) & mask;
-                        reverse = (reverse >> 2) | (((3 - code) as u64) << reverse_shift);
-                        valid += 1;
-                    } else {
-                        forward = 0;
-                        reverse = 0;
-                        valid = 0;
-                    }
-                    if end + 1 < self.k {
-                        continue;
-                    }
-                    let start = end + 1 - self.k;
-                    let sampled = start == next_probe;
-                    if sampled {
-                        next_probe = next_probe.saturating_add(step);
-                    }
-                    if valid >= self.k && (sampled || start == tail) {
-                        self.collect_short(forward, collector);
-                        if reverse != forward {
-                            self.collect_short(reverse, collector);
-                        }
-                    }
+            let mask = self.short_mask();
+            let reverse_shift = 2 * (self.k - 1);
+            let mut forward = 0_u64;
+            let mut reverse = 0_u64;
+            let mut valid = 0_usize;
+            let mut next_probe = 0_usize;
+            for (end, &base) in sequence.iter().enumerate() {
+                if let Some(code) = base_code(base) {
+                    forward = ((forward << 2) | code as u64) & mask;
+                    reverse = (reverse >> 2) | (((3 - code) as u64) << reverse_shift);
+                    valid += 1;
+                } else {
+                    forward = 0;
+                    reverse = 0;
+                    valid = 0;
                 }
-            } else {
-                let mask = self.short_mask();
-                let mut forward = 0_u64;
-                let mut valid = 0_usize;
-                let mut next_probe = 0_usize;
-                for (end, &base) in sequence.iter().enumerate() {
-                    if let Some(code) = base_code(base) {
-                        forward = ((forward << 2) | code as u64) & mask;
-                        valid += 1;
-                    } else {
-                        forward = 0;
-                        valid = 0;
-                    }
-                    if end + 1 < self.k {
-                        continue;
-                    }
-                    let start = end + 1 - self.k;
-                    let sampled = start == next_probe;
-                    if sampled {
-                        next_probe = next_probe.saturating_add(step);
-                    }
-                    if valid >= self.k && (sampled || start == tail) {
-                        self.collect_short(forward, collector);
-                    }
+                if end + 1 < self.k {
+                    continue;
+                }
+                let start = end + 1 - self.k;
+                let sampled = start == next_probe;
+                if sampled {
+                    next_probe = next_probe.saturating_add(step);
+                }
+                if valid >= self.k && (sampled || start == tail) {
+                    self.collect_short(forward.min(reverse), collector);
                 }
             }
         } else {
@@ -676,10 +695,14 @@ impl KmerIndex {
             }
             for start in starts {
                 if let Some((forward, reverse)) = long_kmer(&sequence[start..start + self.k]) {
-                    self.collect_long(&forward, collector);
-                    if scan_reverse {
-                        self.collect_long(&reverse, collector);
-                    }
+                    self.collect_long(
+                        if forward <= reverse {
+                            &forward
+                        } else {
+                            &reverse
+                        },
+                        collector,
+                    );
                 }
             }
         }
@@ -792,8 +815,25 @@ fn reference_paths(reference: &Path) -> AppResult<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn build_index(reference: &Path, k: usize, reverse_indexed: bool) -> AppResult<KmerIndex> {
-    // 各 locus 共用这一份索引，别让每个样品都重复现搓一遍。
+fn reference_content_hash(reference: &Path) -> AppResult<[u8; 32]> {
+    let paths = reference_paths(reference)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"GM2-MainFilter-reference-v1\0");
+    for path in paths {
+        let name = reference_basename(&path)?;
+        hasher.update((name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        let mut reader = SequenceReader::open(&path, FileKind::Fasta, false)?;
+        while let Some(record) = reader.next_record()? {
+            hasher.update((record.sequence.len() as u64).to_le_bytes());
+            hasher.update(&record.sequence);
+        }
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn build_index(reference: &Path, k: usize) -> AppResult<(KmerIndex, [u8; 32])> {
+    // 首次构建时把内容哈希和索引合在一遍参考读取里，避免额外 I/O。
     let paths = reference_paths(reference)?;
     let names: Vec<String> = paths
         .iter()
@@ -805,14 +845,22 @@ fn build_index(reference: &Path, k: usize, reverse_indexed: bool) -> AppResult<K
             return Err(format!("duplicate reference locus name: {name}"));
         }
     }
-    let mut index = KmerIndex::new(k, reverse_indexed, names);
+    let mut hasher = Sha256::new();
+    hasher.update(b"GM2-MainFilter-reference-v1\0");
+    let mut index = KmerIndex::new(k, names);
     for (reference_id, path) in paths.iter().enumerate() {
+        let name = &index.reference_names[reference_id];
+        hasher.update((name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
         let mut reader = SequenceReader::open(path, FileKind::Fasta, false)?;
         while let Some(record) = reader.next_record()? {
+            hasher.update((record.sequence.len() as u64).to_le_bytes());
+            hasher.update(&record.sequence);
             index.add_reference_sequence(&record.sequence, reference_id as u32);
         }
     }
-    Ok(index)
+    index.finalize_hits()?;
+    Ok((index, hasher.finalize().into()))
 }
 
 fn write_u16(out: &mut impl Write, value: u16) -> io::Result<()> {
@@ -825,7 +873,7 @@ fn write_u64(out: &mut impl Write, value: u64) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
 }
 
-fn write_dictionary(index: &KmerIndex, path: &Path) -> AppResult<()> {
+fn write_dictionary(index: &KmerIndex, reference_hash: &[u8; 32], path: &Path) -> AppResult<()> {
     // 先写临时文件再改名，半道断了也不至于把老缓存整坏喽。
     if let Some(parent) = path
         .parent()
@@ -837,18 +885,11 @@ fn write_dictionary(index: &KmerIndex, path: &Path) -> AppResult<()> {
     let mut out = File::create(&temporary).map_err(|e| e.to_string())?;
     out.write_all(CACHE_MAGIC).map_err(|e| e.to_string())?;
     write_u16(&mut out, CACHE_VERSION).map_err(|e| e.to_string())?;
-    write_u16(
-        &mut out,
-        if index.reverse_indexed {
-            FLAG_REVERSE_INDEXED
-        } else {
-            0
-        },
-    )
-    .map_err(|e| e.to_string())?;
+    write_u16(&mut out, FLAG_CANONICAL_KMERS).map_err(|e| e.to_string())?;
     write_u32(&mut out, index.k as u32).map_err(|e| e.to_string())?;
     write_u32(&mut out, index.reference_names.len() as u32).map_err(|e| e.to_string())?;
     write_u64(&mut out, index.len() as u64).map_err(|e| e.to_string())?;
+    out.write_all(reference_hash).map_err(|e| e.to_string())?;
     for name in &index.reference_names {
         write_u32(&mut out, name.len() as u32).map_err(|e| e.to_string())?;
         out.write_all(name.as_bytes()).map_err(|e| e.to_string())?;
@@ -915,60 +956,36 @@ fn read_vec(input: &mut impl Read, length: usize) -> AppResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn read_optional_u32(input: &mut impl Read) -> AppResult<Option<u32>> {
-    let mut bytes = [0_u8; 4];
-    loop {
-        match input.read(&mut bytes[..1]) {
-            Ok(0) => return Ok(None),
-            Ok(_) => break,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    input
-        .read_exact(&mut bytes[1..])
-        .map_err(|_| "truncated k-mer dictionary".to_string())?;
-    Ok(Some(u32::from_le_bytes(bytes)))
-}
-
-fn read_nul_string(input: &mut impl BufRead) -> AppResult<String> {
-    let mut bytes = Vec::new();
-    if input.read_until(0, &mut bytes).map_err(|e| e.to_string())? == 0
-        || bytes.last().copied() != Some(0)
-    {
-        return Err("unterminated reference name".to_string());
-    }
-    bytes.pop();
-    String::from_utf8(bytes).map_err(|_| "reference name is not UTF-8".to_string())
-}
-
 // 优先尝试捡现成字典；格式和参数对不上就拒绝，不能瞎凑合。
 fn load_dictionary(
     path: &Path,
     requested_k: usize,
-    legacy_reverse_indexed: bool,
+    expected_reference_hash: &[u8; 32],
 ) -> AppResult<KmerIndex> {
     let file = File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut input = BufReader::new(file);
     let prefix = read_array::<4>(&mut input)?;
-    if &prefix == CACHE_MAGIC {
-        load_v2_dictionary(&mut input, requested_k)
-    } else {
-        load_legacy_dictionary(
-            &mut input,
-            u32::from_le_bytes(prefix) as usize,
-            requested_k,
-            legacy_reverse_indexed,
-        )
+    if &prefix != CACHE_MAGIC {
+        return Err(
+            "legacy k-mer dictionary lacks a reference-content hash; rebuilding".to_string(),
+        );
     }
+    load_v3_dictionary(&mut input, requested_k, expected_reference_hash)
 }
 
-// 读取 Rust 新缓存，顺带核对 k 和反向链策略，省得拿错家伙。
-fn load_v2_dictionary(input: &mut impl BufRead, requested_k: usize) -> AppResult<KmerIndex> {
+// 读取 Rust 缓存，核对 reference 内容、k 与 canonical 链策略，避免静默拿错字典。
+fn load_v3_dictionary(
+    input: &mut impl BufRead,
+    requested_k: usize,
+    expected_reference_hash: &[u8; 32],
+) -> AppResult<KmerIndex> {
     if read_u16(input)? != CACHE_VERSION {
         return Err("unsupported k-mer dictionary version".to_string());
     }
     let flags = read_u16(input)?;
+    if flags & FLAG_CANONICAL_KMERS == 0 {
+        return Err("dictionary does not use canonical k-mers".to_string());
+    }
     let k = read_u32(input)? as usize;
     if k != requested_k {
         return Err(format!(
@@ -978,6 +995,10 @@ fn load_v2_dictionary(input: &mut impl BufRead, requested_k: usize) -> AppResult
     let reference_count = read_u32(input)? as usize;
     let entry_count = usize::try_from(read_u64(input)?)
         .map_err(|_| "dictionary entry count exceeds this platform".to_string())?;
+    let found_reference_hash = read_array::<32>(input)?;
+    if &found_reference_hash != expected_reference_hash {
+        return Err("dictionary reference-content hash does not match; rebuilding".to_string());
+    }
     let mut names = Vec::with_capacity(reference_count);
     for _ in 0..reference_count {
         let length = read_u32(input)? as usize;
@@ -986,7 +1007,7 @@ fn load_v2_dictionary(input: &mut impl BufRead, requested_k: usize) -> AppResult
                 .map_err(|_| "reference name is not UTF-8".to_string())?,
         );
     }
-    let mut index = KmerIndex::new(k, flags & FLAG_REVERSE_INDEXED != 0, names);
+    let mut index = KmerIndex::new(k, names);
     index.store.reserve(entry_count);
     for _ in 0..entry_count {
         let key_type = read_u8(input)?;
@@ -1047,118 +1068,6 @@ fn read_dictionary_hits(
         hits.push(hit);
     }
     Ok(hits)
-}
-
-fn fingerprint_inverse(mut value: u32) -> u32 {
-    value = (value >> 11) ^ value;
-    value = value.wrapping_mul(32709) & 0xffff;
-    value = (value >> 9) ^ value;
-    value = value.wrapping_mul(32709) & 0xffff;
-    value
-}
-
-fn decode_legacy_hits(bytes: &[u8], reference_count: usize) -> AppResult<Vec<u32>> {
-    if bytes.is_empty() || !bytes.len().is_multiple_of(8) {
-        return Err("malformed legacy Cuckoo set".to_string());
-    }
-    let mut hits = Vec::new();
-    for bucket in bytes.chunks_exact(8) {
-        let bucket = u64::from_le_bytes(bucket.try_into().unwrap());
-        for (offset, low_bit) in [(0, 0_u32), (16, 0), (32, 1), (48, 1)] {
-            let fingerprint = ((bucket >> offset) & 0xffff) as u32;
-            if fingerprint == 0 {
-                continue;
-            }
-            let encoded = (fingerprint_inverse(fingerprint) << 1) | low_bit;
-            if encoded < 2 {
-                return Err("invalid legacy reference id".to_string());
-            }
-            let reference = encoded - 2;
-            if reference as usize >= reference_count {
-                return Err("legacy reference id is out of range".to_string());
-            }
-            hits.push(reference);
-        }
-    }
-    hits.sort_unstable();
-    hits.dedup();
-    if hits.is_empty() {
-        return Err("legacy k-mer has no reference hits".to_string());
-    }
-    Ok(hits)
-}
-
-// 老 Haxe 缓存也照顾着，保证升级后原来的流程还能接着跑。
-fn load_legacy_dictionary(
-    input: &mut impl BufRead,
-    k: usize,
-    requested_k: usize,
-    reverse_indexed: bool,
-) -> AppResult<KmerIndex> {
-    if k != requested_k {
-        return Err(format!(
-            "requested {requested_k}-mer but dictionary contains {k}-mer"
-        ));
-    }
-    if read_u32(input)? != 12 {
-        return Err("unsupported legacy composition-pattern size".to_string());
-    }
-    let reference_count = read_u32(input)? as usize;
-    let _cuckoo_set_count = read_u32(input)?;
-    if reference_count > 131_068 {
-        return Err("legacy reference count exceeds its representable range".to_string());
-    }
-    let mut names = Vec::with_capacity(reference_count);
-    for _ in 0..reference_count {
-        names.push(read_nul_string(input)?);
-    }
-    let mut pattern_table = [0_u8; 2 * (1 << 12)];
-    input
-        .read_exact(&mut pattern_table)
-        .map_err(|_| "truncated k-mer dictionary".to_string())?;
-    // The Haxe cache format did not record its strand policy, so retain the
-    // policy supplied by the compatible -gr command-line flag.
-    let mut index = KmerIndex::new(k, reverse_indexed, names);
-    while let Some(item_size) = read_optional_u32(input)? {
-        let item_size = item_size as usize;
-        let key_size = if k <= 32 { 8 } else { k };
-        if item_size < 4 + key_size + 8 {
-            return Err("malformed legacy k-mer item".to_string());
-        }
-        let short_key = if k <= 32 {
-            let top_aligned = read_u64(input)?;
-            let shift = 64 - 2 * k;
-            Some(if shift == 0 {
-                top_aligned
-            } else {
-                top_aligned >> shift
-            })
-        } else {
-            None
-        };
-        let long_key = if k > 32 {
-            Some(read_vec(input, k)?)
-        } else {
-            None
-        };
-        let hit_bytes = item_size - 4 - key_size;
-        let hits = decode_legacy_hits(&read_vec(input, hit_bytes)?, reference_count)?;
-        let value = index.store_loaded_hits(hits)?;
-        match (&mut index.store, short_key, long_key) {
-            (KmerStore::Short(map), Some(key), None) => {
-                if map.insert(key, value).is_some() {
-                    return Err("duplicate k-mer in legacy dictionary".to_string());
-                }
-            }
-            (KmerStore::Long(map), None, Some(key)) => {
-                if map.insert(key, value).is_some() {
-                    return Err("duplicate k-mer in legacy dictionary".to_string());
-                }
-            }
-            _ => unreachable!(),
-        }
-    }
-    Ok(index)
 }
 
 struct OutputManager {
@@ -1295,7 +1204,11 @@ impl OutputManager {
 // 文本输出保留原样，方便人眼复查。
 fn encode_text(record: &Record) -> Vec<u8> {
     let mut output = Vec::new();
-    for line in record.lines.as_ref().expect("text output requires record lines") {
+    for line in record
+        .lines
+        .as_ref()
+        .expect("text output requires record lines")
+    {
         output.extend_from_slice(line.as_bytes());
         output.push(b'\n');
     }
@@ -1449,24 +1362,47 @@ fn run(args: Args) -> AppResult<()> {
     let mut logger = Logger::new(&args.output)?;
     logger.log("Getting information from references...");
     let started = Instant::now();
-    let index = if let Some(path) = args.dictionary.as_ref().filter(|path| path.exists()) {
-        let index = load_dictionary(path, args.kmer, args.get_reverse)?;
-        logger.log(&format!(
-            "Loaded k-mer dictionary with {} entries.",
-            index.len()
-        ));
-        index
-    } else {
-        let index = build_index(&args.reference, args.kmer, args.get_reverse)?;
-        logger.log(&format!(
-            "Built k-mer dictionary with {} entries.",
-            index.len()
-        ));
-        if let Some(path) = &args.dictionary {
-            write_dictionary(&index, path)?;
+    let cached = args
+        .dictionary
+        .as_ref()
+        .filter(|path| path.exists())
+        .map(|path| {
+            let reference_hash = reference_content_hash(&args.reference)?;
+            load_dictionary(path, args.kmer, &reference_hash).map(|index| (index, reference_hash))
+        });
+    let (index, reference_hash) = match cached {
+        Some(Ok(value)) => {
+            logger.log(&format!(
+                "Loaded k-mer dictionary with {} entries.",
+                value.0.len()
+            ));
+            value
         }
-        index
+        Some(Err(reason)) => {
+            logger.log(&format!("Ignoring reusable dictionary: {reason}"));
+            let (index, hash) = build_index(&args.reference, args.kmer)?;
+            logger.log(&format!(
+                "Built k-mer dictionary with {} entries.",
+                index.len()
+            ));
+            if let Some(path) = &args.dictionary {
+                write_dictionary(&index, &hash, path)?;
+            }
+            (index, hash)
+        }
+        None => {
+            let (index, hash) = build_index(&args.reference, args.kmer)?;
+            logger.log(&format!(
+                "Built k-mer dictionary with {} entries.",
+                index.len()
+            ));
+            if let Some(path) = &args.dictionary {
+                write_dictionary(&index, &hash, path)?;
+            }
+            (index, hash)
+        }
     };
+    let _ = reference_hash;
     logger.log(&format!(
         "Dictionary stage took {:.3} seconds.",
         started.elapsed().as_secs_f64()
@@ -1496,9 +1432,11 @@ fn run(args: Args) -> AppResult<()> {
     )?;
     let mut counts = vec![0_u64; index.reference_names.len()];
     let mut collector = HitCollector::new(index.reference_names.len());
-    // A cached dictionary must retain the strand policy used when it was built.
-    // This also prevents a later invocation from silently changing its meaning.
-    let scan_reverse = !index.reverse_indexed;
+    if args.get_reverse {
+        logger.log(
+            "Note: -gr is retained for compatibility; canonical k-mers already match both strands.",
+        );
+    }
     let filter_started = Instant::now();
 
     for file_number in 0..args.q1.len() {
@@ -1506,7 +1444,11 @@ fn run(args: Args) -> AppResult<()> {
         let mut reader2 = if args.q2.is_empty() {
             None
         } else {
-            Some(SequenceReader::open(&args.q2[file_number], kind, keep_text_lines)?)
+            Some(SequenceReader::open(
+                &args.q2[file_number],
+                kind,
+                keep_text_lines,
+            )?)
         };
         let mut read_count = 0_u64;
         let max_reads = args.max_read_blocks.saturating_mul(MEBIBYTE_READS);
@@ -1519,9 +1461,9 @@ fn run(args: Args) -> AppResult<()> {
                 None => None,
             };
             collector.begin();
-            index.collect_hits(&record1.sequence, args.step, scan_reverse, &mut collector);
+            index.collect_hits(&record1.sequence, args.step, &mut collector);
             if let Some(record) = &record2 {
-                index.collect_hits(&record.sequence, args.step, scan_reverse, &mut collector);
+                index.collect_hits(&record.sequence, args.step, &mut collector);
             }
             if !collector.hits.is_empty() {
                 if args.mode == 1 {
@@ -1606,13 +1548,6 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn legacy_fingerprint(mut value: u32) -> u32 {
-        value = value.wrapping_mul(108_301) & 0xffff;
-        value = (value >> 9) ^ value;
-        value = value.wrapping_mul(108_301) & 0xffff;
-        (value >> 11) ^ value
-    }
-
     fn normalized_kmer(sequence: &[u8]) -> Option<Vec<u8>> {
         sequence
             .iter()
@@ -1688,9 +1623,9 @@ mod tests {
 
     #[test]
     fn ambiguous_bases_split_reference_kmers() {
-        let mut index = KmerIndex::new(16, true, vec!["locus".to_string()]);
+        let mut index = KmerIndex::new(16, vec!["locus".to_string()]);
         index.add_reference_sequence(b"AAAAAAAAAAAAAAAANCCCCCCCCCCCCCCCC", 0);
-        assert_eq!(index.len(), 4);
+        assert_eq!(index.len(), 2);
         let KmerStore::Short(map) = &index.store else {
             unreachable!();
         };
@@ -1699,11 +1634,11 @@ mod tests {
 
     #[test]
     fn reverse_complement_lookup_matches_original_modes() {
-        let mut index = KmerIndex::new(16, false, vec!["locus".to_string()]);
+        let mut index = KmerIndex::new(16, vec!["locus".to_string()]);
         index.add_reference_sequence(b"AAAACCCCGGGGTTTA", 0);
         let mut hits = HitCollector::new(1);
         hits.begin();
-        index.collect_hits(b"TAAACCCCGGGGTTTT", 3, true, &mut hits);
+        index.collect_hits(b"TAAACCCCGGGGTTTT", 3, &mut hits);
         assert_eq!(hits.hits, vec![0]);
     }
 
@@ -1723,28 +1658,6 @@ mod tests {
         assert_eq!(encoded.len(), payload + 6);
         assert_eq!(sequence, 300);
         assert_ne!(encoded[3] & 0x80, 0);
-    }
-
-    #[test]
-    fn loads_legacy_haxe_dictionary() {
-        let mut dictionary = Vec::new();
-        dictionary.extend_from_slice(&16_u32.to_le_bytes());
-        dictionary.extend_from_slice(&12_u32.to_le_bytes());
-        dictionary.extend_from_slice(&1_u32.to_le_bytes());
-        dictionary.extend_from_slice(&1_u32.to_le_bytes());
-        dictionary.extend_from_slice(b"locus\0");
-        dictionary.extend_from_slice(&vec![0_u8; 2 * (1 << 12)]);
-        dictionary.extend_from_slice(&20_u32.to_le_bytes());
-        dictionary.extend_from_slice(&0_u64.to_le_bytes());
-        dictionary.extend_from_slice(&(legacy_fingerprint(1) as u64).to_le_bytes());
-
-        let mut input = io::Cursor::new(&dictionary[4..]);
-        let index = load_legacy_dictionary(&mut input, 16, 16, false).unwrap();
-        let mut hits = HitCollector::new(1);
-        hits.begin();
-        index.collect_hits(b"AAAAAAAAAAAAAAAA", 1, true, &mut hits);
-        assert_eq!(hits.hits, vec![0]);
-        assert!(!index.reverse_indexed);
     }
 
     #[test]
@@ -1771,7 +1684,6 @@ mod tests {
 
                         let mut index = KmerIndex::new(
                             k,
-                            reverse_indexed,
                             vec!["a".to_string(), "b".to_string(), "c".to_string()],
                         );
                         for (reference, sequence) in references.iter().enumerate() {
@@ -1779,7 +1691,7 @@ mod tests {
                         }
                         let mut collector = HitCollector::new(references.len());
                         collector.begin();
-                        index.collect_hits(&read, step, !reverse_indexed, &mut collector);
+                        index.collect_hits(&read, step, &mut collector);
                         collector.hits.sort_unstable();
 
                         assert_eq!(

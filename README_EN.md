@@ -8,6 +8,8 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 > **Testing stage.** The project is still under active validation. Please report bugs, unexpected results, or documentation issues through [GitHub Issues](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues) or by email to [xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp).
 
+> **v1.3.** MainFilter now uses canonical bidirectional k-mers, compact locus postings, and reusable dictionaries validated by a reference-content SHA-256; filtering output is unchanged for identical inputs and parameters.
+
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
 
 ## Features

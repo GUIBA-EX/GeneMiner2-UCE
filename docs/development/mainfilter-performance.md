@@ -1,6 +1,6 @@
 # MainFilter 性能优化与兼容性说明
 
-本文记录 Rust `MainFilterNew` 已采用的确定性优化、实测边界和未采用方案。所有已采用优化都以保持命令行参数、k-mer 判定、字典兼容性和筛选输出不变为前提；性能收益必须经真实 reads 的 A/B 比较确认。
+本文记录 Rust `MainFilterNew` 已采用的确定性优化、实测边界和未采用方案。所有已采用优化都以保持命令行参数、k-mer 判定和筛选输出不变为前提；字典格式升级时必须安全失效并重建；性能收益必须经真实 reads 的 A/B 比较确认。
 
 ## 已采用的确定性优化
 
@@ -8,8 +8,11 @@
 | --- | --- | --- | --- |
 | DNA 碱基查表 | `base_code` | 用固定的 256 项表把 `A/a/C/c/G/g/T/t/U/u` 转成 2-bit 编码，避免每个碱基做大小写转换和多分支匹配。 | 非 A/C/G/T/U 的字符仍会中断该 k-mer；与原规则一致。 |
 | 无取模采样扫描 | `KmerIndex::collect_hits`（`k <= 32`） | 用单调递增的 `next_probe` 记录下一个 `0, step, 2*step...` 采样起点，替代热循环里的 `start % step == 0`。 | 仍检查相同的全局起点，并始终补查 read 尾端 k-mer；`N` 或其他非标准碱基不会重置采样坐标。 |
-| `AHashMap` k-mer 索引 | `KmerStore` | 仅将内存中的 k-mer 到 locus 命中表从标准 `HashMap` 改为 `AHashMap`，减少哈希查询成本。 | 现有 v2 缓存仍可读取，缓存结构未改变；重新生成时条目排列可能不同，因此不承诺缓存二进制逐字节一致。哈希表的迭代顺序不参与筛选结果。 |
+| `AHashMap` k-mer 索引 | `KmerStore` | 仅将内存中的 k-mer 到 locus 命中表从标准 `HashMap` 改为 `AHashMap`，减少哈希查询成本。 | 哈希表迭代顺序不参与筛选结果；缓存二进制排列不保证稳定。 |
 | 按输出模式保留 FASTQ 文本行 | `SequenceReader`、`Record` | 默认 GM2（`-m 5`）和只扫描（`-m 3`）只保留序列与质量值；跳过后续不会使用的 header、`+` 行和规范化文本副本。 | 文本输出模式 `-m 0/1/4` 仍完整保留并写出所有 FASTQ/FASTA 行；筛选判定和 GM2 编码不变。 |
+| Canonical k-mer 索引 | `KmerIndex` | 每个 k-mer 与其反向互补统一为同一 key，单次查询即可覆盖双链。 | `-gr` 保留为兼容参数；旧策略与 canonical 策略在 A/C/G/T/U 窗口上的招募集合相同。 |
+| Packed locus postings | `ReferenceHits`、`packed_hits` | 多 locus 命中在建索引后压为连续 ID 切片，map value 只保留 offset/length。 | ID 顺序与输出顺序不变；范围超过 `u32` 时明确报错。 |
+| v3 内容验证 cache | `reference_content_hash`、dictionary loader | cache 写入 canonical 标志、`k` 和参考内容 SHA-256；首次建索引时哈希与索引共用一次参考遍历。 | 旧、损坏或参考不匹配 cache 自动重建，不会静默复用。 |
 
 默认 UCE 设置通常为 `k=31`。因此 DNA 查表和无取模扫描覆盖常用短 k-mer 路径；按输出模式保留文本行适用于所有 k-mer 长度。
 

@@ -8,6 +8,8 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 
 > **测试阶段。** 项目仍在持续验证中；如遇到 bug、异常结果或文档问题，请提交 [GitHub Issue](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues) 或邮件联系 [xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp)。
 
+> **v1.3。** MainFilter 现使用 canonical k-mer 双链索引、紧凑 locus posting 表和带参考内容 SHA-256 的可复用字典缓存；相同输入与参数下筛选输出保持不变。
+
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
 ## 功能

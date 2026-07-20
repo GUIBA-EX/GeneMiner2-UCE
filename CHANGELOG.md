@@ -1,4 +1,11 @@
 # Changelog
+## v1.3 — MainFilter canonical index and safe cache
+
+- Made Rust `MainFilterNew` use canonical k-mers for strand-invariant exact recruitment, retaining the `-gr` flag only as a compatibility alias. Recruitment and per-locus output remain equivalent for identical inputs and parameters.
+- Replaced inline/shared multi-locus hit storage with compact packed locus postings, reducing the memory cost of multi-reference dictionaries.
+- Added reusable dictionary format v3 with canonical-policy metadata and a SHA-256 fingerprint of reference content. Stale, legacy, or mismatched dictionaries are rebuilt rather than silently reused.
+- Added cache-invalidation, randomized lookup, end-to-end, and old-versus-new byte-equivalence coverage for MainFilter outputs.
+
 ## v1.2 — Gene QC hardening and documentation refresh
 
 - Added two-pass QC to `gene-resolve`: pre-alignment filtering by translated candidate length and distinct-sample occupancy, followed by post-alignment occupancy and effective-codon-site checks. The new `occupancy_qc.tsv` records both decisions and rejection reasons per family.

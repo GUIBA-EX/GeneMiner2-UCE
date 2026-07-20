@@ -14,3 +14,4 @@ strip = true
 
 [dependencies]
 ahash = "0.8"
+sha2 = "0.10"

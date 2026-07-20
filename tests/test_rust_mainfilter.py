@@ -214,6 +214,35 @@ class RustMainFilterTests(unittest.TestCase):
                 "long_locus,1\n",
             )
 
+    def test_cache_is_rebuilt_when_reference_content_changes(self):
+        original = "ACGTTGCATGTCAGTACGATCGTACCTGACGTAGCTAGCA"
+        replacement = "T" * len(original)
+        read = original[4:28]
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            ref_dir = work / "references"
+            ref_dir.mkdir()
+            reference = ref_dir / "locus.fasta"
+            reference.write_text(f">locus\n{original}\n")
+            reads = work / "reads.fq"
+            reads.write_text(f"@old_reference\n{read}\n+\n{'I' * len(read)}\n")
+            dictionary = work / "reference.dict"
+            subprocess.run(
+                [str(BINARY), "-r", str(ref_dir), "-o", str(work / "index"),
+                 "-kf", "16", "-lkd", str(dictionary), "-m", "2"],
+                check=True, cwd=ROOT,
+            )
+            self.assertEqual(int.from_bytes(dictionary.read_bytes()[4:6], "little"), 3)
+            reference.write_text(f">locus\n{replacement}\n")
+            output = work / "output"
+            subprocess.run(
+                [str(BINARY), "-r", str(ref_dir), "-q1", str(reads), "-o", str(output),
+                 "-kf", "16", "-lkd", str(dictionary), "-m", "3"],
+                check=True, cwd=ROOT,
+            )
+            self.assertIn("reference-content hash does not match", (output / "log.txt").read_text())
+            self.assertEqual((output / "ref_reads_count_dict.txt").read_text(), "")
+
     def test_one_encoded_record_is_reused_for_multiple_loci(self):
         reference = "ACGTTGCATGTCAGTACGATCGTACCTGACGTAGCTAGCA"
         read = reference[4:36]
