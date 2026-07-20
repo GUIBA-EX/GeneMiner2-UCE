@@ -93,43 +93,27 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 ## TE / Repeatome 模式
 
-**用途。** 对 genome-skimming 或 WGS 短读长进行参考无关的 repeatome 分析：`discover` 发现 atomic seeds，`curate` 保守建立 EQ library，`annotate` 添加非破坏性 repeat 注释证据，`quantify` 复用 candidate reads 输出 RPM 与状态。它不是完整 TE 组装、插入位点检测或 TE 系统树流程。
+**用途。** 对 genome-skimming 或 WGS 短读长进行参考无关的 repeatome 分析：`discover`、`curate`、`annotate` 与 `quantify` 依次建立保守 EQ 单元、注释证据与样本 RPM。它不是完整 TE 组装、插入位点检测或 TE 系统树流程。
+
+**运行。**
 
 ```bash
 cli/geneminer2 te -f te_samples.tsv -o te_output -p 32
 ```
 
-TE 使用独立样本表：配对 reads 为 `taxon_id sample_id read1 read2`，单端 reads 为 `taxon_id sample_id read1`；不需要 `-r`。详见 [TE / repeatome 章节](docs/te_ZH.md)。
+**说明。** TE 使用独立样本表：配对 reads 为 `taxon_id sample_id read1 read2`，单端 reads 为 `taxon_id sample_id read1`；不需要 `-r`。可选 `--te-library` 提供保守的 library 注释，不会合并 EQ。完整的阶段规则、阈值、输出与解释见 [TE / repeatome 章节](docs/te_ZH.md)。
 
 ## Gene 模式
 
-`gene` 用多物种 bait 恢复核基因家族的候选 contig；每个参考 FASTA 是一个 family。候选数仅是组装观察，不是等位基因或真实拷贝数结论。
+**用途。** 从多物种 bait 定义的核基因家族中恢复样本内候选 contig；每个参考 FASTA 定义一个 family。候选数仅是组装观察，不是等位基因或真实拷贝数结论。
+
+**运行。**
 
 ```bash
 cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8
 ```
 
-主要结果在 `gene_output/gene/`：候选状态、family 矩阵、`pseudo_sco/` 与 `multiple_candidate_families/`。可在恢复后自动做蛋白引导注释：
-
-```bash
-cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8 \
-  --gene-protein-reference family_proteins
-```
-
-```bash
-# 注释 → 候选树解析
-cli/geneminer2 gene-annotate --gene-input gene_output/gene \
-  --gene-protein-reference family_proteins -o gene_annotation -p 8
-cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
-
-# 物种树：严格一对一 / 保留多拷贝
-cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \
-  --gene-species-mode strict --gene-aster astral
-cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
-  --gene-species-mode multicopy --gene-aster astral
-```
-
-`gene-resolve` 产生 `resolved_1to1/`、`unresolved_multicandidate/`、`family_qc.tsv` 和 `tree_selection_qc.tsv`。strict 输入使用样本名；multicopy 额外使用候选名到样本名映射。`--gene-taper correction_multi.jl` 可做可选 masking；`--gene-ufboot` 只能为 `0`（默认）或 `≥1000`。
+**说明。** 主结果写入 `gene_output/gene/`，包括候选状态、family 矩阵、`pseudo_sco/` 与 `multiple_candidate_families/`。可选 `--gene-protein-reference family_proteins` 自动进行蛋白引导注释；后续 `gene-annotate`、`gene-resolve` 和 `gene-tree` 可生成严格一对一或多拷贝物种树输入。它们分别需要 miniprot、MAFFT/IQ-TREE 和 ASTER2 `astral`。完整流程、QC 与输出解释见 [Gene 章节](docs/gene_ZH.md)。
 
 ## Mito 模式
 

@@ -93,43 +93,27 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 ## TE / repeatome mode
 
-**Purpose.** A reference-free repeatome workflow for genome-skimming or WGS short reads. `discover` finds atomic seeds, `curate` builds an EQ library without merging TE families, `annotate` adds non-destructive repeat evidence, and `quantify` reuses candidate reads for RPM and calls. It is not a complete-TE, insertion-site calling, or TE-phylogeny workflow.
+**Purpose.** A reference-free repeatome workflow for genome-skimming or WGS short reads. `discover`, `curate`, `annotate`, and `quantify` create conservative EQ units, annotation evidence, and sample RPM in sequence. It is not a complete-TE annotation, insertion-site calling, or TE-phylogeny workflow.
+
+**Run.**
 
 ```bash
 cli/geneminer2 te -f te_samples.tsv -o te_output -p 32
 ```
 
-TE uses its own manifest: `taxon_id sample_id read1 read2` for paired reads, or `taxon_id sample_id read1` for single-end reads. No `-r` is required. See the [TE / repeatome chapter](docs/te_EN.md).
+**Notes.** TE uses its own manifest: `taxon_id sample_id read1 read2` for paired reads, or `taxon_id sample_id read1` for single-end reads; no `-r` is required. Optional `--te-library` supplies conservative library annotation and never merges EQs. See the [TE / repeatome chapter](docs/te_EN.md) for stages, thresholds, outputs, and interpretation.
 
 ## Gene mode
 
-`gene` recovers candidate contigs for nuclear gene families from multi-species baits; one reference FASTA defines one family. Candidate count is assembly evidence, not an allele or copy-number call.
+**Purpose.** Recover within-sample candidate contigs for nuclear gene families defined by multi-species baits; one reference FASTA defines one family. Candidate count is assembly evidence, not an allele or biological copy-number call.
+
+**Run.**
 
 ```bash
 cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8
 ```
 
-Main products are under `gene_output/gene/`: candidate states, family matrices, `pseudo_sco/`, and `multiple_candidate_families/`. Protein-guided annotation is optional:
-
-```bash
-cli/geneminer2 gene -f samples.tsv -r family_reference -o gene_output -p 8 \
-  --gene-protein-reference family_proteins
-```
-
-```bash
-# Annotation → tree-based candidate resolution
-cli/geneminer2 gene-annotate --gene-input gene_output/gene \
-  --gene-protein-reference family_proteins -o gene_annotation -p 8
-cli/geneminer2 gene-resolve --gene-input gene_annotation -o gene_resolved -p 8
-
-# Species tree: strict one-to-one / multicopy
-cli/geneminer2 gene-tree --gene-input gene_resolved -o species_strict -p 8 \
-  --gene-species-mode strict --gene-aster astral
-cli/geneminer2 gene-tree --gene-input gene_resolved -o species_multi -p 8 \
-  --gene-species-mode multicopy --gene-aster astral
-```
-
-`gene-resolve` writes `resolved_1to1/`, `unresolved_multicandidate/`, `family_qc.tsv`, and `tree_selection_qc.tsv`. Strict ASTRAL input uses sample labels; multicopy adds a candidate-to-sample map. `--gene-taper correction_multi.jl` enables optional masking; `--gene-ufboot` must be `0` (default) or `>=1000`.
+**Notes.** Main results are written to `gene_output/gene/`, including candidate status, family matrices, `pseudo_sco/`, and `multiple_candidate_families/`. Optionally add `--gene-protein-reference family_proteins` for automatic protein-guided annotation. The subsequent `gene-annotate`, `gene-resolve`, and `gene-tree` subcommands prepare strict one-to-one or multicopy species-tree inputs; they require miniprot, MAFFT/IQ-TREE, and ASTER2 `astral`, respectively. See the [Gene chapter](docs/gene_EN.md) for the complete workflow, QC, and output interpretation.
 
 ## Mito mode
 
