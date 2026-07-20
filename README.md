@@ -2,7 +2,7 @@
 
 **[English README](README_EN.md)**
 
-GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE 和相关短读长数据。它提供参考引导 marker 恢复、UCE 侧翼恢复、marker profiling、常规动物线粒体组装和 UCE 群体遗传分析。
+GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE 和相关短读长数据。它提供参考引导 marker 恢复、UCE 侧翼恢复、marker profiling、常规动物线粒体组装、UCE 群体遗传，以及核基因家族与短读长 repeatome 分析。
 
 使用本软件请引用 [GeneMiner2-UCE GitHub 仓库](https://github.com/GUIBA-EX/GeneMiner2-UCE)。
 
@@ -15,6 +15,8 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 - 从 WGS 或宏基因组 reads 评估参考序列支持。
 - 构建公共伪参考、联合 VCF、PCA 和 ADMIXTURE 输入。
 - 从带注释 GenBank 参考恢复常规环形动物线粒体。
+- 恢复核基因家族候选并解析保守的一对一子树。
+- 从短读长数据建立保守的 repeatome 单元并定量。
 
 ## 模式选择
 
@@ -89,7 +91,6 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 **说明。** UCE 只使用 `uce-rust`。rescue 用第一轮 contig 加原始参考再招一次 reads；质量变差时退回第一轮。见 [Assembler 章节](docs/assembler_ZH.md)。
 
-
 ## TE / Repeatome 模式
 
 **用途。** 对 genome-skimming 或 WGS 短读长进行参考无关的 repeatome 分析：`discover` 发现 atomic seeds，`curate` 保守建立 EQ library，`annotate` 添加非破坏性 repeat 注释证据，`quantify` 复用 candidate reads 输出 RPM 与状态。它不是完整 TE 组装、插入位点检测或 TE 系统树流程。
@@ -141,7 +142,7 @@ cli/geneminer2 mito -f samples.tsv -o mito_output -p 8 \
   --mito-genbank mitochondrial_reference.gb
 ```
 
-**说明。** 只有 overlap、局部 read graph 和 junction-spanning reads 都支持时才报告闭环；不会用参考坐标补洞。见 [线粒体章节](docs/5.mito.md)。
+**说明。** 只有 overlap、局部 read graph 和 junction-spanning reads 都支持时才报告闭环；不会用参考坐标补洞。见 [线粒体章节](docs/mitochondria_CN.md)。
 
 ## Profiling 模式
 
@@ -176,7 +177,7 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 | 输出文件 | [中文输出文件说明](manual/ZH_CN/output.md) |
 | Reads 过滤 | [Filter 章节](docs/filter_ZH.md) |
 | 组装器 | [Assembler 章节](docs/assembler_ZH.md) |
-| 线粒体 | [线粒体章节](docs/5.mito.md) |
+| 线粒体 | [线粒体章节](docs/mitochondria_CN.md) |
 | Marker profiling | [Profiling 章节](docs/profiling_ZH.md) |
 | UCE 群体遗传 | [Population 章节](docs/population_ZH.md) |
 | Gene 子命令 | [Gene 章节](docs/gene_ZH.md) |

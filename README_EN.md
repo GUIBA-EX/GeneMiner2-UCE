@@ -2,7 +2,7 @@
 
 **[中文主页](README.md)**
 
-GeneMiner2-UCE is the UCE extension of GeneMiner2 for target-enrichment, ultraconserved-element (UCE), and related short-read data. It provides reference-guided marker recovery, UCE flank recovery, marker profiling, ordinary animal mitochondrial assembly, and UCE population-genetic analysis.
+GeneMiner2-UCE is the UCE extension of GeneMiner2 for target-enrichment, ultraconserved-element (UCE), and related short-read data. It provides reference-guided marker recovery, UCE flank recovery, marker profiling, ordinary animal mitochondrial assembly, UCE population genetics, nuclear gene-family analysis, and short-read repeatome analysis.
 
 Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/GeneMiner2-UCE) when using this software.
 
@@ -15,6 +15,8 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 - Assess support for reference sequences from WGS or metagenomic reads.
 - Build UCE cohort pseudo-references and generate joint VCF, PCA, and ADMIXTURE inputs.
 - Recover ordinary circular animal mitochondria from annotated GenBank references.
+- Recover nuclear gene-family candidates and resolve conservative one-to-one clades.
+- Build and quantify conservative repeatome units from short reads.
 
 ## Choose a mode
 
@@ -89,7 +91,6 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 **Notes.** UCE uses `uce-rust` only. Rescue recruits again with first-round contigs plus original references and reverts on worse quality. See the [Assembler chapter](docs/assembler_EN.md).
 
-
 ## TE / repeatome mode
 
 **Purpose.** A reference-free repeatome workflow for genome-skimming or WGS short reads. `discover` finds atomic seeds, `curate` builds an EQ library without merging TE families, `annotate` adds non-destructive repeat evidence, and `quantify` reuses candidate reads for RPM and calls. It is not a complete-TE, insertion-site calling, or TE-phylogeny workflow.
@@ -141,7 +142,7 @@ cli/geneminer2 mito -f samples.tsv -o mito_output -p 8 \
   --mito-genbank mitochondrial_reference.gb
 ```
 
-**Notes.** Circularity requires agreement among overlap, local read-graph paths, and junction-spanning reads; reference coordinates never fill gaps. See the [Mitochondrial chapter](docs/5.mito.md).
+**Notes.** Circularity requires agreement among overlap, local read-graph paths, and junction-spanning reads; reference coordinates never fill gaps. See the [Mitochondrial chapter](docs/mitochondria_EN.md).
 
 ## Profiling mode
 
@@ -176,7 +177,7 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 | Output files | [Output-file guide](manual/EN_US/output.md) |
 | Read filtering | [Filter chapter](docs/filter_EN.md) |
 | Assemblers | [Assembler chapter](docs/assembler_EN.md) |
-| Mitochondria | [Mitochondrial chapter](docs/5.mito.md) |
+| Mitochondria | [Mitochondrial chapter](docs/mitochondria_EN.md) |
 | Marker profiling | [Profiling chapter](docs/profiling_EN.md) |
 | UCE population genetics | [Population chapter](docs/population_EN.md) |
 | Gene subcommands | [Gene chapter](docs/gene_EN.md) |
