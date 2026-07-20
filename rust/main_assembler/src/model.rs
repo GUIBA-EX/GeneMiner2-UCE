@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum AssemblyMode {
     Reference,
     Uce,
     Its2,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum PathStrategy {
     Search,
     Backbone,
@@ -46,6 +46,7 @@ pub struct Args {
     pub graph_format: GraphFormat,
     pub max_depth_ratio: f64,
     pub reference_cache_dir: Option<PathBuf>,
+    pub profile: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -61,6 +62,8 @@ pub struct KmerInfo {
     pub position: i32,
     pub is_reverse: bool,
     pub reference_weight: i64,
+    pub fragment_support: u32,
+    pub pe_flank_rescue: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +71,7 @@ pub struct Node {
     pub kmer: u128,
     pub position: i32,
     pub weight: i64,
+    pub pe_support: u32,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -1,3 +1,4 @@
+use crate::hash::{HashMap, HashSet};
 use crate::model::{
     Args, AssemblyMode, ContigRecord, KmerInfo, Node, PathContig, PathStrategy, ReadSupport,
     RefKmer, SideContig,
@@ -7,7 +8,6 @@ use crate::seq::{
     reverse_complement_kmer, valid_runs,
 };
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
 
 pub fn add_read_slices(reads: &mut HashMap<Vec<u8>, u64>, sequences: &[Vec<u8>], slice_len: usize) {
     // 从 read 中间掐一段当身份证，正反两面都备着，后面核验 contig 用。
@@ -26,45 +26,208 @@ pub fn add_read_slices(reads: &mut HashMap<Vec<u8>, u64>, sequences: &[Vec<u8>],
     }
 }
 
-pub fn add_assemble_chunk_parallel(
-    graph: &mut HashMap<u128, KmerInfo>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KmerCount {
+    kmer: u128,
+    depth: i64,
+    fragment_support: u32,
+}
+
+pub type BranchSupport = HashMap<(u128, u128), u32>;
+
+#[derive(Default)]
+pub struct SortedKmerCounts {
+    // Binary-carry runs keep memory proportional to unique k-mers while
+    // avoiding a random HashMap update for every input chunk.
+    levels: Vec<Option<Vec<KmerCount>>>,
+}
+
+fn merge_kmer_counts(left: Vec<KmerCount>, right: Vec<KmerCount>) -> Vec<KmerCount> {
+    let mut merged = Vec::with_capacity(left.len() + right.len());
+    let (mut left_index, mut right_index) = (0, 0);
+    while left_index < left.len() && right_index < right.len() {
+        match left[left_index].kmer.cmp(&right[right_index].kmer) {
+            Ordering::Less => {
+                merged.push(left[left_index]);
+                left_index += 1;
+            }
+            Ordering::Greater => {
+                merged.push(right[right_index]);
+                right_index += 1;
+            }
+            Ordering::Equal => {
+                merged.push(KmerCount {
+                    kmer: left[left_index].kmer,
+                    depth: left[left_index].depth + right[right_index].depth,
+                    fragment_support: left[left_index]
+                        .fragment_support
+                        .saturating_add(right[right_index].fragment_support),
+                });
+                left_index += 1;
+                right_index += 1;
+            }
+        }
+    }
+    merged.extend_from_slice(&left[left_index..]);
+    merged.extend_from_slice(&right[right_index..]);
+    merged
+}
+
+impl SortedKmerCounts {
+    pub fn push(&mut self, mut run: Vec<KmerCount>) {
+        if run.is_empty() {
+            return;
+        }
+        let mut level = 0;
+        loop {
+            if self.levels.len() == level {
+                self.levels.push(None);
+            }
+            if let Some(existing) = self.levels[level].take() {
+                run = merge_kmer_counts(existing, run);
+                level += 1;
+            } else {
+                self.levels[level] = Some(run);
+                return;
+            }
+        }
+    }
+
+    pub fn into_counts(mut self) -> Vec<KmerCount> {
+        let mut result = Vec::new();
+        for run in self.levels.drain(..).flatten() {
+            result = merge_kmer_counts(result, run);
+        }
+        result
+    }
+}
+
+fn append_read_kmers(sequence: &[u8], k: usize, physical: &mut Vec<u128>) {
+    physical.clear();
+    let expected = sequence.len().saturating_sub(k - 1).saturating_mul(2);
+    if physical.capacity() < expected {
+        physical.reserve(expected - physical.capacity());
+    }
+    for (_, run) in valid_runs(sequence) {
+        for_each_kmer(run, k, |_, forward, reverse| {
+            physical.push(forward);
+            physical.push(reverse);
+        });
+    }
+    physical.sort_unstable();
+    physical.dedup();
+}
+
+fn counts_from_observations(
+    mut observations: Vec<u128>,
+    mut fragments: Vec<u128>,
+) -> Vec<KmerCount> {
+    observations.sort_unstable();
+    fragments.sort_unstable();
+
+    let mut counts = Vec::with_capacity(observations.len() / 2);
+    let (mut observation_index, mut fragment_index) = (0, 0);
+    while observation_index < observations.len() {
+        let kmer = observations[observation_index];
+        let mut depth = 0_i64;
+        while observation_index < observations.len() && observations[observation_index] == kmer {
+            depth += 1;
+            observation_index += 1;
+        }
+        while fragment_index < fragments.len() && fragments[fragment_index] < kmer {
+            fragment_index += 1;
+        }
+        let mut fragment_support = 0_u32;
+        while fragment_index < fragments.len() && fragments[fragment_index] == kmer {
+            fragment_support = fragment_support.saturating_add(1);
+            fragment_index += 1;
+        }
+        counts.push(KmerCount {
+            kmer,
+            depth,
+            fragment_support,
+        });
+    }
+    counts
+}
+
+pub fn count_assemble_chunk_parallel(
     sequences: &[Vec<u8>],
     k: usize,
-    reference: &HashMap<u128, RefKmer>,
     threads: usize,
-) {
-    // 每个 read 内同一个 k-mer 只算一回，免得重复片段把深度虚抬老高。
-    let workers = threads.max(1).min(sequences.len().max(1));
-    let width = sequences.len().div_ceil(workers);
-    let mut partials: Vec<Vec<(u128, i64)>> = Vec::new();
+    paired_fragments: bool,
+    reference: Option<&HashMap<u128, RefKmer>>,
+) -> Vec<KmerCount> {
+    // Each read contributes a k-mer once to depth.  A PE fragment contributes
+    // it once to fragment support only when both mate slots are present.
+    if sequences.is_empty() {
+        return Vec::new();
+    }
+    let units = if paired_fragments {
+        sequences.len().div_ceil(2)
+    } else {
+        sequences.len()
+    };
+    let workers = threads.max(1).min(units);
+    let width = units.div_ceil(workers);
+    let mut partials: Vec<Vec<KmerCount>> = Vec::with_capacity(workers);
     std::thread::scope(|scope| {
-        let handles: Vec<_> = sequences
-            .chunks(width)
-            .map(|part| {
-                scope.spawn(move || {
-                    let mut observations = Vec::new();
-                    for sequence in part {
-                        let mut physical = HashSet::new();
-                        for (_, run) in valid_runs(sequence) {
-                            for_each_kmer(run, k, |_, forward, reverse| {
-                                physical.insert(forward);
-                                physical.insert(reverse);
-                            });
-                        }
-                        observations.extend(physical);
-                    }
-                    observations.sort_unstable();
-                    let mut counts = Vec::new();
-                    for value in observations {
-                        if let Some((last, count)) = counts.last_mut() {
-                            if *last == value {
-                                *count += 1;
-                                continue;
+        let handles: Vec<_> = (0..workers)
+            .filter_map(|worker| {
+                let start_unit = worker * width;
+                let end_unit = ((worker + 1) * width).min(units);
+                (start_unit < end_unit).then(|| {
+                    let part = if paired_fragments {
+                        &sequences[start_unit * 2..(end_unit * 2).min(sequences.len())]
+                    } else {
+                        &sequences[start_unit..end_unit]
+                    };
+                    scope.spawn(move || {
+                        let estimate: usize = part
+                            .iter()
+                            .map(|sequence| sequence.len().saturating_sub(k - 1).saturating_mul(2))
+                            .sum();
+                        let mut observations = Vec::with_capacity(estimate);
+                        let mut fragments = Vec::with_capacity(estimate / 4);
+                        let mut physical = Vec::new();
+                        let mut first_mate = Vec::new();
+                        let mut second_mate = Vec::new();
+                        if paired_fragments {
+                            for mates in part.chunks(2) {
+                                if mates.len() != 2 {
+                                    append_read_kmers(&mates[0], k, &mut physical);
+                                    observations.extend_from_slice(&physical);
+                                    continue;
+                                }
+                                append_read_kmers(&mates[0], k, &mut first_mate);
+                                observations.extend_from_slice(&first_mate);
+                                append_read_kmers(&mates[1], k, &mut second_mate);
+                                observations.extend_from_slice(&second_mate);
+
+                                // A retained mate is useful flank evidence only
+                                // when its *opposite* mate anchors in reference
+                                // sequence.  Counting every k-mer in every pair
+                                // would otherwise preserve recurrent errors.
+                                if let Some(reference) = reference {
+                                    let first_anchor =
+                                        first_mate.iter().any(|kmer| reference.contains_key(kmer));
+                                    let second_anchor =
+                                        second_mate.iter().any(|kmer| reference.contains_key(kmer));
+                                    if first_anchor && !second_anchor {
+                                        fragments.extend_from_slice(&second_mate);
+                                    } else if second_anchor && !first_anchor {
+                                        fragments.extend_from_slice(&first_mate);
+                                    }
+                                }
+                            }
+                        } else {
+                            for sequence in part {
+                                append_read_kmers(sequence, k, &mut physical);
+                                observations.extend_from_slice(&physical);
                             }
                         }
-                        counts.push((value, 1));
-                    }
-                    counts
+                        counts_from_observations(observations, fragments)
+                    })
                 })
             })
             .collect();
@@ -72,31 +235,56 @@ pub fn add_assemble_chunk_parallel(
             partials.push(handle.join().expect("k-mer worker panicked"));
         }
     });
-    for partial in partials {
-        for (kmer, count) in partial {
-            let value = graph.entry(kmer).or_insert_with(|| {
-                reference.get(&kmer).map_or(
-                    KmerInfo {
-                        depth: 0,
-                        position: 1023,
-                        is_reverse: true,
-                        reference_weight: 0,
-                    },
-                    |r| KmerInfo {
-                        depth: 0,
-                        position: if r.is_reverse {
-                            1000 - r.position
-                        } else {
-                            r.position
-                        },
-                        is_reverse: r.is_reverse,
-                        reference_weight: r.depth as i64,
-                    },
-                )
-            });
-            value.depth += count;
+
+    partials.into_iter().fold(Vec::new(), merge_kmer_counts)
+}
+
+pub fn build_graph_from_counts(
+    counts: Vec<KmerCount>,
+    reference: &HashMap<u128, RefKmer>,
+    error_limit: u32,
+    min_fragment_support: u32,
+) -> HashMap<u128, KmerInfo> {
+    let mut graph = HashMap::with_capacity(counts.len());
+    for count in counts {
+        let reference_info = reference.get(&count.kmer);
+        let pe_flank_rescue = error_limit > 0
+            && count.depth <= error_limit as i64
+            && reference_info.is_none()
+            && min_fragment_support > 0
+            && count.fragment_support >= min_fragment_support;
+        if error_limit > 0
+            && count.depth <= error_limit as i64
+            && reference_info.is_none()
+            && !pe_flank_rescue
+        {
+            continue;
         }
+        let value = reference_info.map_or(
+            KmerInfo {
+                depth: count.depth,
+                position: 1023,
+                is_reverse: true,
+                reference_weight: 0,
+                fragment_support: count.fragment_support,
+                pe_flank_rescue,
+            },
+            |r| KmerInfo {
+                depth: count.depth,
+                position: if r.is_reverse {
+                    1000 - r.position
+                } else {
+                    r.position
+                },
+                is_reverse: r.is_reverse,
+                reference_weight: r.depth as i64,
+                fragment_support: count.fragment_support,
+                pe_flank_rescue,
+            },
+        );
+        graph.insert(count.kmer, value);
     }
+    graph
 }
 
 #[cfg(test)]
@@ -132,6 +320,8 @@ pub fn build_assemble_dictionary(
                         position,
                         is_reverse: reference_info.is_reverse,
                         reference_weight: reference_info.depth as i64,
+                        fragment_support: 0,
+                        pe_flank_rescue: false,
                     },
                 );
             } else {
@@ -142,6 +332,8 @@ pub fn build_assemble_dictionary(
                         position: 1023,
                         is_reverse: true,
                         reference_weight: 0,
+                        fragment_support: 0,
+                        pe_flank_rescue: false,
                     },
                 );
             }
@@ -154,16 +346,28 @@ pub fn filter_and_weight_graph(
     graph: &mut HashMap<u128, KmerInfo>,
     error_limit: u32,
     reference_count: usize,
+    min_fragment_support: u32,
 ) {
     // 低频毛刺先踢掉；参考上的节点留个权重，走岔路时优先认熟路。
     if error_limit > 0 {
-        graph.retain(|_, value| value.depth > error_limit as i64 || value.reference_weight > 0);
+        graph.retain(|_, value| {
+            value.depth > error_limit as i64
+                || value.reference_weight > 0
+                || (min_fragment_support > 0 && value.fragment_support >= min_fragment_support)
+        });
     }
     if graph.is_empty() {
         return;
     }
 
-    let depths: Vec<i64> = graph.values().map(|value| value.depth).collect();
+    let mut depths: Vec<i64> = graph
+        .values()
+        .filter(|value| !value.pe_flank_rescue)
+        .map(|value| value.depth)
+        .collect();
+    if depths.is_empty() {
+        depths.extend(graph.values().map(|value| value.depth));
+    }
     let (q1, _, q3, _) = quartiles(&depths);
     let depth_upper = (((q3 - q1) * 1.5) + q3) as i64;
     for value in graph.values_mut() {
@@ -180,6 +384,77 @@ pub fn filter_and_weight_graph(
     }
 }
 
+// 只为真实分支保存 PE 证据；线性边无需额外索引，避免把整张图再复制一遍。
+pub fn branch_edges(graph: &HashMap<u128, KmerInfo>, k: usize) -> BranchSupport {
+    let suffix_mask = kmer_mask(k - 1);
+    let mut support = BranchSupport::new();
+    for current in graph.keys().copied() {
+        let prefix = (current & suffix_mask) << 2;
+        let candidates: Vec<u128> = (0..4_u128)
+            .map(|base| prefix | base)
+            .filter(|candidate| graph.contains_key(candidate))
+            .collect();
+        if candidates.len() > 1 {
+            for candidate in candidates {
+                support.insert((current, candidate), 0);
+            }
+        }
+    }
+    support
+}
+
+pub fn add_pe_branch_support(
+    sequences: &[Vec<u8>],
+    k: usize,
+    reference: &HashMap<u128, RefKmer>,
+    support: &mut BranchSupport,
+) {
+    if support.is_empty() {
+        return;
+    }
+    for mates in sequences.chunks(2) {
+        if mates.len() != 2 {
+            continue;
+        }
+        let read_kmers = |sequence: &[u8]| {
+            let mut kmers = Vec::new();
+            for (_, run) in valid_runs(sequence) {
+                for_each_kmer(run, k, |offset, forward, reverse| {
+                    kmers.push((offset, forward, reverse));
+                });
+            }
+            kmers
+        };
+        let first = read_kmers(&mates[0]);
+        let second = read_kmers(&mates[1]);
+        let first_anchor = first.iter().any(|(_, forward, reverse)| {
+            reference.contains_key(forward) || reference.contains_key(reverse)
+        });
+        let second_anchor = second.iter().any(|(_, forward, reverse)| {
+            reference.contains_key(forward) || reference.contains_key(reverse)
+        });
+        let mut fragment_edges = HashSet::new();
+        for (kmers, mate_is_pe_anchored) in [(&first, second_anchor), (&second, first_anchor)] {
+            if !mate_is_pe_anchored {
+                continue;
+            }
+            for pair in kmers.windows(2) {
+                if pair[1].0 != pair[0].0 + 1 {
+                    continue;
+                }
+                for edge in [(pair[0].1, pair[1].1), (pair[1].2, pair[0].2)] {
+                    if support.contains_key(&edge) {
+                        fragment_edges.insert(edge);
+                    }
+                }
+            }
+        }
+        for edge in fragment_edges {
+            *support.get_mut(&edge).expect("branch edge exists") += 1;
+        }
+    }
+}
+
 // 从当前 k-mer 找能接上的下一跳，再按证据排个先后。
 fn outgoing(
     graph: &HashMap<u128, KmerInfo>,
@@ -188,6 +463,7 @@ fn outgoing(
     blocked: &HashSet<u128>,
     discarded: Option<&HashSet<u128>>,
     reference_tie_break: bool,
+    branch_support: Option<&BranchSupport>,
 ) -> Vec<Node> {
     let suffix_mask = kmer_mask(k - 1);
     let prefix = (current & suffix_mask) << 2;
@@ -203,17 +479,56 @@ fn outgoing(
                 kmer: candidate,
                 position: value.position,
                 weight: value.depth + value.reference_weight,
+                pe_support: branch_support
+                    .and_then(|support| support.get(&(current, candidate)).copied())
+                    .unwrap_or(0),
             });
         }
     }
-    nodes.sort_by(|left, right| {
-        right.weight.cmp(&left.weight).then_with(|| {
-            if reference_tie_break {
-                (right.position > 0).cmp(&(left.position > 0))
-            } else {
-                Ordering::Equal
+    if nodes.len() > 1 {
+        let current_info = graph.get(&current).expect("current k-mer is in graph");
+        for node in &mut nodes {
+            let candidate = &graph[&node.kmer];
+            // PE score is counted per independent fragment on this directed
+            // branch edge; reference-adjacent transitions are preferred, while
+            // abrupt coverage peaks are treated as repeat-like alternatives.
+            if node.pe_support >= 2 {
+                node.weight += i64::from(node.pe_support.min(4)) * 6;
+            } else if candidate.pe_flank_rescue {
+                // A node-level anchor is not sufficient at a branch: require
+                // two fragments that directly traverse this particular edge.
+                node.weight -= 16;
             }
-        })
+            if current_info.position > 0
+                && current_info.position < 1000
+                && candidate.position > 0
+                && candidate.position < 1000
+            {
+                let delta = (candidate.position - current_info.position).abs();
+                if delta <= 2 {
+                    node.weight += 8;
+                } else if current_info.reference_weight > 0 && candidate.reference_weight > 0 {
+                    node.weight -= 8;
+                }
+            }
+            let surge_limit = (current_info.depth.max(2) * 4).max(8);
+            if candidate.reference_weight == 0 && candidate.depth > surge_limit {
+                node.weight -= (candidate.depth - surge_limit) / 2;
+            }
+        }
+    }
+    nodes.sort_by(|left, right| {
+        right
+            .weight
+            .cmp(&left.weight)
+            .then_with(|| {
+                if reference_tie_break {
+                    (right.position > 0).cmp(&(left.position > 0))
+                } else {
+                    Ordering::Equal
+                }
+            })
+            .then_with(|| left.kmer.cmp(&right.kmer))
     });
     nodes
 }
@@ -224,6 +539,7 @@ pub fn walk_backbone(
     k: usize,
     iteration: usize,
     lookahead: usize,
+    branch_support: Option<&BranchSupport>,
 ) -> (Vec<PathContig>, HashSet<u128>, Vec<i32>, i64) {
     // UCE 默认就认一条最靠谱的主干，岔路看几步再定，别在气泡里来回磨叽。
     let lookahead = lookahead.max(1);
@@ -241,6 +557,7 @@ pub fn walk_backbone(
             &visited,
             Some(&discarded),
             true,
+            branch_support,
         );
         if nodes.is_empty() {
             break;
@@ -259,8 +576,15 @@ pub fn walk_backbone(
                         break;
                     }
                     trace.push(node);
-                    let following =
-                        outgoing(graph, node.kmer, k, &trace_seen, Some(&discarded), true);
+                    let following = outgoing(
+                        graph,
+                        node.kmer,
+                        k,
+                        &trace_seen,
+                        Some(&discarded),
+                        true,
+                        branch_support,
+                    );
                     let Some(next) = following.first() else {
                         break;
                     };
@@ -301,6 +625,7 @@ pub fn walk_backbone(
                 &visited,
                 Some(&discarded),
                 true,
+                branch_support,
             );
             if linear.len() != 1 || path.len() > iteration {
                 break;
@@ -343,6 +668,7 @@ pub fn walk_search(
             &path_set,
             None,
             false,
+            None,
         );
         if nodes.is_empty() {
             iteration -= 1;
@@ -462,6 +788,7 @@ fn process_sides(
                 .cmp(&left.sequence.len())
                 .then_with(|| right.read_count.cmp(&left.read_count))
                 .then_with(|| right.weight.cmp(&left.weight))
+                .then_with(|| left.sequence.cmp(&right.sequence))
         });
     } else {
         processed.sort_by(|left, right| right.read_count.cmp(&left.read_count));
@@ -612,6 +939,7 @@ fn rejection_reasons(
     reasons
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_seed(
     args: &Args,
     reads: &HashMap<Vec<u8>, u64>,
@@ -620,6 +948,7 @@ pub fn assemble_seed(
     seed: u128,
     k: usize,
     soft_boundary: usize,
+    branch_support: Option<&BranchSupport>,
 ) -> (Vec<ContigRecord>, HashSet<u128>, i32) {
     // 从一个 seed 往两边接，组装成候选 contig；成不成得靠后面的证据说话。
     let reverse_seed = reverse_complement_kmer(seed, k);
@@ -627,7 +956,14 @@ pub fn assemble_seed(
         == AssemblyMode::Uce
         && args.path_strategy == PathStrategy::Backbone
     {
-        walk_backbone(graph, seed, k, args.iteration, args.backbone_lookahead)
+        walk_backbone(
+            graph,
+            seed,
+            k,
+            args.iteration,
+            args.backbone_lookahead,
+            branch_support,
+        )
     } else {
         walk_search(graph, seed, k, args.iteration)
     };
@@ -641,6 +977,7 @@ pub fn assemble_seed(
             k,
             args.iteration,
             args.backbone_lookahead,
+            branch_support,
         )
     } else {
         walk_search(graph, reverse_seed, k, args.iteration)
@@ -799,7 +1136,9 @@ pub fn compare_contigs(left: &ContigRecord, right: &ContigRecord, mode: Assembly
         return left
             .read_count
             .cmp(&right.read_count)
-            .then_with(|| left.weight.cmp(&right.weight));
+            .then_with(|| left.weight.cmp(&right.weight))
+            .then_with(|| left.sequence.cmp(&right.sequence))
+            .then_with(|| left.label.cmp(&right.label));
     }
 
     fn score(contig: &ContigRecord) -> [f64; 9] {
@@ -840,7 +1179,9 @@ pub fn compare_contigs(left: &ContigRecord, right: &ContigRecord, mode: Assembly
             return ordering;
         }
     }
-    Ordering::Equal
+    left.sequence
+        .cmp(&right.sequence)
+        .then_with(|| left.label.cmp(&right.label))
 }
 
 #[cfg(test)]
@@ -854,6 +1195,8 @@ mod tests {
             position: 100,
             is_reverse: false,
             reference_weight: 0,
+            fragment_support: 0,
+            pe_flank_rescue: false,
         }
     }
 
@@ -876,7 +1219,7 @@ mod tests {
             .map(|(sequence, depth)| (encode_kmer(sequence.as_bytes()).unwrap(), info(depth)))
             .collect();
         let seed = encode_kmer(b"AAAA").unwrap();
-        let (paths, visited, _, _) = walk_backbone(&graph, seed, k, 100, 24);
+        let (paths, visited, _, _) = walk_backbone(&graph, seed, k, 100, 24, None);
         let extension: Vec<u8> = paths[0].bases.iter().map(|base| bits_base(*base)).collect();
         assert_eq!(extension, b"CGTTT");
         assert!(visited.contains(&encode_kmer(b"AAAC").unwrap()));
@@ -890,10 +1233,71 @@ mod tests {
             .map(|sequence| (encode_kmer(sequence.as_bytes()).unwrap(), info(5)))
             .collect();
         let seed = encode_kmer(b"AAA").unwrap();
-        let (paths, visited, _, _) = walk_backbone(&graph, seed, 3, 100, 24);
+        let (paths, visited, _, _) = walk_backbone(&graph, seed, 3, 100, 24, None);
         assert_eq!(paths[0].bases.len(), 3);
         assert_eq!(visited.len(), 4);
     }
+    #[test]
+    fn pe_fragment_support_keeps_only_independently_supported_low_depth_kmers() {
+        let mut reference = HashMap::new();
+        reference.insert(
+            encode_kmer(b"CCC").unwrap(),
+            RefKmer {
+                depth: 1,
+                position: 100,
+                is_reverse: false,
+            },
+        );
+        let two_fragments = vec![
+            b"CCCA".to_vec(),
+            b"AAAC".to_vec(),
+            b"CCCA".to_vec(),
+            b"AAAG".to_vec(),
+        ];
+        let counts = count_assemble_chunk_parallel(&two_fragments, 3, 2, true, Some(&reference));
+        let kmer = encode_kmer(b"AAA").unwrap();
+        let graph = build_graph_from_counts(counts, &reference, 2, 2);
+        assert_eq!(graph[&kmer].depth, 2);
+        assert_eq!(graph[&kmer].fragment_support, 2);
+
+        let graph = build_graph_from_counts(
+            vec![KmerCount {
+                kmer,
+                depth: 2,
+                fragment_support: 1,
+            }],
+            &reference,
+            2,
+            2,
+        );
+        assert!(!graph.contains_key(&kmer));
+    }
+
+    #[test]
+    fn pe_branch_support_changes_only_branch_ranking() {
+        let current = encode_kmer(b"AAA").unwrap();
+        let standard = encode_kmer(b"AAC").unwrap();
+        let pe_supported = encode_kmer(b"AAG").unwrap();
+        let mut graph = HashMap::new();
+        graph.insert(current, info(5));
+        graph.insert(standard, info(5));
+        let mut flank = info(2);
+        flank.pe_flank_rescue = true;
+        flank.fragment_support = 2;
+        graph.insert(pe_supported, flank);
+        let blocked = HashSet::from([current]);
+
+        assert_eq!(
+            outgoing(&graph, current, 3, &blocked, None, false, None)[0].kmer,
+            standard
+        );
+        let support = HashMap::from([((current, pe_supported), 2)]);
+        assert_eq!(
+            outgoing(&graph, current, 3, &blocked, None, false, Some(&support))[0].kmer,
+            pe_supported
+        );
+    }
+
     #[test]
     fn parallel_chunk_count_matches_legacy_count() {
         let sequences = vec![
@@ -903,10 +1307,11 @@ mod tests {
         ];
         let reference = HashMap::new();
         let expected = build_assemble_dictionary(&sequences, 4, &reference);
-        let mut observed = HashMap::new();
+        let mut accumulator = SortedKmerCounts::default();
         for chunk in sequences.chunks(2) {
-            add_assemble_chunk_parallel(&mut observed, chunk, 4, &reference, 2);
+            accumulator.push(count_assemble_chunk_parallel(chunk, 4, 2, false, None));
         }
+        let observed = build_graph_from_counts(accumulator.into_counts(), &reference, 0, 0);
         assert_eq!(expected.len(), observed.len());
         for (kmer, value) in expected {
             assert_eq!(value.depth, observed[&kmer].depth);

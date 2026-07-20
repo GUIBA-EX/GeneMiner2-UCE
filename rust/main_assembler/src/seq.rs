@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 // DNA 四个字母压成 2-bit；碰到含糊字符就停，别往图里掺水。
 pub fn base_bits(base: u8) -> Option<u8> {

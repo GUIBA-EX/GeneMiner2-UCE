@@ -1,17 +1,18 @@
 mod assembly;
+mod hash;
 mod io_utils;
 mod model;
 mod pipeline;
 mod seq;
 mod unitig;
 
-use io_utils::discover_references;
+use crate::hash::HashSet;
+use io_utils::{discover_references, find_filtered};
 use model::{Args, AssemblyMode, GraphFormat, PathStrategy};
 use pipeline::{
-    log_line, process_locus, read_result_dict, read_summary_lines, summary_line, write_result_dict,
-    write_summary,
+    log_line, process_locus, read_result_dict, read_summary_lines, run_manifest, summary_line,
+    write_assembly_profile, write_result_dict, write_summary, ProfileStats,
 };
-use std::collections::HashSet;
 use std::env;
 use std::io;
 use std::path::PathBuf;
@@ -58,6 +59,7 @@ Assembly mode:
                                    Sort/count workers per locus; 0=auto
   --assembler-graph-format none|gfa|dot|both
                                    Write compact assembly graphs (default: none)
+  --profile                        Write aggregate stage timings to assembly_profile.tsv
 
 Other:
   -h, --help                      Show this help
@@ -114,6 +116,7 @@ fn parse_args() -> Result<Args, String> {
         read_chunk_size: 8192,
         kmer_count_threads: 0,
         graph_format: GraphFormat::None,
+        profile: false,
     };
 
     let mut index = 1;
@@ -183,6 +186,7 @@ fn parse_args() -> Result<Args, String> {
             "--assembler-kmer-count-threads" => {
                 args.kmer_count_threads = parse_number(&arguments, &mut index, flag)?
             }
+            "--profile" => args.profile = true,
             "--assembler-graph-format" => {
                 args.graph_format = match next_value(&arguments, &mut index, flag)?.as_str() {
                     "none" => GraphFormat::None,
@@ -240,6 +244,18 @@ fn run(mut args: Args) -> io::Result<()> {
     let valid_keys: HashSet<String> = tasks.iter().map(|task| task.key.clone()).collect();
 
     let result_path = args.output.join("result_dict.txt");
+    let manifest_path = args.output.join("assembly_run_manifest.txt");
+    let manifest = run_manifest(&args, &tasks)?;
+    let resume_safe =
+        std::fs::read_to_string(&manifest_path).is_ok_and(|previous| previous == manifest);
+    std::fs::write(&manifest_path, &manifest)?;
+    if !resume_safe && result_path.exists() {
+        log_line(
+            &args.output,
+            &log_lock,
+            "Assembly inputs or parameters changed; ignoring prior completion state.",
+        );
+    }
     let summary_path = args
         .output
         .join(if args.assembly_mode == AssemblyMode::Its2 {
@@ -247,13 +263,18 @@ fn run(mut args: Args) -> io::Result<()> {
         } else {
             "uce_assembly_summary.csv"
         });
-    let mut result_dict = read_result_dict(&result_path)?;
-    result_dict.retain(|key, _| valid_keys.contains(key));
-    let mut summary_rows = if matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) {
-        read_summary_lines(&summary_path)?
+    let mut result_dict = if resume_safe {
+        read_result_dict(&result_path)?
     } else {
         Default::default()
     };
+    result_dict.retain(|key, _| valid_keys.contains(key));
+    let mut summary_rows =
+        if resume_safe && matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) {
+            read_summary_lines(&summary_path)?
+        } else {
+            Default::default()
+        };
     summary_rows.retain(|key, _| valid_keys.contains(key));
 
     let mut completed: HashSet<String> = result_dict.keys().cloned().collect();
@@ -261,13 +282,52 @@ fn run(mut args: Args) -> io::Result<()> {
         completed.retain(|key| summary_rows.contains_key(key));
     }
 
-    let tasks = Arc::new(tasks);
+    // UCE loci are independent and highly uneven in recruited-read volume.
+    // Run the largest ones first to reduce parallel tail time; ordinal remains
+    // the reference order for deterministic user-facing labels.
+    let mut scheduled_tasks: Vec<_> = tasks
+        .into_iter()
+        .map(|task| {
+            let bytes = find_filtered(&args.output, &task.key)
+                .and_then(|(path, _)| std::fs::metadata(path).ok())
+                .map_or(0, |metadata| metadata.len());
+            (task, bytes)
+        })
+        .collect();
+    scheduled_tasks.sort_by(|(left, left_bytes), (right, right_bytes)| {
+        right_bytes
+            .cmp(left_bytes)
+            .then_with(|| left.ordinal.cmp(&right.ordinal))
+    });
+    let tasks = Arc::new(
+        scheduled_tasks
+            .into_iter()
+            .map(|(task, _)| task)
+            .collect::<Vec<_>>(),
+    );
     let completed = Arc::new(completed);
     let next_task = Arc::new(AtomicUsize::new(0));
     let worker_count = args.threads.min(tasks.len().max(1));
+    let default_kmer_workers = (args.threads / worker_count).max(1);
     if args.kmer_count_threads == 0 {
-        args.kmer_count_threads = (args.threads / worker_count).max(1);
+        args.kmer_count_threads = default_kmer_workers;
     }
+    let machine_threads = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(args.threads.max(1));
+    let per_locus_cap = (machine_threads / worker_count).max(1);
+    if args.kmer_count_threads > per_locus_cap {
+        log_line(
+            &args.output,
+            &log_lock,
+            &format!(
+                "Cap k-mer count workers per locus at {} so {} locus workers stay within {} logical CPUs.",
+                per_locus_cap, worker_count, machine_threads
+            ),
+        );
+        args.kmer_count_threads = per_locus_cap;
+    }
+    let profile = args.profile.then(|| Arc::new(ProfileStats::default()));
     let (sender, receiver) = mpsc::channel();
 
     std::thread::scope(|scope| {
@@ -278,12 +338,13 @@ fn run(mut args: Args) -> io::Result<()> {
             let sender = sender.clone();
             let log_lock = Arc::clone(&log_lock);
             let args = &args;
+            let profile = profile.as_ref().map(Arc::clone);
             scope.spawn(move || loop {
                 let index = next_task.fetch_add(1, Ordering::Relaxed);
                 let Some(task) = tasks.get(index) else {
                     break;
                 };
-                let result = process_locus(args, task, &completed, &log_lock);
+                let result = process_locus(args, task, &completed, &log_lock, profile.as_deref());
                 if sender.send(result).is_err() {
                     break;
                 }
@@ -303,6 +364,9 @@ fn run(mut args: Args) -> io::Result<()> {
     }
 
     write_result_dict(&result_path, &result_dict)?;
+    if let Some(profile) = profile.as_deref() {
+        write_assembly_profile(&args.output, profile)?;
+    }
     if matches!(args.assembly_mode, AssemblyMode::Uce | AssemblyMode::Its2) {
         write_summary(&summary_path, &summary_rows)?;
     }

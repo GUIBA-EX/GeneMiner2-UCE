@@ -1,6 +1,7 @@
+use crate::hash::HashMap;
 use crate::model::{LocusTask, RefKmer};
 use crate::seq::{encode_kmer, reverse_complement_kmer, valid_runs};
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -128,6 +129,69 @@ pub fn read_linked_fragments(path: &Path, fasta: bool) -> io::Result<Vec<Vec<Vec
     Ok(reads.chunks(2).map(|mates| mates.to_vec()).collect())
 }
 
+fn normalized_mate_header(header: &str) -> Option<(&str, u8)> {
+    let token = header
+        .trim_start_matches(['@', '>'])
+        .split_whitespace()
+        .next()?;
+    if let Some(name) = token.strip_suffix("/1") {
+        Some((name, 1))
+    } else if let Some(name) = token.strip_suffix("/2") {
+        Some((name, 2))
+    } else {
+        None
+    }
+}
+
+// Refilter writes linked mates adjacently.  Only enable PE-specific graph
+// evidence when the first fragment explicitly advertises that invariant.
+pub fn has_interleaved_pairs(path: &Path, fasta: bool) -> io::Result<bool> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut headers = Vec::with_capacity(2);
+    let mut line = String::new();
+    if fasta {
+        while headers.len() < 2 {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            if line.starts_with('>') {
+                headers.push(line.trim_end_matches(['\r', '\n']).to_string());
+            }
+        }
+    } else {
+        while headers.len() < 2 {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            if !line.starts_with('@') {
+                return Ok(false);
+            }
+            headers.push(line.trim_end_matches(['\r', '\n']).to_string());
+            for _ in 0..3 {
+                line.clear();
+                if reader.read_line(&mut line)? == 0 {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    let Some((first, first_mate)) = headers
+        .first()
+        .and_then(|header| normalized_mate_header(header))
+    else {
+        return Ok(false);
+    };
+    let Some((second, second_mate)) = headers
+        .get(1)
+        .and_then(|header| normalized_mate_header(header))
+    else {
+        return Ok(false);
+    };
+    Ok(first == second && first_mate == 1 && second_mate == 2)
+}
+
 pub fn minimum_sequence_length(
     path: &Path,
     fasta: bool,
@@ -160,12 +224,19 @@ pub fn discover_references(reference: &Path) -> io::Result<Vec<LocusTask>> {
 
     let total = paths.len();
     let mut tasks = Vec::with_capacity(total);
+    let mut keys = HashSet::with_capacity(total);
     for (index, path) in paths.into_iter().enumerate() {
         let key = path
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_string();
+        if !keys.insert(key.clone()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("duplicate locus key '{key}' from reference filename stems"),
+            ));
+        }
         let reference_count = read_fasta(&path)?.len();
         tasks.push(LocusTask {
             key,

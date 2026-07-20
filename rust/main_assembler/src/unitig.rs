@@ -1,6 +1,6 @@
+use crate::hash::{HashMap, HashSet};
 use crate::model::KmerInfo;
 use crate::seq::{bits_base, decode_kmer, kmer_mask};
-use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -132,6 +132,8 @@ mod tests {
             position: 0,
             is_reverse: false,
             reference_weight: 0,
+            fragment_support: 0,
+            pe_flank_rescue: false,
         }
     }
     #[test]
