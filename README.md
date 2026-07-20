@@ -6,6 +6,8 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 
 使用本软件请引用 [GeneMiner2-UCE GitHub 仓库](https://github.com/GUIBA-EX/GeneMiner2-UCE)。
 
+> **测试阶段。** 项目仍在持续验证中；如遇到 bug、异常结果或文档问题，请提交 [GitHub Issue](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues) 或邮件联系 [xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp)。
+
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
 ## 功能

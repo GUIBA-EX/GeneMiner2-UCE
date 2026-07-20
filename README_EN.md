@@ -6,6 +6,8 @@ GeneMiner2-UCE is the UCE extension of GeneMiner2 for target-enrichment, ultraco
 
 Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/GeneMiner2-UCE) when using this software.
 
+> **Testing stage.** The project is still under active validation. Please report bugs, unexpected results, or documentation issues through [GitHub Issues](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues) or by email to [xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp).
+
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
 
 ## Features
