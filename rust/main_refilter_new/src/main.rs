@@ -1,8 +1,10 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use ahash::AHashMap;
+use gm2_tools::fastx::{FastxFormat, FastxReader};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, Mutex};
@@ -30,9 +32,9 @@ impl FileType {
 
 #[derive(Clone)]
 struct Record {
-    title: String,
-    seq: String,
-    qual: String,
+    title: Vec<u8>,
+    seq: Vec<u8>,
+    qual: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -67,101 +69,6 @@ struct Args {
     use_gm2_format: bool,
     kmer_size: usize,
     processes: usize,
-}
-
-struct FastqReader<R: BufRead> {
-    reader: R,
-}
-
-impl<R: BufRead> FastqReader<R> {
-    fn next_record(&mut self) -> io::Result<Option<Record>> {
-        let mut title = String::new();
-
-        if self.reader.read_line(&mut title)? == 0 {
-            return Ok(None);
-        }
-
-        let mut seq = String::new();
-        let mut plus = String::new();
-        let mut qual = String::new();
-
-        if self.reader.read_line(&mut seq)? == 0
-            || self.reader.read_line(&mut plus)? == 0
-            || self.reader.read_line(&mut qual)? == 0
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "truncated FASTQ record",
-            ));
-        }
-
-        let title = title
-            .trim_end()
-            .strip_prefix('@')
-            .unwrap_or(title.trim_end())
-            .to_string();
-        Ok(Some(Record {
-            title,
-            seq: seq.trim_end().to_string(),
-            qual: qual.trim_end().to_string(),
-        }))
-    }
-}
-
-struct FastaReader<R: BufRead> {
-    reader: R,
-    pending_title: Option<String>,
-    done: bool,
-}
-
-impl<R: BufRead> FastaReader<R> {
-    fn next_record(&mut self) -> io::Result<Option<Record>> {
-        if self.done {
-            return Ok(None);
-        }
-
-        let title = match self.pending_title.take() {
-            Some(title) => title,
-            None => {
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    if self.reader.read_line(&mut line)? == 0 {
-                        self.done = true;
-                        return Ok(None);
-                    }
-
-                    if let Some(title) = line.trim_end().strip_prefix('>') {
-                        break title.to_string();
-                    }
-                }
-            }
-        };
-
-        let mut seq = String::new();
-        let mut line = String::new();
-
-        loop {
-            line.clear();
-            if self.reader.read_line(&mut line)? == 0 {
-                self.done = true;
-                break;
-            }
-
-            if let Some(next_title) = line.trim_end().strip_prefix('>') {
-                self.pending_title = Some(next_title.to_string());
-                break;
-            }
-
-            seq.push_str(line.trim());
-        }
-
-        Ok(Some(Record {
-            title,
-            seq,
-            qual: String::new(),
-        }))
-    }
 }
 
 struct Gm2Reader<R: Read> {
@@ -208,7 +115,7 @@ impl<R: Read> Gm2Reader<R> {
         self.read_id += 1;
 
         Ok(Some(Record {
-            title: format!("read_{}{}", self.read_id, self.suffix),
+            title: format!("read_{}{}", self.read_id, self.suffix).into_bytes(),
             seq,
             qual,
         }))
@@ -224,8 +131,7 @@ fn parse_gm2_header(header: [u8; 6]) -> (usize, bool, usize) {
 }
 
 enum RecordReader {
-    Fasta(FastaReader<BufReader<File>>),
-    Fastq(FastqReader<BufReader<File>>),
+    Text(FastxReader),
     Gm2(Gm2Reader<BufReader<File>>),
 }
 
@@ -236,37 +142,39 @@ impl RecordReader {
         gm2_format: bool,
         suffix: String,
     ) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
         if gm2_format {
             return Ok(RecordReader::Gm2(Gm2Reader {
-                reader,
+                reader: BufReader::with_capacity(1024 * 1024, File::open(path)?),
                 read_id: 0,
                 suffix,
             }));
         }
-
-        match file_type {
-            FileType::Fasta => Ok(RecordReader::Fasta(FastaReader {
-                reader,
-                pending_title: None,
-                done: false,
-            })),
-            FileType::Fastq => Ok(RecordReader::Fastq(FastqReader { reader })),
-        }
+        let format = match file_type {
+            FileType::Fasta => FastxFormat::Fasta,
+            FileType::Fastq => FastxFormat::Fastq,
+        };
+        Ok(RecordReader::Text(FastxReader::open(path, format)?))
     }
 
     fn next_record(&mut self) -> io::Result<Option<Record>> {
         match self {
-            RecordReader::Fasta(reader) => reader.next_record(),
-            RecordReader::Fastq(reader) => reader.next_record(),
+            RecordReader::Text(reader) => reader.next_record().map(|record| {
+                record.map(|record| Record {
+                    title: record.header.get(1..).unwrap_or_default().to_vec(),
+                    seq: record.sequence,
+                    qual: record.quality,
+                })
+            }),
             RecordReader::Gm2(reader) => reader.next_record(),
         }
     }
 }
 
-fn parse_gm2_record(record: &[u8], has_phr: bool, seq_len: usize) -> io::Result<(String, String)> {
+fn parse_gm2_record(
+    record: &[u8],
+    has_phr: bool,
+    seq_len: usize,
+) -> io::Result<(Vec<u8>, Vec<u8>)> {
     let mut i = 0_usize;
     let mut j = 0_usize;
     let mut last_chunk = 0_u8;
@@ -311,7 +219,7 @@ fn parse_gm2_record(record: &[u8], has_phr: bool, seq_len: usize) -> io::Result<
     }
 
     if !has_phr {
-        return Ok((String::from_utf8_lossy(&seq).into_owned(), String::new()));
+        return Ok((seq, Vec::new()));
     }
 
     i = 0;
@@ -353,10 +261,7 @@ fn parse_gm2_record(record: &[u8], has_phr: bool, seq_len: usize) -> io::Result<
         }
     }
 
-    Ok((
-        String::from_utf8_lossy(&seq).into_owned(),
-        String::from_utf8_lossy(&qual).into_owned(),
-    ))
+    Ok((seq, qual))
 }
 
 fn main() {
@@ -816,7 +721,7 @@ fn print_log(log_path: Option<&Path>, message: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn load_reference(ref_path: &Path, kmer_size: usize) -> Result<(HashSet<String>, f64), String> {
+fn load_reference(ref_path: &Path, kmer_size: usize) -> Result<(HashSet<Vec<u8>>, f64), String> {
     // N 这种含糊碱基把窗口截开，硬拼 k-mer 容易整出假命中。
     let mut reader = RecordReader::from_path(ref_path, FileType::Fasta, false, String::new())
         .map_err(|e| e.to_string())?;
@@ -837,97 +742,268 @@ fn load_reference(ref_path: &Path, kmer_size: usize) -> Result<(HashSet<String>,
     Ok((ref_set, effective_len))
 }
 
-// 四种正经碱基编成小数字，别的字符不硬解释。
-fn encode_base(base: u8) -> Option<u8> {
-    match base {
-        b'A' | b'a' => Some(b'0'),
-        b'C' | b'c' => Some(b'1'),
-        b'G' | b'g' => Some(b'2'),
-        b'T' | b't' | b'U' | b'u' => Some(b'3'),
-        _ => None,
+const INVALID_BASE_CODE: u8 = u8::MAX;
+
+const fn build_base_code_table() -> [u8; 256] {
+    let mut table = [INVALID_BASE_CODE; 256];
+    table[b'A' as usize] = 0;
+    table[b'a' as usize] = 0;
+    table[b'C' as usize] = 1;
+    table[b'c' as usize] = 1;
+    table[b'G' as usize] = 2;
+    table[b'g' as usize] = 2;
+    table[b'T' as usize] = 3;
+    table[b't' as usize] = 3;
+    table[b'U' as usize] = 3;
+    table[b'u' as usize] = 3;
+    table
+}
+
+const BASE_CODE_TABLE: [u8; 256] = build_base_code_table();
+
+#[inline(always)]
+fn base_code(base: u8) -> Option<u8> {
+    match BASE_CODE_TABLE[base as usize] {
+        INVALID_BASE_CODE => None,
+        code => Some(code),
     }
 }
 
-// 把有效碱基翻成紧凑编码，后面的滚动 k-mer 少费劲。
-fn translate_fwd(seq: &str) -> Vec<u8> {
-    let mut encoded = Vec::with_capacity(seq.len());
-
-    for base in seq.bytes() {
-        let Some(base) = encode_base(base) else {
-            // Never join the flanks around an ambiguity into a fake k-mer.
-            return Vec::new();
-        };
-        encoded.push(base);
-    }
-
-    encoded
+// Refilter 必须保留正、反链的不同方向标记，故不能把反向互补的 key
+// canonicalize 成同一个 key；这里只复用 MainFilter 的紧凑滚动编码策略。
+enum KmerDict {
+    Short(AHashMap<u64, u8>),
+    Medium(AHashMap<u128, u8>),
+    Long(AHashMap<Vec<u8>, u8>),
 }
 
-// N 会把参考切成几段，绝不跨着不确定碱基拼假窗口。
-fn reference_runs(seq: &str) -> Vec<Vec<u8>> {
-    let mut runs = Vec::new();
-    let mut run = Vec::new();
-
-    for base in seq.bytes() {
-        if let Some(base) = encode_base(base) {
-            run.push(base);
-        } else if !run.is_empty() {
-            runs.push(std::mem::take(&mut run));
+impl KmerDict {
+    fn new(kmer_size: usize) -> Self {
+        match kmer_size {
+            0..=32 => Self::Short(AHashMap::new()),
+            33..=64 => Self::Medium(AHashMap::new()),
+            _ => Self::Long(AHashMap::new()),
         }
     }
 
-    if !run.is_empty() {
-        runs.push(run);
+    fn insert_reference(&mut self, sequence: &[u8], kmer_size: usize, orient: u8) {
+        match self {
+            Self::Short(map) => insert_short_kmers(map, sequence, kmer_size, orient),
+            Self::Medium(map) => insert_medium_kmers(map, sequence, kmer_size, orient),
+            Self::Long(map) => insert_long_kmers(map, sequence, kmer_size, orient),
+        }
     }
 
-    runs
+    // 与旧 translate_fwd() 一致：read 中任一含糊碱基都会使整条 read 无 k-mer。
+    fn is_valid_read(read: &[u8], kmer_size: usize) -> bool {
+        read.len() >= kmer_size && read.iter().all(|&base| base_code(base).is_some())
+    }
+
+    // 调用方已经检查过长度与碱基合法性时，跳过第二次全 read 验证。
+    fn for_each_valid_read_orientation(
+        &self,
+        read: &[u8],
+        kmer_size: usize,
+        mut visit: impl FnMut(u8),
+    ) {
+        match self {
+            Self::Short(map) => scan_short_kmers(read, kmer_size, |key| {
+                visit(map.get(&key).copied().unwrap_or(0))
+            }),
+            Self::Medium(map) => scan_medium_kmers(read, kmer_size, |key| {
+                visit(map.get(&key).copied().unwrap_or(0))
+            }),
+            Self::Long(map) => scan_long_kmers(read, kmer_size, |key| {
+                visit(map.get(key).copied().unwrap_or(0))
+            }),
+        }
+    }
+
+    fn read_has_hit(&self, read: &[u8], kmer_size: usize) -> bool {
+        if !Self::is_valid_read(read, kmer_size) {
+            return false;
+        }
+        match self {
+            Self::Short(map) => any_short_kmer(read, kmer_size, |key| map.contains_key(&key)),
+            Self::Medium(map) => any_medium_kmer(read, kmer_size, |key| map.contains_key(&key)),
+            Self::Long(map) => any_long_kmer(read, kmer_size, |key| map.contains_key(key)),
+        }
+    }
 }
 
-// 反向互补单独算一份，方向判定时两面都得瞅瞅。
-fn reverse_complement(encoded: &[u8]) -> Vec<u8> {
-    encoded
+#[inline]
+fn short_mask(kmer_size: usize) -> u64 {
+    if kmer_size == 32 {
+        u64::MAX
+    } else {
+        (1_u64 << (kmer_size * 2)) - 1
+    }
+}
+
+#[inline]
+fn medium_mask(kmer_size: usize) -> u128 {
+    if kmer_size == 64 {
+        u128::MAX
+    } else {
+        (1_u128 << (kmer_size * 2)) - 1
+    }
+}
+
+fn insert_short_kmers(map: &mut AHashMap<u64, u8>, sequence: &[u8], k: usize, orient: u8) {
+    let mask = short_mask(k);
+    let mut key = 0_u64;
+    let mut valid = 0_usize;
+    for &base in sequence {
+        if let Some(code) = base_code(base) {
+            key = ((key << 2) | code as u64) & mask;
+            valid += 1;
+            if valid >= k {
+                *map.entry(key).or_insert(0) |= orient;
+            }
+        } else {
+            key = 0;
+            valid = 0;
+        }
+    }
+}
+
+fn insert_medium_kmers(map: &mut AHashMap<u128, u8>, sequence: &[u8], k: usize, orient: u8) {
+    let mask = medium_mask(k);
+    let mut key = 0_u128;
+    let mut valid = 0_usize;
+    for &base in sequence {
+        if let Some(code) = base_code(base) {
+            key = ((key << 2) | code as u128) & mask;
+            valid += 1;
+            if valid >= k {
+                *map.entry(key).or_insert(0) |= orient;
+            }
+        } else {
+            key = 0;
+            valid = 0;
+        }
+    }
+}
+
+fn insert_long_kmers(map: &mut AHashMap<Vec<u8>, u8>, sequence: &[u8], k: usize, orient: u8) {
+    let mut run = Vec::new();
+    for &base in sequence {
+        if let Some(code) = base_code(base) {
+            run.push(code);
+        } else {
+            for window in run.windows(k) {
+                *map.entry(window.to_vec()).or_insert(0) |= orient;
+            }
+            run.clear();
+        }
+    }
+    for window in run.windows(k) {
+        *map.entry(window.to_vec()).or_insert(0) |= orient;
+    }
+}
+
+fn scan_short_kmers(read: &[u8], k: usize, mut visit: impl FnMut(u64)) {
+    let mask = short_mask(k);
+    let mut key = 0_u64;
+    for &base in &read[..k] {
+        key = (key << 2) | base_code(base).unwrap() as u64;
+    }
+    visit(key);
+    for &base in &read[k..] {
+        key = ((key << 2) | base_code(base).unwrap() as u64) & mask;
+        visit(key);
+    }
+}
+
+fn scan_medium_kmers(read: &[u8], k: usize, mut visit: impl FnMut(u128)) {
+    let mask = medium_mask(k);
+    let mut key = 0_u128;
+    for &base in &read[..k] {
+        key = (key << 2) | base_code(base).unwrap() as u128;
+    }
+    visit(key);
+    for &base in &read[k..] {
+        key = ((key << 2) | base_code(base).unwrap() as u128) & mask;
+        visit(key);
+    }
+}
+
+fn scan_long_kmers(read: &[u8], k: usize, mut visit: impl FnMut(&[u8])) {
+    let mut encoded = Vec::with_capacity(read.len());
+    encoded.extend(read.iter().map(|&base| base_code(base).unwrap()));
+    for window in encoded.windows(k) {
+        visit(window);
+    }
+}
+
+fn any_short_kmer(read: &[u8], k: usize, mut matches: impl FnMut(u64) -> bool) -> bool {
+    let mask = short_mask(k);
+    let mut key = 0_u64;
+    for &base in &read[..k] {
+        key = (key << 2) | base_code(base).unwrap() as u64;
+    }
+    if matches(key) {
+        return true;
+    }
+    for &base in &read[k..] {
+        key = ((key << 2) | base_code(base).unwrap() as u64) & mask;
+        if matches(key) {
+            return true;
+        }
+    }
+    false
+}
+
+fn any_medium_kmer(read: &[u8], k: usize, mut matches: impl FnMut(u128) -> bool) -> bool {
+    let mask = medium_mask(k);
+    let mut key = 0_u128;
+    for &base in &read[..k] {
+        key = (key << 2) | base_code(base).unwrap() as u128;
+    }
+    if matches(key) {
+        return true;
+    }
+    for &base in &read[k..] {
+        key = ((key << 2) | base_code(base).unwrap() as u128) & mask;
+        if matches(key) {
+            return true;
+        }
+    }
+    false
+}
+
+fn any_long_kmer(read: &[u8], k: usize, matches: impl FnMut(&[u8]) -> bool) -> bool {
+    let mut encoded = Vec::with_capacity(read.len());
+    encoded.extend(read.iter().map(|&base| base_code(base).unwrap()));
+    encoded.windows(k).any(matches)
+}
+
+fn reverse_complement(sequence: &[u8]) -> Vec<u8> {
+    sequence
         .iter()
         .rev()
-        .map(|base| b'3' - (*base - b'0'))
+        .map(|&base| match base_code(base) {
+            Some(code) => b"TGCA"[code as usize],
+            None => base,
+        })
         .collect()
 }
 
-fn build_kmer_dict(ref_set: &HashSet<String>, kmer_size: usize) -> HashMap<Vec<u8>, u8> {
-    // 正反链都记上方向；后头推断 read 朝向时心里就有数了。
-    let mut kmer_dict = HashMap::new();
-
+fn build_kmer_dict(ref_set: &HashSet<Vec<u8>>, kmer_size: usize) -> KmerDict {
+    let mut kmer_dict = KmerDict::new(kmer_size);
     for seq in ref_set {
-        for fwd in reference_runs(seq) {
-            let rev = reverse_complement(&fwd);
-            add_kmers(&mut kmer_dict, &fwd, kmer_size, 1);
-            add_kmers(&mut kmer_dict, &rev, kmer_size, 2);
-        }
+        kmer_dict.insert_reference(seq.as_slice(), kmer_size, 1);
+        let rev = reverse_complement(seq.as_slice());
+        kmer_dict.insert_reference(&rev, kmer_size, 2);
     }
-
     kmer_dict
 }
 
-// 把一条参考的所有有效 k-mer 塞进表，并标注它来自哪条链。
-fn add_kmers(kmer_dict: &mut HashMap<Vec<u8>, u8>, seq: &[u8], kmer_size: usize, orient: u8) {
-    if seq.len() < kmer_size {
-        return;
-    }
-
-    for window in seq.windows(kmer_size) {
-        let entry = kmer_dict.entry(window.to_vec()).or_insert(0);
-        *entry |= orient;
-    }
-}
-
 // 统计连续命中段的长短和方向，为后头的保留判定攒证据。
-fn collect_runs_stats(
-    read: &[u8],
-    kmer_dict: &HashMap<Vec<u8>, u8>,
-    kmer_size: usize,
-) -> [usize; 13] {
+fn collect_runs_stats(read: &[u8], kmer_dict: &KmerDict, kmer_size: usize) -> [usize; 13] {
     let mut results = [0_usize; 13];
 
-    if read.len() < kmer_size {
+    if !KmerDict::is_valid_read(read, kmer_size) {
         return results;
     }
 
@@ -935,9 +1011,8 @@ fn collect_runs_stats(
     let mut curr_len = 0_usize;
     results[12] = read.len() - kmer_size + 1;
 
-    for window in read.windows(kmer_size) {
-        let orient = *kmer_dict.get(window).unwrap_or(&0) as usize;
-
+    kmer_dict.for_each_valid_read_orientation(read, kmer_size, |orient| {
+        let orient = orient as usize;
         if orient != curr_dir {
             if curr_len > results[curr_dir] {
                 results[curr_dir] = curr_len;
@@ -952,7 +1027,7 @@ fn collect_runs_stats(
             curr_len += 1;
             results[curr_dir + 8] += 1;
         }
-    }
+    });
 
     if curr_len > results[curr_dir] {
         results[curr_dir] = curr_len;
@@ -962,12 +1037,8 @@ fn collect_runs_stats(
     results
 }
 
-// 单条 read 是否像参考，不靠一个点命中，得看整段跑得顺不顺。
-fn filter_read(read: &[u8], kmer_dict: &HashMap<Vec<u8>, u8>, kmer_size: usize) -> bool {
-    read.len() >= kmer_size
-        && read
-            .windows(kmer_size)
-            .any(|window| kmer_dict.contains_key(window))
+fn filter_read(read: &[u8], kmer_dict: &KmerDict, kmer_size: usize) -> bool {
+    kmer_dict.read_has_hit(read, kmer_size)
 }
 
 fn is_close(a: f64, b: f64, abs_tol: f64) -> bool {
@@ -1092,11 +1163,21 @@ fn next_linked_read(readers: &mut [RecordReader]) -> Result<Option<Vec<Record>>,
 }
 
 fn write_record<W: Write>(out: &mut W, record: &Record, file_type: FileType) -> Result<(), String> {
-    match file_type {
-        FileType::Fasta => writeln!(out, ">{}\n{}", record.title, record.seq),
-        FileType::Fastq => writeln!(out, "@{}\n{}\n+\n{}", record.title, record.seq, record.qual),
+    let marker = match file_type {
+        FileType::Fasta => b'>',
+        FileType::Fastq => b'@',
+    };
+    out.write_all(&[marker]).map_err(|e| e.to_string())?;
+    out.write_all(&record.title).map_err(|e| e.to_string())?;
+    out.write_all(b"\n").map_err(|e| e.to_string())?;
+    out.write_all(&record.seq).map_err(|e| e.to_string())?;
+    out.write_all(b"\n").map_err(|e| e.to_string())?;
+    if file_type == FileType::Fastq {
+        out.write_all(b"+\n").map_err(|e| e.to_string())?;
+        out.write_all(&record.qual).map_err(|e| e.to_string())?;
+        out.write_all(b"\n").map_err(|e| e.to_string())?;
     }
-    .map_err(|e| e.to_string())
+    Ok(())
 }
 
 // copy-only 模式不做判定，只把配对关系原样拢到输出里。
@@ -1122,7 +1203,7 @@ fn copy_reads(
 fn run_length_filter(
     name: &str,
     out_dir: &Path,
-    ref_set: &HashSet<String>,
+    ref_set: &HashSet<Vec<u8>>,
     read_paths: &[PathBuf],
     file_type: FileType,
     kmer_size: usize,
@@ -1141,8 +1222,11 @@ fn run_length_filter(
         let mut orient = vec![0_u8; linked_reads.len()];
 
         for (i, record) in linked_reads.iter().enumerate() {
-            let read = translate_fwd(&record.seq);
-            orient[i] = infer_orientation(collect_runs_stats(&read, &kmer_dict, kmer_size));
+            orient[i] = infer_orientation(collect_runs_stats(
+                record.seq.as_slice(),
+                &kmer_dict,
+                kmer_size,
+            ));
         }
 
         if orient.len() == 2 && (1..=2).contains(&orient[0]) && orient[0] == orient[1] {
@@ -1191,7 +1275,7 @@ fn count_total_length_from_path(
     path: &Path,
     file_type: FileType,
     keep_linked_mates: bool,
-    kmer_dict: Option<&HashMap<Vec<u8>, u8>>,
+    kmer_dict: Option<&KmerDict>,
     kmer_size: usize,
 ) -> Result<usize, String> {
     let mut reader = RecordReader::from_path(path, file_type, false, String::new())
@@ -1202,7 +1286,7 @@ fn count_total_length_from_path(
         let keep = match kmer_dict {
             Some(kmer_dict) => group
                 .iter()
-                .any(|record| filter_read(&translate_fwd(&record.seq), kmer_dict, kmer_size)),
+                .any(|record| filter_read(record.seq.as_slice(), kmer_dict, kmer_size)),
             None => true,
         };
 
@@ -1219,7 +1303,7 @@ fn kmer_filter(
     name: &str,
     out_dir: &Path,
     log_path: Option<&Path>,
-    ref_set: &HashSet<String>,
+    ref_set: &HashSet<Vec<u8>>,
     ref_length: f64,
     temp_path: &Path,
     file_type: FileType,
@@ -1295,7 +1379,7 @@ fn kmer_filter(
         if keep_linked_mates {
             if linked_reads
                 .iter()
-                .any(|record| filter_read(&translate_fwd(&record.seq), &kmer_dict, kmer_size))
+                .any(|record| filter_read(record.seq.as_slice(), &kmer_dict, kmer_size))
             {
                 i += 1;
 
@@ -1308,7 +1392,7 @@ fn kmer_filter(
                 }
             }
         } else if let Some(record) = linked_reads.first() {
-            if filter_read(&translate_fwd(&record.seq), &kmer_dict, kmer_size) {
+            if filter_read(record.seq.as_slice(), &kmer_dict, kmer_size) {
                 i += 1;
 
                 if too_large && !i.is_multiple_of(interval) {
@@ -1324,8 +1408,72 @@ fn kmer_filter(
 }
 
 #[cfg(test)]
-mod gm2_tests {
-    use super::parse_gm2_header;
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn legacy_code(base: u8) -> Option<u8> {
+        match base {
+            b'A' | b'a' => Some(b'0'),
+            b'C' | b'c' => Some(b'1'),
+            b'G' | b'g' => Some(b'2'),
+            b'T' | b't' | b'U' | b'u' => Some(b'3'),
+            _ => None,
+        }
+    }
+
+    fn legacy_dict(refs: &HashSet<Vec<u8>>, k: usize) -> HashMap<Vec<u8>, u8> {
+        let mut map = HashMap::new();
+        for reference in refs {
+            let mut runs = Vec::new();
+            let mut run = Vec::new();
+            for &base in reference {
+                if let Some(code) = legacy_code(base) {
+                    run.push(code);
+                } else if !run.is_empty() {
+                    runs.push(std::mem::take(&mut run));
+                }
+            }
+            if !run.is_empty() {
+                runs.push(run);
+            }
+            for forward in runs {
+                let reverse: Vec<u8> = forward
+                    .iter()
+                    .rev()
+                    .map(|base| b'3' - (*base - b'0'))
+                    .collect();
+                for (sequence, orient) in [(&forward, 1_u8), (&reverse, 2_u8)] {
+                    for window in sequence.windows(k) {
+                        *map.entry(window.to_vec()).or_insert(0) |= orient;
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    fn legacy_orientations(read: &[u8], map: &HashMap<Vec<u8>, u8>, k: usize) -> Vec<u8> {
+        let Some(encoded) = read
+            .iter()
+            .map(|&base| legacy_code(base))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Vec::new();
+        };
+        encoded
+            .windows(k)
+            .map(|window| map.get(window).copied().unwrap_or(0))
+            .collect()
+    }
+
+    fn new_orientations(read: &[u8], dict: &KmerDict, k: usize) -> Vec<u8> {
+        let mut result = Vec::new();
+        if KmerDict::is_valid_read(read, k) {
+            dict.for_each_valid_read_orientation(read, k, |orient| result.push(orient));
+        }
+        result
+    }
 
     #[test]
     fn header_uses_three_bytes_for_each_length() {
@@ -1334,5 +1482,48 @@ mod gm2_tests {
         assert_eq!(record_len, 0x010203);
         assert!(has_quality);
         assert_eq!(sequence_len, 0x040506);
+    }
+
+    #[test]
+    fn compact_dictionary_matches_legacy_orientations() {
+        let mut seed = 7_u64;
+        let mut primary = Vec::new();
+        for _ in 0..180 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            primary.push(b"ACGT"[((seed >> 32) & 3) as usize]);
+        }
+        let mut split = primary.clone();
+        split[80] = b'N';
+        let refs = HashSet::from([primary.clone(), split]);
+        let mut lower = primary[20..140].to_vec();
+        lower.make_ascii_lowercase();
+        let mut with_u = primary[30..150].to_vec();
+        for base in &mut with_u {
+            if *base == b'T' {
+                *base = b'U';
+            }
+        }
+        let mut ambiguous = primary[40..160].to_vec();
+        ambiguous[12] = b'N';
+        let reads = vec![primary[0..120].to_vec(), lower, with_u, ambiguous];
+
+        for k in [3, 32, 33, 64, 65] {
+            let legacy = legacy_dict(&refs, k);
+            let compact = build_kmer_dict(&refs, k);
+            for read in &reads {
+                let expected = legacy_orientations(read, &legacy, k);
+                let actual = new_orientations(read, &compact, k);
+                assert_eq!(
+                    actual,
+                    expected,
+                    "k={k}, read={:?}",
+                    String::from_utf8_lossy(read)
+                );
+                assert_eq!(
+                    filter_read(read, &compact, k),
+                    expected.iter().any(|&hit| hit != 0)
+                );
+            }
+        }
     }
 }

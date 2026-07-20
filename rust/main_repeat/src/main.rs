@@ -1,5 +1,6 @@
 use ahash::{AHashMap, AHashSet};
 use flate2::read::MultiGzDecoder;
+use gm2_tools::fastx::{FastxFormat, FastxReader};
 use rayon::prelude::*;
 use std::{
     cmp::Reverse,
@@ -208,44 +209,26 @@ struct Rec {
     qual: String,
 }
 struct PairReader {
-    r1: BufReader<Box<dyn Read>>,
-    r2: Option<BufReader<Box<dyn Read>>>,
+    r1: FastxReader,
+    r2: Option<FastxReader>,
 }
-fn read_fastq(r: &mut BufReader<Box<dyn Read>>) -> R<Option<Rec>> {
-    let mut h = String::new();
-    if r.read_line(&mut h).map_err(|e| e.to_string())? == 0 {
+fn read_fastq(r: &mut FastxReader) -> R<Option<Rec>> {
+    let Some(record) = r.next_record().map_err(|e| e.to_string())? else {
         return Ok(None);
-    }
-    let mut seq = String::new();
-    let mut plus = String::new();
-    let mut qual = String::new();
-    for line in [&mut seq, &mut plus, &mut qual] {
-        if r.read_line(line).map_err(|e| e.to_string())? == 0 {
-            return Err("truncated FASTQ record".into());
-        }
-    }
-    if !h.starts_with('@') || !plus.starts_with('+') {
-        return Err("malformed FASTQ record".into());
-    }
-    let seq = seq.trim_end().as_bytes().to_vec();
-    let qual = qual.trim_end().to_string();
-    if seq.len() != qual.len() {
-        return Err("FASTQ sequence/quality length mismatch".into());
-    }
+    };
     Ok(Some(Rec {
-        id: id(&h),
-        seq,
-        qual,
+        id: id(&String::from_utf8_lossy(&record.header)),
+        seq: record.sequence,
+        qual: String::from_utf8_lossy(&record.quality).into_owned(),
     }))
 }
 impl PairReader {
     fn new(r1: &Path, r2: Option<&Path>) -> R<Self> {
         Ok(Self {
-            r1: BufReader::new(open(r1)?),
-            r2: match r2 {
-                Some(p) => Some(BufReader::new(open(p)?)),
-                None => None,
-            },
+            r1: FastxReader::open(r1, FastxFormat::Fastq).map_err(|e| e.to_string())?,
+            r2: r2
+                .map(|path| FastxReader::open(path, FastxFormat::Fastq).map_err(|e| e.to_string()))
+                .transpose()?,
         })
     }
     fn next_pair(&mut self) -> R<Option<(Rec, Option<Rec>)>> {
