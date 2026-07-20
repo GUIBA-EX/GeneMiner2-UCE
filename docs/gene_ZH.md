@@ -2,7 +2,11 @@
 
 `gene` 面向多物种 bait 定义的核基因家族。它恢复并保留样本内候选 contig，再以蛋白注释和 gene tree 将可靠的一对一子树与多拷贝/歧义家族分开。候选数是组装观察，**不是**等位基因或真实拷贝数结论。
 
-## 最短流程
+| 从什么开始 | 得到什么 | 主要边界 |
+| --- | --- | --- |
+| reads + 多物种 family bait | 候选 contig、严格一对一子树或多拷贝树输入 | 不直接声明真实拷贝数 |
+
+## 快速开始
 
 每个 `family_reference/*.fasta` 是一个 family，可含多个物种的 bait；`family_proteins/` 为同名 family 的蛋白 FASTA。
 

@@ -155,6 +155,12 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 
 ## 文档
 
+### 按任务阅读
+
+- **恢复目标序列**：从 [Filter](docs/filter_ZH.md) 与 [Assembler](docs/assembler_ZH.md) 开始。
+- **解释 reads 或群体差异**：查看 [Profiling](docs/profiling_ZH.md) 与 [Population](docs/population_ZH.md)。
+- **专门工作流**：线粒体、核基因家族和 repeatome 分别见下表。
+
 | 主题 | 文档 |
 | --- | --- |
 | 命令与依赖 | [中文命令行指南](manual/ZH_CN/command_line.md) |

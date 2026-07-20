@@ -2,7 +2,11 @@
 
 `geneminer2 te` 是面向 genome-skimming 或 WGS 短读长的参考无关 repeatome 工作流。它输出保守的重复单元、注释证据和样本丰度；**不是**完整 TE 注释、插入位点检测或 TE 系统树流程。
 
-## 运行
+| 从什么开始 | 得到什么 | 主要边界 |
+| --- | --- | --- |
+| genome-skimming 或 WGS 短读长 | EQ 单元、保守注释与样本 RPM | 不报告完整 TE 或插入位点 |
+
+## 快速开始
 
 ```bash
 cli/geneminer2 te -f te_samples.tsv -o te_out -p 32

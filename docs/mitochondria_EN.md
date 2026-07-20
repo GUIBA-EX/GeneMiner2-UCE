@@ -2,6 +2,10 @@
 
 `mito` uses the existing MainFilter, refilter, and Rust UCE assembler to recruit reads from an annotated GenBank reference. It reports a circular sequence only when the sample reads support it.
 
+| Start with | Get | Main boundary |
+| --- | --- | --- |
+| Annotated GenBank + sample reads | Read-supported circular or partial mitochondrial sequence | Only for ordinary single circular animal mitochondria |
+
 ## Scope
 
 This workflow is for **ordinary single circular animal mitochondrial genomes**: gene order should remain broadly comparable with the reference, without multipartite structure, major rearrangement, or heteroplasmy that needs phased reporting. It is not intended for complex plant or fungal mitochondria, fragmented or multichromosomal mitochondria, major rearrangements, or studies requiring specialised heteroplasmy or NUMT handling.

@@ -2,7 +2,11 @@
 
 `gene` handles nuclear gene families defined by multi-species baits. It retains within-sample candidate contigs, then separates reliable one-to-one subtrees from multicopy or ambiguous families with protein annotation and gene trees. Candidate count is assembly evidence, **not** an allele or biological copy-number call.
 
-## Minimal workflow
+| Start with | Get | Main boundary |
+| --- | --- | --- |
+| Reads + multi-species family baits | Candidate contigs, strict one-to-one clades, or multicopy tree inputs | Does not directly claim biological copy number |
+
+## Quick start
 
 Each `family_reference/*.fasta` defines one family and may contain several species. `family_proteins/` contains same-named protein FASTA files.
 

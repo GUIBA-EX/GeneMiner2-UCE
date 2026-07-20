@@ -155,6 +155,12 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 
 ## Documentation
 
+### Navigate by task
+
+- **Recover target sequences:** start with [Filter](docs/filter_EN.md) and [Assembler](docs/assembler_EN.md).
+- **Interpret read-level or population variation:** see [Profiling](docs/profiling_EN.md) and [Population](docs/population_EN.md).
+- **Specialised workflows:** mitochondrial, nuclear gene-family, and repeatome routes are listed below.
+
 | Topic | Document |
 | --- | --- |
 | Commands and dependencies | [Command-line guide](manual/EN_US/command_line.md) |

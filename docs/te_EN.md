@@ -2,7 +2,11 @@
 
 `geneminer2 te` is a reference-free repeatome workflow for genome-skimming or WGS short reads. It produces conservative repeat units, annotation evidence, and sample abundance; it is **not** complete-TE annotation, insertion-site calling, or a TE-phylogeny workflow.
 
-## Run
+| Start with | Get | Main boundary |
+| --- | --- | --- |
+| Genome-skimming or WGS short reads | EQ units, conservative annotation, and sample RPM | Does not report complete TEs or insertion sites |
+
+## Quick start
 
 ```bash
 cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
