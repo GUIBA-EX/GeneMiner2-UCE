@@ -72,6 +72,10 @@ class MitoWorkflowTests(unittest.TestCase):
             self.assertIn(">mito_gm2_seed_2", content)
             self.assertIn(">mito_gm2_seed_4", content)
             self.assertEqual(content.count("AAAA"), 1)
+            manifest = (rescue / "mito_rescue_seeds.tsv").read_text()
+            self.assertIn("contig_index\tcontig_id\tsource_length\tsegment_index\tseed_length\tdecision", manifest)
+            self.assertIn("1\tduplicate\t4\t1\t4\tduplicate", manifest)
+            self.assertIn("3\tshort\t2\t1\t2\tshort", manifest)
 
     def test_mito_rescue_filter_uses_text_paired_output(self):
         args = SimpleNamespace(kf=25, step_size=1, max_reads=0)
@@ -175,6 +179,18 @@ class MitoWorkflowTests(unittest.TestCase):
 
             self.assertEqual(calls, [1, 2])
             self.assertTrue((root / "output" / "sample" / "mito" / "mitochondrial_assembly.fasta").is_file())
+
+    def test_mito_rescue_seed_qc_is_reference_agnostic_and_conservative(self):
+        seen = set()
+        distant = "ACGTGATCCGTAACGTTGCA"
+        self.assertEqual(unix_command.mito_rescue_seed_reason(distant, 4, seen), "")
+        seen.add(min(distant, unix_command.reverse_complement_dna(distant)))
+        self.assertEqual(unix_command.mito_rescue_seed_reason("A" * 16, 4, seen), "uninformative_low_complexity")
+        self.assertEqual(unix_command.mito_rescue_seed_segments("AACNCCGG"), ["AAC", "CCGG"])
+        self.assertEqual(
+            unix_command.mito_rescue_seed_reason(unix_command.reverse_complement_dna(distant), 4, seen),
+            "duplicate",
+        )
 
     @mock.patch.object(unix_command.subprocess, "run")
     @mock.patch.object(unix_command, "find_executable", return_value="/gm2/mito_workflow")

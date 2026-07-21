@@ -1,4 +1,10 @@
 # Changelog
+## v1.5.3 — Conservative mitochondrial rescue efficiency
+
+- Kept the existing global adaptive-stop semantics while avoiding a read de Bruijn graph when no terminal mate link reaches the established support threshold; this cannot remove an otherwise admissible component bridge.
+- Made mitochondrial rescue seeds reverse-complement-aware and auditable. Contigs containing ambiguous bases contribute their unambiguous ACGT segments; duplicate and non-informative low-complexity seed segments are excluded without using reference similarity as a filter.
+- Added `mito_rescue_seeds.tsv` provenance and regression coverage for seed decisions and the read-graph short circuit.
+
 ## v1.4 — MainFilter I/O and gzip backend acceleration
 
 - Kept `MainFilterNew` output file handles open for the life of the run instead of reopening on every buffer flush, and raised the process file-descriptor limit at startup to accommodate large per-locus output sets.

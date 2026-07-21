@@ -29,7 +29,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 → MainFilter paired-read recruitment
 → one mitochondrial read pool
 → refilter → joint Rust UCE graph assembly
-→ all contigs_all become sample-specific seeds; recruit original paired reads once more and jointly reassemble
+→ nonredundant, informative contigs_all become sample-specific seeds; recruit original paired reads once more and jointly reassemble
 → strict overlap, unique GFA paths, and mate-link joins
 → junction-spanning read validation of circularity
 ```
@@ -37,6 +37,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 All baits are written as one mitochondrial locus. The reference is used only for recruitment and seeding: final sequence is neither coordinate-stitched nor reference-filled. Mate links propose adjacency and orientation only; gap bases must be recovered from a unique path in the same filtered read pool. Unresolved gaps remain broken and are never filled with `N`.
 
 `mito` enables unlimited extension and GFA graph output by default. For distant references or low coverage, explicitly start with sensitive recruitment such as `-kf 17–25 -s 1`. Each adaptive depth is still capped by `--mito-max-reads`; set it at least as high as the input when the full library must be scanned.
+No read graph is built when no mate link reaches the existing support threshold.
 
 ## Success criteria
 
@@ -56,3 +57,4 @@ The following hidden expert overrides should be changed only to diagnose a known
 - `<sample>/mito/mitochondrial_assembly_summary.tsv`: status, joins, and junction support.
 - `<sample>/mito/mitochondrial_mate_links.tsv`: accepted read-supported links.
 - `.gm2_mito_reference/metadata/mitochondrial_genes.tsv`: bait metadata in 0-based half-open coordinates; `segments_0_half_open` preserves every segment of cross-origin or `join(...)` features.
+- <sample>/uce_rescue_round_1/assembly_refs/mito_rescue_seeds.tsv: rescue-seed audit; contigs with ambiguous bases contribute their contiguous ACGT segments; only reverse-complement-duplicate or uninformative low-complexity seeds are excluded, never sequences merely because they are distant from the reference.

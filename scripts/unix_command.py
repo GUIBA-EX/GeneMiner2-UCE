@@ -402,8 +402,44 @@ def write_fasta_record(out, header, sequence, line_width=80):
 
     return True
 
+def reverse_complement_dna(sequence):
+    return sequence.translate(str.maketrans('ACGT', 'TGCA'))[::-1]
+
+
+def mito_rescue_seed_segments(sequence):
+    """Return every contiguous unambiguous stretch; never discard a whole contig for one N."""
+    segments = []
+    start = None
+    for index, base in enumerate(sequence):
+        if base in 'ACGT':
+            if start is None:
+                start = index
+        elif start is not None:
+            segments.append(sequence[start:index])
+            start = None
+    if start is not None:
+        segments.append(sequence[start:])
+    return segments
+
+
+def mito_rescue_seed_reason(sequence, min_contig_len, seen):
+    """Reject only seed segments that cannot contribute an informative mito seed."""
+    if len(sequence) < min_contig_len:
+        return 'short'
+    canonical = min(sequence, reverse_complement_dna(sequence))
+    if canonical in seen:
+        return 'duplicate'
+    # A complete homopolymer or a single repeated k-mer cannot anchor a unique
+    # rescue path. Keep all more complex contigs, including distant references.
+    kmer_size = min(15, max(4, len(sequence) // 2))
+    distinct_kmers = {sequence[index:index + kmer_size] for index in range(len(sequence) - kmer_size + 1)}
+    if len(sequence) >= kmer_size * 2 and len(distinct_kmers) < 2:
+        return 'uninformative_low_complexity'
+    return ''
+
+
 def build_mito_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
-    """Build one joint mito rescue reference from all baits and all retained contigs."""
+    """Build a joint rescue reference from baits and auditable, informative seeds."""
     bait_path = os.path.join(ref_dir, 'mitochondrion.fasta')
     contig_path = os.path.join(sample_dir, 'contigs_all', 'mitochondrion.fasta')
     if not os.path.isfile(bait_path) or not os.path.isfile(contig_path):
@@ -414,28 +450,51 @@ def build_mito_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
     os.makedirs(rescue_ref_dir, exist_ok=True)
 
     rescue_path = os.path.join(rescue_ref_dir, 'mitochondrion.fasta')
+    manifest_path = os.path.join(rescue_ref_dir, 'mito_rescue_seeds.tsv')
     seen = set()
     added_contigs = 0
-    with open(rescue_path, 'w') as out:
+    with open(rescue_path, 'w') as out, open(manifest_path, 'w', newline='') as manifest:
+        writer = csv.DictWriter(
+            manifest,
+            fieldnames=('contig_index', 'contig_id', 'source_length', 'segment_index', 'seed_length', 'decision'),
+            delimiter='	',
+        )
+        writer.writeheader()
         with open(bait_path) as bait_in:
             for title, sequence in SimpleFastaParser(bait_in):
                 sequence = ''.join(sequence.split()).upper()
-                if sequence and sequence not in seen:
-                    seen.add(sequence)
+                canonical = min(sequence, reverse_complement_dna(sequence)) if sequence else ''
+                if canonical and canonical not in seen:
+                    seen.add(canonical)
                     write_fasta_record(out, title, sequence)
         with open(contig_path) as contig_in:
-            for index, (_, sequence) in enumerate(SimpleFastaParser(contig_in), start=1):
+            for index, (title, sequence) in enumerate(SimpleFastaParser(contig_in), start=1):
                 sequence = ''.join(sequence.split()).upper()
-                if len(sequence) < min_contig_len or sequence in seen:
+                contig_id = title.split()[0] if title else f'contig_{index}'
+                segments = mito_rescue_seed_segments(sequence)
+                if not segments:
+                    writer.writerow({
+                        'contig_index': index, 'contig_id': contig_id, 'source_length': len(sequence),
+                        'segment_index': '', 'seed_length': 0, 'decision': 'no_unambiguous_segment',
+                    })
                     continue
-                seen.add(sequence)
-                added_contigs += 1
-                write_fasta_record(out, f'mito_gm2_seed_{index}', sequence)
+                for segment_index, segment in enumerate(segments, start=1):
+                    reason = mito_rescue_seed_reason(segment, min_contig_len, seen)
+                    decision = reason or ('accepted_segment' if len(segments) > 1 else 'accepted')
+                    writer.writerow({
+                        'contig_index': index, 'contig_id': contig_id, 'source_length': len(sequence),
+                        'segment_index': segment_index, 'seed_length': len(segment), 'decision': decision,
+                    })
+                    if reason:
+                        continue
+                    seen.add(min(segment, reverse_complement_dna(segment)))
+                    added_contigs += 1
+                    suffix = f'_part_{segment_index}' if len(segments) > 1 else ''
+                    write_fasta_record(out, f'mito_gm2_seed_{index}{suffix}', segment)
 
     if not seen:
         os.remove(rescue_path)
     return added_contigs
-
 
 def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len, active_loci=None):
     """拿原参考和靠谱 contig 拼一套 UCE 救援参考。"""

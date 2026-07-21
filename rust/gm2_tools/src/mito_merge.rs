@@ -837,7 +837,13 @@ pub fn assemble_and_write(
     let mut accepted_links = Vec::new();
     // Most mitochondrial runs have already collapsed to one component.  Do
     // not build a whole read de Bruijn graph unless a component bridge needs it.
-    if components.len() > 1 {
+    // A component bridge can only be accepted after a terminal mate link has
+    // met the existing support threshold.  When none does, a full read graph
+    // cannot alter the assembly and would only consume time and memory.
+    let has_bridge_candidate = initial_links
+        .values()
+        .any(|support| *support >= config.minimum_pair_support);
+    if components.len() > 1 && has_bridge_candidate {
         read_graph_cache = Some(read_graph(
             cached_pairs(&mut pairs, paired_reads)?,
             config.bridge_kmer,
@@ -1296,5 +1302,50 @@ mod tests {
         assert_eq!(detected.period, cycle.len());
         assert_eq!(detected.compared_bases, cycle.len() + 29);
         assert_eq!(detected.matches, cycle.len() + 29);
+    }
+
+    #[test]
+    fn skips_read_graph_without_a_supported_component_link() {
+        let unique = format!(
+            "gm2_mito_no_link_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&root).unwrap();
+        let reads = root.join("reads.fq");
+        fs::write(
+            &reads,
+            "@x/1
+TATATATA
++
+FFFFFFFF
+@x/2
+CGCGCGCG
++
+FFFFFFFF
+",
+        )
+        .unwrap();
+        let output = root.join("output");
+        let status = assemble_and_write(
+            &output,
+            vec![
+                MitoContig { id: "left".into(), sequence: b"AAAACCCC".to_vec() },
+                MitoContig { id: "right".into(), sequence: b"GGGGACAC".to_vec() },
+            ],
+            &reads,
+            None,
+            &config(),
+        )
+        .unwrap();
+        assert_eq!(status, "partial_multi_contig");
+        let summary = fs::read_to_string(output.join("mitochondrial_assembly_summary.tsv")).unwrap();
+        assert!(summary.contains("read_graph_used	false
+"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

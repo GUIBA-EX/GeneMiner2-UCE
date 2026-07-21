@@ -29,7 +29,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 → MainFilter 招募 paired reads
 → 单一 mitochondrial read pool
 → refilter → Rust UCE 联合图组装
-→ 全部 contigs_all 作为样本特异性 seed，从原始 paired reads 再招募一次并联合重组装
+→ 非冗余、信息性 contigs_all 作为样本特异性 seed，从原始 paired reads 再招募一次并联合重组装
 → 严格 overlap、GFA 唯一路径与 mate-link 连接
 → junction-spanning reads 验证闭环
 ```
@@ -37,6 +37,7 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 所有 bait 写入一个线粒体 locus。参考仅用于招募与 seed；最终序列不按参考坐标拼接或补洞。mate link 只决定候选邻接和方向，断点碱基必须由同一 filtered read pool 的唯一路径恢复；不能恢复时保持断裂，不插入 `N`。
 
 `mito` 默认启用无限延伸与 GFA 图输出；若参考较远或覆盖较低，建议显式使用较敏感的 `-kf 17–25 -s 1`。每个自适应深度仍受 `--mito-max-reads` 限制；需要扫描完整文库时应将其设为不小于输入量。
+无达阈值 mate-link 时不会构建 read graph。
 
 ## 成功标准
 
@@ -56,3 +57,4 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 - `<sample>/mito/mitochondrial_assembly_summary.tsv`：状态、连接与 junction 支持。
 - `<sample>/mito/mitochondrial_mate_links.tsv`：已接受的 read-supported links。
 - `.gm2_mito_reference/metadata/mitochondrial_genes.tsv`：bait 元数据；坐标为 0-based 半开区间，`segments_0_half_open` 保留跨 origin 或 `join(...)` feature 的全部片段。
+- <sample>/uce_rescue_round_1/assembly_refs/mito_rescue_seeds.tsv：救援 seed 审计；对含歧义碱基 contig 仅使用其中连续 ACGT 区段；再剔除正反向重复或无信息低复杂度 seed，不按参考相似度筛除远缘序列。
