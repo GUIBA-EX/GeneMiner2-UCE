@@ -99,7 +99,11 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
   --assembly-mode uce --uce-rescue-reads
 ```
 
-**说明。** UCE 默认使用融合的 Rust `ucefilter`：一次读取原始 PE reads，同时完成 rolling k-mer 粗招募、run-k 方向验证、最大精确匹配与逐 locus 自动选择，直接写入 `filtered/`；不再生成 GM2、候选 FASTQ，也不再启动独立 Refilter。低深度或参考覆盖不完整的 locus 原样通过；只有参考覆盖充分且饱和的 locus 才压缩冗余核心，同时按 overhang 长度分层保留跨 bait/contig 两端的 PE reads。算法不要求用户预先声明 target capture 或 genome skimming。相同 fragment 只保存一次，完整 PE 始终作为一个单位；超过每样品 256 MiB 的候选数据会顺序写入一个自动清理的内部 spool。命令中仍接受 `refilter` 作为旧脚本兼容步骤，但 UCE 已不需要它。样品从招募到 rescue 均为单线程。加 `--uce-rescue-reads` 时执行两轮受控延伸：whole-contig 招募后，仅对仍增长的 locus 做 terminal 招募；旧 core 冻结，缺少独立 fragment、跨边界、breadth 或 gap 支持的新增侧会回退。见 [Assembler 章节](docs/assembler_ZH.md)。
+**说明。** UCE 默认使用融合的 Rust `ucefilter`：一次扫描原始 PE reads，完成 rolling k-mer 招募、run-k 方向验证、最大精确匹配和逐 locus 自动选择，直接写入 `filtered/`。它不生成 GM2、候选 FASTQ，也不再启动独立 Refilter。完整 PE fragment 始终作为一个单位；低深度或覆盖不足的 locus 原样通过，只有饱和 locus 才压缩冗余 core，并分层保留跨 bait/contig 边界的 overhang reads。算法会自动适应 target capture 与 genome skimming，无需预先指定数据类型。
+
+每样品从招募到 rescue 均为单线程，候选 fragment 只保存一次；超过 256 MiB 时自动使用可清理的内部 spool。UCEFilter 对 FASTQ 使用专用的复用缓冲：未保留 reads 不重复分配记录对象；gzip 默认使用 1 MiB 缓冲，并在系统可用时自动选择 zlib-ng，否则回退 zlib。输入 PE 文件会校验 read ID，错位配对会立即报错。`refilter` 命令仍被接受以兼容旧脚本，但 UCE 工作流不运行它。
+
+加 `--uce-rescue-reads` 时最多执行两轮受控延伸：先以 whole contig 招募，再仅对仍增长的 locus 做 terminal 招募。旧 core 冻结；缺少独立 fragment、跨边界、breadth 或 gap 支持的新增侧会逐侧回退。见 [Assembler 章节](docs/assembler_ZH.md)。
 
 实验性 `--uce-alignment-shadow` 默认关闭。它对每个 locus 最多抽取 64 个已选 fragment，记录内部 affine-gap 比对的 identity、overlap、linked-mate、terminal 与 64-bin breadth；不会改变 reads 选择或组装输入。Target capture 与 genome skimming 的证据仍需分别解释，短 bait 的边界不能当作真实 contig terminal。
 

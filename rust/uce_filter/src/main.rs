@@ -16,7 +16,8 @@ fn parse(argv: Vec<String>) -> Result<Config, String> {
             "uce_filter -r REFERENCES -q1 R1 -q2 R2 -o SAMPLE_DIR [--kmer-size 31 --step 4]\n\
 Fused UCE rolling-kmer recruitment, run-k verification and adaptive per-locus selection.\n\
 Use --selection legacy for regression, or --reference-role contig during rescue.\n\
-Optional evidence-only mode: --alignment-shadow [--shadow-per-locus 64 --shadow-band 32 --terminal-window 150]."
+Optional evidence-only mode: --alignment-shadow [--shadow-per-locus 64 --shadow-band 32 --terminal-window 150].\n\
+Use --profile to print read/decode, recruitment, evidence and candidate-store timings."
         );
         process::exit(0);
     }
@@ -43,6 +44,7 @@ Optional evidence-only mode: --alignment-shadow [--shadow-per-locus 64 --shadow-
         shadow_per_locus: 64,
         shadow_band: 32,
         terminal_window: 150,
+        profile: false,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -93,6 +95,7 @@ Optional evidence-only mode: --alignment-shadow [--shadow-per-locus 64 --shadow-
                     .map_err(|_| format!("invalid {key}"))?
             }
             "--alignment-shadow" => config.alignment_shadow = true,
+            "--profile" => config.profile = true,
             "--shadow-per-locus" => {
                 config.shadow_per_locus = next_value(&argv, &mut i, key)?
                     .parse()
@@ -164,9 +167,12 @@ Optional evidence-only mode: --alignment-shadow [--shadow-per-locus 64 --shadow-
 }
 
 fn main() {
-    let result = parse(env::args().skip(1).collect()).and_then(|config| run(&config));
+    let result = parse(env::args().skip(1).collect()).and_then(|config| {
+        let profile = config.profile;
+        run(&config).map(|summary| (summary, profile))
+    });
     match result {
-        Ok(summary) => {
+        Ok((summary, profile)) => {
             eprintln!(
                 "UCEFilter finished: {} fragments read, {} retained once, {} assignments, {} loci, {:.1} MiB memory + {:.1} MiB spill ({:.3}s)",
                 summary.fragments_read, summary.fragments_retained_once, summary.assignments,
@@ -175,6 +181,33 @@ fn main() {
                 summary.fragment_spill_bytes as f64 / 1_048_576.0,
                 summary.elapsed_seconds,
             );
+            if profile {
+                eprintln!(
+                    "UCEFilter stages: index {:.3}s, scan/evidence {:.3}s, selection/routes {:.3}s, output {:.3}s",
+                    summary.index_seconds,
+                    summary.scan_seconds,
+                    summary.selection_seconds,
+                    summary.output_seconds,
+                );
+                eprintln!(
+                    "UCEFilter scan profile: FASTQ/gzip {:.3}s, recruit {:.3}s, run-k/exact {:.3}s, candidate store {:.3}s",
+                    summary.decode_seconds,
+                    summary.recruit_seconds,
+                    summary.evidence_seconds,
+                    summary.store_seconds,
+                );
+                let profile = &summary.index_profile;
+                eprintln!(
+                    "UCEFilter index profile: {} recruit probes / {} Bloom negatives / {} hits, {} anchor hit keys / {} occurrences, {} exact extensions / {} seed bp",
+                    profile.recruit_probes,
+                    profile.recruit_bloom_rejected,
+                    profile.recruit_hits,
+                    profile.anchor_hit_keys,
+                    profile.anchor_occurrences,
+                    profile.exact_extensions,
+                    profile.exact_seed_bases,
+                );
+            }
             if summary.shadow_sampled_assignments > 0 {
                 eprintln!(
                     "Alignment shadow: {} sampled locus assignments, {} aligned mates ({:.3}s alignment time)",
@@ -222,6 +255,7 @@ mod tests {
     fn accepts_default_off_and_bounded_alignment_shadow() {
         let plain = parse(required()).unwrap();
         assert!(!plain.alignment_shadow);
+        assert!(!plain.profile);
         assert!(plain.selection_auto);
         assert!(!plain.reference_is_contig);
         let mut args = required();
@@ -234,6 +268,7 @@ mod tests {
                 "24",
                 "--terminal-window",
                 "100",
+                "--profile",
             ]
             .into_iter()
             .map(str::to_string),
@@ -243,6 +278,7 @@ mod tests {
         assert_eq!(shadow.shadow_per_locus, 8);
         assert_eq!(shadow.shadow_band, 24);
         assert_eq!(shadow.terminal_window, 100);
+        assert!(shadow.profile);
     }
 
     #[test]

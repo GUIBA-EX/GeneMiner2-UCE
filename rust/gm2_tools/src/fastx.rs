@@ -1,12 +1,121 @@
 //! Buffered byte-level FASTA/FASTQ readers shared by GeneMiner2-UCE tools.
 //! Text is kept as bytes: sequence tools do not need UTF-8 validation or a
 //! temporary `String` for every FASTQ line.
-use flate2::read::MultiGzDecoder;
+use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub const READ_BUFFER_SIZE: usize = 1024 * 1024;
+
+#[link(name = "z")]
+extern "C" {
+    fn gzopen(path: *const c_char, mode: *const c_char) -> *mut c_void;
+    fn gzread(file: *mut c_void, buffer: *mut c_void, length: u32) -> c_int;
+    fn gzclose(file: *mut c_void) -> c_int;
+    fn gzbuffer(file: *mut c_void, size: c_uint) -> c_int;
+}
+
+type GzOpenFn = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_void;
+type GzReadFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u32) -> c_int;
+type GzCloseFn = unsafe extern "C" fn(*mut c_void) -> c_int;
+type GzBufferFn = unsafe extern "C" fn(*mut c_void, c_uint) -> c_int;
+
+#[derive(Clone, Copy)]
+struct ZlibBackend {
+    open: GzOpenFn,
+    read: GzReadFn,
+    close: GzCloseFn,
+    buffer: GzBufferFn,
+    name: &'static str,
+}
+
+fn stock_zlib_backend() -> ZlibBackend {
+    ZlibBackend { open: gzopen, read: gzread, close: gzclose, buffer: gzbuffer, name: "system zlib" }
+}
+
+#[cfg(system_zlib_ng)]
+extern "C" {
+    fn zng_gzopen(path: *const c_char, mode: *const c_char) -> *mut c_void;
+    fn zng_gzread(file: *mut c_void, buffer: *mut c_void, length: u32) -> c_int;
+    fn zng_gzclose(file: *mut c_void) -> c_int;
+    fn zng_gzbuffer(file: *mut c_void, size: c_uint) -> c_int;
+}
+
+#[cfg(system_zlib_ng)]
+fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> {
+    Some(ZlibBackend { open: zng_gzopen, read: zng_gzread, close: zng_gzclose, buffer: zng_gzbuffer, name: "zlib-ng (build detected)" })
+}
+
+#[cfg(not(system_zlib_ng))]
+fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> { None }
+
+#[cfg(unix)]
+unsafe fn dlsym_typed<F: Copy>(handle: *mut c_void, symbol: &str) -> Option<F> {
+    let symbol = CString::new(symbol).ok()?;
+    let pointer = libc::dlsym(handle, symbol.as_ptr());
+    (!pointer.is_null()).then(|| std::mem::transmute_copy(&pointer))
+}
+
+#[cfg(unix)]
+fn detect_zlib_ng() -> Option<ZlibBackend> {
+    for library in ["libz-ng.so.2", "libz-ng.so.1", "libz-ng.so"] {
+        let library = CString::new(library).expect("static string contains no NUL");
+        let handle = unsafe { libc::dlopen(library.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if handle.is_null() { continue; }
+        let resolved = unsafe {
+            (dlsym_typed::<GzOpenFn>(handle, "zng_gzopen"), dlsym_typed::<GzReadFn>(handle, "zng_gzread"), dlsym_typed::<GzCloseFn>(handle, "zng_gzclose"), dlsym_typed::<GzBufferFn>(handle, "zng_gzbuffer"))
+        };
+        if let (Some(open), Some(read), Some(close), Some(buffer)) = resolved {
+            // Keep the dynamic library resident while its function pointers are used.
+            return Some(ZlibBackend { open, read, close, buffer, name: "zlib-ng" });
+        }
+        unsafe { libc::dlclose(handle) };
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn detect_zlib_ng() -> Option<ZlibBackend> { None }
+
+static ZLIB_BACKEND: OnceLock<ZlibBackend> = OnceLock::new();
+
+fn zlib_backend() -> ZlibBackend {
+    *ZLIB_BACKEND.get_or_init(|| build_detected_zlib_ng_backend().or_else(detect_zlib_ng).unwrap_or_else(stock_zlib_backend))
+}
+
+/// Gzip reader with a 1 MiB compressed-input buffer.  It uses zlib-ng when a
+/// compatible system library is available, otherwise the platform zlib ABI.
+struct GzipReader { handle: *mut c_void, backend: ZlibBackend }
+
+impl GzipReader {
+    fn open(path: &Path) -> io::Result<Self> {
+        let backend = zlib_backend();
+        let path = CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+        let mode = CString::new("rb").expect("static string contains no NUL");
+        let handle = unsafe { (backend.open)(path.as_ptr(), mode.as_ptr()) };
+        if handle.is_null() { return Err(io::Error::new(io::ErrorKind::NotFound, "cannot open gzip file")); }
+        unsafe { (backend.buffer)(handle, READ_BUFFER_SIZE as c_uint) };
+        Ok(Self { handle, backend })
+    }
+}
+
+impl Read for GzipReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() { return Ok(0); }
+        let result = unsafe { (self.backend.read)(self.handle, buffer.as_mut_ptr().cast(), buffer.len().min(c_int::MAX as usize) as u32) };
+        if result < 0 { Err(io::Error::new(io::ErrorKind::InvalidData, "gzip decompression failed")) } else { Ok(result as usize) }
+    }
+}
+
+impl Drop for GzipReader {
+    fn drop(&mut self) { if !self.handle.is_null() { unsafe { (self.backend.close)(self.handle) }; } }
+}
+
+/// Backend selected for gzip files in this process, for profiling/logging.
+pub fn gzip_backend_name() -> &'static str { zlib_backend().name }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FastxFormat {
@@ -40,16 +149,10 @@ fn is_gzip(path: &Path) -> bool {
 }
 
 pub fn open_input(path: &Path) -> io::Result<BufReader<Box<dyn Read>>> {
-    let file = File::open(path)?;
     let input: Box<dyn Read> = if is_gzip(path) {
-        // Buffer both compressed input and decompressed output. This preserves
-        // flate2's concatenated-gzip support while avoiding 8 KiB read cycles.
-        Box::new(MultiGzDecoder::new(BufReader::with_capacity(
-            READ_BUFFER_SIZE,
-            file,
-        )))
+        Box::new(GzipReader::open(path)?)
     } else {
-        Box::new(file)
+        Box::new(File::open(path)?)
     };
     Ok(BufReader::with_capacity(READ_BUFFER_SIZE, input))
 }

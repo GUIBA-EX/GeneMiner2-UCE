@@ -1,11 +1,11 @@
 use crate::alignment::{align_read, terminal_evidence};
 use crate::evidence::{collect_runs_stats, infer_orientation};
-use crate::index::{ExactSeed, UceIndex};
+use crate::index::{ExactSeed, IndexProfile, ReadEvidenceScratch, RecruitScratch, UceIndex};
 use crate::model::{default_spill_path, Candidate, Fragment, FragmentBank, LocusId};
 use crate::selection::{choose_auto, choose_legacy, selected};
-use gm2_tools::fastx::{FastxFormat, FastxReader, FastxRecord};
+use gm2_tools::fastx::{gzip_backend_name, open_input, FastxRecord};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -29,6 +29,7 @@ pub struct Config {
     pub shadow_per_locus: usize,
     pub shadow_band: usize,
     pub terminal_window: usize,
+    pub profile: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -43,6 +44,15 @@ pub struct RunSummary {
     pub shadow_sampled_assignments: usize,
     pub shadow_aligned_mates: usize,
     pub shadow_seconds: f64,
+    pub index_seconds: f64,
+    pub scan_seconds: f64,
+    pub selection_seconds: f64,
+    pub output_seconds: f64,
+    pub decode_seconds: f64,
+    pub recruit_seconds: f64,
+    pub evidence_seconds: f64,
+    pub store_seconds: f64,
+    pub index_profile: IndexProfile,
     pub elapsed_seconds: f64,
 }
 
@@ -55,6 +65,39 @@ struct LocusOutput {
 
 struct OutputRouter {
     outputs: Vec<Option<LocusOutput>>,
+}
+
+struct FragmentRoutes {
+    offsets: Vec<u32>,
+    loci: Vec<LocusId>,
+}
+
+impl FragmentRoutes {
+    fn from_pairs(fragment_count: usize, pairs: &[(u32, LocusId)]) -> Result<Self, String> {
+        if pairs.len() > u32::MAX as usize {
+            return Err("too many UCE locus assignments".to_string());
+        }
+        let mut offsets = vec![0_u32; fragment_count + 1];
+        for &(fragment, _) in pairs {
+            offsets[fragment as usize + 1] += 1;
+        }
+        for fragment in 0..fragment_count {
+            offsets[fragment + 1] += offsets[fragment];
+        }
+        let mut cursors = offsets[..fragment_count].to_vec();
+        let mut loci = vec![0_u32; pairs.len()];
+        for &(fragment, locus) in pairs {
+            let cursor = &mut cursors[fragment as usize];
+            loci[*cursor as usize] = locus;
+            *cursor += 1;
+        }
+        Ok(Self { offsets, loci })
+    }
+
+    fn get(&self, fragment: u32) -> &[LocusId] {
+        let fragment = fragment as usize;
+        &self.loci[self.offsets[fragment] as usize..self.offsets[fragment + 1] as usize]
+    }
 }
 
 struct ShadowWriter {
@@ -333,17 +376,93 @@ fn write_record(out: &mut impl Write, record: &FastxRecord) -> Result<(), String
     Ok(())
 }
 
-fn next_pair(
-    r1: &mut FastxReader,
-    r2: &mut FastxReader,
-) -> Result<Option<(FastxRecord, FastxRecord)>, String> {
-    let first = r1.next_record().map_err(|e| e.to_string())?;
-    let second = r2.next_record().map_err(|e| e.to_string())?;
-    match (first, second) {
-        (None, None) => Ok(None),
-        (Some(a), Some(b)) => Ok(Some((a, b))),
+/// UCE-only FASTQ reader. Unlike the shared general-purpose reader, it fills
+/// caller-owned records so non-candidate fragments retain their allocations.
+struct FastqScratchReader {
+    input: BufReader<Box<dyn Read>>,
+}
+
+impl FastqScratchReader {
+    fn open(path: &Path) -> Result<Self, String> {
+        Ok(Self {
+            input: open_input(path).map_err(|e| e.to_string())?,
+        })
+    }
+
+    fn read_line_into(&mut self, target: &mut Vec<u8>) -> Result<bool, String> {
+        target.clear();
+        if self.input.read_until(b'\n', target).map_err(|e| e.to_string())? == 0 {
+            return Ok(false);
+        }
+        while matches!(target.last(), Some(b'\n' | b'\r')) {
+            target.pop();
+        }
+        Ok(true)
+    }
+
+    fn next_record_into(&mut self, record: &mut FastxRecord) -> Result<bool, String> {
+        record.header.clear();
+        record.sequence.clear();
+        record.plus.clear();
+        record.quality.clear();
+        loop {
+            if !self.read_line_into(&mut record.header)? {
+                return Ok(false);
+            }
+            if !record.header.is_empty() {
+                break;
+            }
+        }
+        if record.header.first() != Some(&b'@') {
+            return Err("malformed FASTQ record".to_string());
+        }
+        if !self.read_line_into(&mut record.sequence)? {
+            return Err("truncated FASTQ sequence".to_string());
+        }
+        if !self.read_line_into(&mut record.plus)? || record.plus.first() != Some(&b'+') {
+            return Err("malformed or truncated FASTQ plus line".to_string());
+        }
+        if !self.read_line_into(&mut record.quality)? {
+            return Err("truncated FASTQ quality".to_string());
+        }
+        if record.quality.len() != record.sequence.len() {
+            return Err("FASTQ sequence and quality lengths differ".to_string());
+        }
+        Ok(true)
+    }
+}
+
+fn next_pair_into(
+    r1: &mut FastqScratchReader,
+    r2: &mut FastqScratchReader,
+    first: &mut FastxRecord,
+    second: &mut FastxRecord,
+) -> Result<bool, String> {
+    let first_present = r1.next_record_into(first)?;
+    let second_present = r2.next_record_into(second)?;
+    match (first_present, second_present) {
+        (false, false) => Ok(false),
+        (true, true) if paired_read_id(&first.header) == paired_read_id(&second.header) => {
+            Ok(true)
+        }
+        (true, true) => Err("paired input files contain mismatched read identifiers".to_string()),
         _ => Err("paired input files contain different numbers of records".to_string()),
     }
+}
+
+/// Normalizes the identifier before whitespace and an optional /1 or /2
+/// suffix, covering both common FASTQ paired-end header conventions.
+fn paired_read_id(header: &[u8]) -> &[u8] {
+    let header = header.strip_prefix(b"@").unwrap_or(header);
+    let token_end = header
+        .iter()
+        .position(|base| base.is_ascii_whitespace())
+        .unwrap_or(header.len());
+    let token = &header[..token_end];
+    token
+        .strip_suffix(b"/1")
+        .or_else(|| token.strip_suffix(b"/2"))
+        .unwrap_or(token)
 }
 
 #[inline]
@@ -412,12 +531,6 @@ fn add_exact_evidence(
 
 pub fn run(config: &Config) -> Result<RunSummary, String> {
     let started = Instant::now();
-    fs::create_dir_all(&config.output).map_err(|e| e.to_string())?;
-    let filtered = config.output.join("filtered");
-    if filtered.exists() {
-        fs::remove_dir_all(&filtered).map_err(|e| e.to_string())?;
-    }
-    fs::create_dir_all(&filtered).map_err(|e| e.to_string())?;
     let index_started = Instant::now();
     let index = UceIndex::build_split(
         config
@@ -427,49 +540,108 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         &config.references,
         config.kmer_size,
     )?;
+    let index_seconds = index_started.elapsed().as_secs_f64();
     eprintln!(
         "UCEFilter index: {} loci, {} positional anchors, k={}, run-k={} ({:.3}s)",
         index.loci.len(),
         index.anchor_entries(),
         index.k,
         index.run_k,
-        index_started.elapsed().as_secs_f64()
+        index_seconds
     );
-    let mut reader1 =
-        FastxReader::open(&config.read1, FastxFormat::Fastq).map_err(|e| e.to_string())?;
-    let mut reader2 =
-        FastxReader::open(&config.read2, FastxFormat::Fastq).map_err(|e| e.to_string())?;
+    eprintln!("UCEFilter gzip backend: {}", gzip_backend_name());
+    let mut reader1 = FastqScratchReader::open(&config.read1)?;
+    let mut reader2 = FastqScratchReader::open(&config.read2)?;
+    // Parse one complete paired record before replacing a prior result. This
+    // catches malformed leading FASTQ records and paired-file mix-ups without
+    // losing that fragment from the actual filtering pass.
+    let initial_decode_started = config.profile.then(Instant::now);
+    let mut r1 = FastxRecord::default();
+    let mut r2 = FastxRecord::default();
+    let mut pending_pair = next_pair_into(&mut reader1, &mut reader2, &mut r1, &mut r2)?;
+    let initial_decode_seconds = initial_decode_started.map_or(0.0, |started| started.elapsed().as_secs_f64());
+    // Do not replace a previous result until the references and both inputs
+    // have passed their initial open/index checks.
+    fs::create_dir_all(&config.output).map_err(|e| e.to_string())?;
+    let filtered = config.output.join("filtered");
+    if filtered.exists() {
+        fs::remove_dir_all(&filtered).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(&filtered).map_err(|e| e.to_string())?;
     let memory_limit = config.memory_limit_mib.saturating_mul(1024 * 1024);
     let mut bank = FragmentBank::new(memory_limit, default_spill_path(&config.output));
     let mut locus_candidates: Vec<Vec<Candidate>> = vec![Vec::new(); index.loci.len()];
     let mut coarse_counts = vec![0_u64; index.loci.len()];
     let mut ordinal = 0_u64;
-    while let Some((r1, r2)) = next_pair(&mut reader1, &mut reader2)? {
+    let mut recruited_loci = RecruitScratch::default();
+    let mut read1_evidence = ReadEvidenceScratch::default();
+    let mut read2_evidence = ReadEvidenceScratch::default();
+    let mut decode_seconds = initial_decode_seconds;
+    let mut recruit_seconds = 0.0_f64;
+    let mut evidence_seconds = 0.0_f64;
+    let mut store_seconds = 0.0_f64;
+    let mut index_profile = IndexProfile::default();
+    let scan_started = Instant::now();
+    loop {
         if config.max_fragments > 0 && ordinal >= config.max_fragments {
             break;
         }
-        let mut loci = Vec::<LocusId>::new();
-        index.recruit(&r1.sequence, config.step, &mut loci);
-        index.recruit(&r2.sequence, config.step, &mut loci);
-        loci.sort_unstable();
-        for &locus in &loci {
+        let stage_started = config.profile.then(Instant::now);
+        let pair_available = if pending_pair { pending_pair = false; true } else { next_pair_into(&mut reader1, &mut reader2, &mut r1, &mut r2)? };
+        if let Some(started) = stage_started {
+            decode_seconds += started.elapsed().as_secs_f64();
+        }
+        if !pair_available {
+            break;
+        }
+        let stage_started = config.profile.then(Instant::now);
+        recruited_loci.begin(index.loci.len());
+        index.recruit(
+            &r1.sequence,
+            config.step,
+            &mut recruited_loci,
+            config.profile.then_some(&mut index_profile),
+        );
+        index.recruit(
+            &r2.sequence,
+            config.step,
+            &mut recruited_loci,
+            config.profile.then_some(&mut index_profile),
+        );
+        recruited_loci.sort();
+        let loci = recruited_loci.loci();
+        for &locus in loci {
             coarse_counts[locus as usize] += 2;
+        }
+        if let Some(started) = stage_started {
+            recruit_seconds += started.elapsed().as_secs_f64();
         }
         if loci.is_empty() {
             ordinal += 1;
             continue;
         }
-        let events1 = index.orientation_events(&r1.sequence, &loci);
-        let events2 = index.orientation_events(&r2.sequence, &loci);
+        let stage_started = config.profile.then(Instant::now);
+        index.read_evidence(
+            &r1.sequence,
+            loci,
+            &mut read1_evidence,
+            config.profile.then_some(&mut index_profile),
+        );
+        index.read_evidence(
+            &r2.sequence,
+            loci,
+            &mut read2_evidence,
+            config.profile.then_some(&mut index_profile),
+        );
         let mut evidence = Vec::new();
         for (i, &locus) in loci.iter().enumerate() {
-            let orient1 = infer_orientation(collect_runs_stats(&events1[i]));
-            let orient2 = infer_orientation(collect_runs_stats(&events2[i]));
+            let orient1 = infer_orientation(collect_runs_stats(read1_evidence.orientation(i)));
+            let orient2 = infer_orientation(collect_runs_stats(read2_evidence.orientation(i)));
             if !keep_linked_pair(orient1, orient2) {
                 continue;
             }
             let mut fast = FastEvidence::default();
-            if let Some(seed) = index.best_exact(&r1.sequence, locus) {
+            if let Some(seed) = read1_evidence.best(i) {
                 add_exact_evidence(
                     &index,
                     seed,
@@ -478,7 +650,7 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
                     &mut fast,
                 );
             }
-            if let Some(seed) = index.best_exact(&r2.sequence, locus) {
+            if let Some(seed) = read2_evidence.best(i) {
                 add_exact_evidence(
                     &index,
                     seed,
@@ -489,9 +661,17 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
             }
             evidence.push((locus, fast));
         }
+        if let Some(started) = stage_started {
+            evidence_seconds += started.elapsed().as_secs_f64();
+        }
+        let stage_started = config.profile.then(Instant::now);
         if !evidence.is_empty() {
             let fragment_bases = (r1.sequence.len() + r2.sequence.len()) as u32;
-            let fragment_id = bank.insert(Fragment { ordinal, r1, r2 })?;
+            let fragment_id = bank.insert(Fragment {
+                ordinal,
+                r1: std::mem::take(&mut r1),
+                r2: std::mem::take(&mut r2),
+            })?;
             let locus_count = evidence.len().min(u16::MAX as usize) as u16;
             for (locus, fast) in evidence {
                 locus_candidates[locus as usize].push(Candidate {
@@ -508,14 +688,19 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
                 });
             }
         }
+        if let Some(started) = stage_started {
+            store_seconds += started.elapsed().as_secs_f64();
+        }
         ordinal += 1;
         if ordinal.is_multiple_of(1_048_576) {
             eprintln!("UCEFilter handled {} Mi fragments", ordinal / 1_048_576);
         }
     }
+    let scan_seconds = scan_started.elapsed().as_secs_f64();
+    let selection_started = Instant::now();
     let mut loci_written = 0_usize;
     let mut assignments = 0_usize;
-    let mut routes: Vec<Vec<LocusId>> = (0..bank.len()).map(|_| Vec::new()).collect();
+    let mut route_pairs = Vec::<(u32, LocusId)>::new();
     let mut shadow_routes = config.alignment_shadow.then(|| {
         (0..bank.len())
             .map(|_| Vec::new())
@@ -636,10 +821,13 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
             }
         }
         for id in selected_ids {
-            routes[id as usize].push(locus_id as LocusId);
+            route_pairs.push((id, locus_id as LocusId));
         }
     }
     summary.flush().map_err(|e| e.to_string())?;
+    let routes = FragmentRoutes::from_pairs(bank.len(), &route_pairs)?;
+    drop(route_pairs);
+    let selection_seconds = selection_started.elapsed().as_secs_f64();
     let fragment_memory_bytes = bank.memory_bytes();
     let fragment_spill_bytes = bank.spill_bytes();
     let mut shadow_writer = if config.alignment_shadow {
@@ -652,8 +840,9 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
     } else {
         None
     };
+    let output_started = Instant::now();
     bank.stream_in_order(|id, fragment| {
-        for &locus in &routes[id as usize] {
+        for &locus in routes.get(id) {
             router.write_fragment(locus as usize, fragment)?;
         }
         if let (Some(shadow_routes), Some(shadow_writer)) =
@@ -665,7 +854,7 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
                     locus,
                     &index.loci[locus as usize].name,
                     fragment,
-                    routes[id as usize].len(),
+                    routes.get(id).len(),
                 )?;
             }
         }
@@ -676,6 +865,7 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         shadow_writer.flush()?;
         shadow_writer.write_summary(&config.output.join("alignment_shadow_summary.tsv"), &index)?;
     }
+    let output_seconds = output_started.elapsed().as_secs_f64();
     let mut counts = BufWriter::new(
         File::create(config.output.join("ref_reads_count_dict.txt")).map_err(|e| e.to_string())?,
     );
@@ -704,6 +894,15 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         shadow_sampled_assignments,
         shadow_aligned_mates,
         shadow_seconds,
+        index_seconds,
+        scan_seconds,
+        selection_seconds,
+        output_seconds,
+        decode_seconds,
+        recruit_seconds,
+        evidence_seconds,
+        store_seconds,
+        index_profile,
         elapsed_seconds: started.elapsed().as_secs_f64(),
     })
 }
@@ -714,8 +913,12 @@ pub fn output_exists(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_exact_evidence, evenly_sample, keep_linked_pair, FastEvidence};
+    use super::{
+        add_exact_evidence, evenly_sample, keep_linked_pair, next_pair_into, paired_read_id,
+        FastEvidence, FastqScratchReader, FragmentRoutes,
+    };
     use crate::index::UceIndex;
+    use gm2_tools::fastx::FastxRecord;
     use std::fs;
     use std::io::Write;
 
@@ -732,11 +935,44 @@ mod tests {
     }
 
     #[test]
+    fn paired_read_ids_normalize_common_fastq_conventions() {
+        assert_eq!(paired_read_id(b"@read-42/1"), b"read-42");
+        assert_eq!(paired_read_id(b"@read-42/2"), b"read-42");
+        assert_eq!(paired_read_id(b"@read-42 1:N:0:ACGT"), b"read-42");
+    }
+
+    #[test]
+    fn mismatched_paired_fastq_identifiers_fail() {
+        let root = std::env::temp_dir().join(format!("uce-filter-pair-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let r1_path = root.join("r1.fq");
+        let r2_path = root.join("r2.fq");
+        fs::write(&r1_path, b"@read-a/1\nACGT\n+\n!!!!\n").unwrap();
+        fs::write(&r2_path, b"@read-b/2\nACGT\n+\n!!!!\n").unwrap();
+        let mut reader1 = FastqScratchReader::open(&r1_path).unwrap();
+        let mut reader2 = FastqScratchReader::open(&r2_path).unwrap();
+        let mut r1 = FastxRecord::default();
+        let mut r2 = FastxRecord::default();
+        assert!(next_pair_into(&mut reader1, &mut reader2, &mut r1, &mut r2).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn bounded_shadow_sampling_is_deterministic_and_spans_input_order() {
         let ids: Vec<u32> = (0..100).collect();
         assert_eq!(evenly_sample(&ids, 4), vec![0, 33, 66, 99]);
         assert_eq!(evenly_sample(&ids[..3], 4), vec![0, 1, 2]);
         assert_eq!(evenly_sample(&ids, 1), vec![50]);
+    }
+
+    #[test]
+    fn compact_routes_preserve_fragment_and_locus_order() {
+        let routes = FragmentRoutes::from_pairs(4, &[(2, 7), (0, 3), (2, 9), (3, 1)]).unwrap();
+        assert_eq!(routes.get(0), &[3]);
+        assert!(routes.get(1).is_empty());
+        assert_eq!(routes.get(2), &[7, 9]);
+        assert_eq!(routes.get(3), &[1]);
     }
 
     #[test]

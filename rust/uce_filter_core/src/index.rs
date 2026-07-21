@@ -33,6 +33,68 @@ pub fn valid_dna(sequence: &[u8]) -> bool {
     sequence.iter().all(|&base| code(base).is_some())
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct IndexProfile {
+    pub recruit_probes: u64,
+    pub recruit_bloom_rejected: u64,
+    pub recruit_hits: u64,
+    pub anchor_hit_keys: u64,
+    pub anchor_occurrences: u64,
+    pub exact_extensions: u64,
+    pub exact_seed_bases: u64,
+}
+
+/// Four probes confined to one 64-bit word. It has no false negatives; a
+/// positive is always confirmed by the exact reference hash table.
+#[derive(Debug)]
+struct BlockedBloom {
+    blocks: Vec<u64>,
+    mask: usize,
+}
+
+impl BlockedBloom {
+    fn for_keys(keys: usize) -> Self {
+        let blocks = keys
+            .saturating_mul(12)
+            .div_ceil(64)
+            .max(1)
+            .next_power_of_two();
+        Self {
+            blocks: vec![0; blocks],
+            mask: blocks - 1,
+        }
+    }
+
+    #[inline(always)]
+    fn mix(mut value: u64) -> u64 {
+        value ^= value >> 30;
+        value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value ^= value >> 27;
+        value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    #[inline(always)]
+    fn bit_mask(hash: u64) -> u64 {
+        (1_u64 << ((hash >> 16) & 63))
+            | (1_u64 << ((hash >> 28) & 63))
+            | (1_u64 << ((hash >> 40) & 63))
+            | (1_u64 << ((hash >> 52) & 63))
+    }
+
+    #[inline(always)]
+    fn insert_hash(&mut self, hash: u64) {
+        let block = hash as usize & self.mask;
+        self.blocks[block] |= Self::bit_mask(hash);
+    }
+
+    #[inline(always)]
+    fn may_contain_hash(&self, hash: u64) -> bool {
+        let block = hash as usize & self.mask;
+        self.blocks[block] & Self::bit_mask(hash) == Self::bit_mask(hash)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct AnchorOccurrence {
     pub locus: LocusId,
@@ -56,6 +118,133 @@ impl ExactSeed {
 
     pub fn is_empty(self) -> bool {
         self.read_start == self.read_end
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ReadEvidenceScratch {
+    orientation_events: Vec<u8>,
+    windows: usize,
+    best_exact: Vec<Option<ExactSeed>>,
+    covered_small: Vec<((usize, u32, isize), usize)>,
+    covered_large: AHashMap<(usize, u32, isize), usize>,
+    large_coverage: bool,
+    locus_generation: Vec<u32>,
+    locus_slots: Vec<usize>,
+    generation: u32,
+}
+
+impl ReadEvidenceScratch {
+    const SMALL_COVERAGE_LIMIT: usize = 16;
+
+    fn reset(&mut self, candidates: &[LocusId], windows: usize, locus_count: usize) {
+        self.windows = windows;
+        self.orientation_events
+            .resize(candidates.len() * windows, 0);
+        self.orientation_events.fill(0);
+        self.best_exact.resize(candidates.len(), None);
+        self.best_exact.fill(None);
+        self.covered_small.clear();
+        self.covered_large.clear();
+        self.large_coverage = false;
+        self.locus_generation.resize(locus_count, 0);
+        self.locus_slots.resize(locus_count, 0);
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.locus_generation.fill(0);
+            self.generation = 1;
+        }
+        for (slot, &locus) in candidates.iter().enumerate() {
+            let locus = locus as usize;
+            self.locus_generation[locus] = self.generation;
+            self.locus_slots[locus] = slot;
+        }
+    }
+
+    #[inline(always)]
+    fn slot_for(&self, locus: LocusId) -> Option<usize> {
+        let locus = locus as usize;
+        (self.locus_generation[locus] == self.generation).then_some(self.locus_slots[locus])
+    }
+
+    pub fn orientation(&self, candidate: usize) -> &[u8] {
+        let start = candidate * self.windows;
+        &self.orientation_events[start..start + self.windows]
+    }
+
+    pub fn best(&self, candidate: usize) -> Option<ExactSeed> {
+        self.best_exact[candidate]
+    }
+
+    fn covered_end(&self, key: (usize, u32, isize)) -> Option<usize> {
+        if self.large_coverage {
+            self.covered_large.get(&key).copied()
+        } else {
+            self.covered_small
+                .iter()
+                .find_map(|&(candidate, end)| (candidate == key).then_some(end))
+        }
+    }
+
+    fn record_coverage(&mut self, key: (usize, u32, isize), end: usize) {
+        if self.large_coverage {
+            self.covered_large.insert(key, end);
+            return;
+        }
+        if let Some(entry) = self
+            .covered_small
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == key)
+        {
+            entry.1 = end;
+            return;
+        }
+        if self.covered_small.len() < Self::SMALL_COVERAGE_LIMIT {
+            self.covered_small.push((key, end));
+            return;
+        }
+        self.covered_large.extend(self.covered_small.drain(..));
+        self.large_coverage = true;
+        self.covered_large.insert(key, end);
+    }
+}
+
+/// Reusable, generation-stamped candidate set for one sample. It preserves
+/// the previous recruit order while eliminating per-fragment allocation and
+/// linear duplicate checks.
+#[derive(Debug, Default)]
+pub struct RecruitScratch {
+    loci: Vec<LocusId>,
+    seen_generation: Vec<u32>,
+    generation: u32,
+}
+
+impl RecruitScratch {
+    pub fn begin(&mut self, locus_count: usize) {
+        self.loci.clear();
+        self.seen_generation.resize(locus_count, 0);
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.seen_generation.fill(0);
+            self.generation = 1;
+        }
+    }
+
+    #[inline(always)]
+    fn insert(&mut self, locus: LocusId) {
+        let locus_index = locus as usize;
+        if self.seen_generation[locus_index] != self.generation {
+            self.seen_generation[locus_index] = self.generation;
+            self.loci.push(locus);
+        }
+    }
+
+    pub fn loci(&self) -> &[LocusId] {
+        &self.loci
+    }
+
+    pub fn sort(&mut self) {
+        self.loci.sort_unstable();
     }
 }
 
@@ -90,6 +279,155 @@ enum AnchorHits {
     Many(Vec<AnchorOccurrence>),
 }
 
+#[derive(Debug)]
+enum RecruitIndex {
+    Short(AHashMap<u64, LocusHits>),
+    Long(AHashMap<u128, LocusHits>),
+}
+
+enum AnchorIndex {
+    Short(AHashMap<u64, AnchorHits>),
+    Long(AHashMap<u128, AnchorHits>),
+}
+
+impl RecruitIndex {
+    fn new(k: usize) -> Self {
+        if k <= 32 {
+            Self::Short(AHashMap::new())
+        } else {
+            Self::Long(AHashMap::new())
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            Self::Short(index) => index.clear(),
+            Self::Long(index) => index.clear(),
+        }
+    }
+
+    fn insert_sequence(&mut self, sequence: &[u8], k: usize, locus: LocusId) {
+        match self {
+            Self::Short(index) => scan_kmers_u64(sequence, k, 1, true, |key, _| {
+                index
+                    .entry(key)
+                    .and_modify(|hits| hits.insert(locus))
+                    .or_insert(LocusHits::One(locus));
+            }),
+            Self::Long(index) => scan_kmers(sequence, k, 1, true, |key, _| {
+                index
+                    .entry(key)
+                    .and_modify(|hits| hits.insert(locus))
+                    .or_insert(LocusHits::One(locus));
+            }),
+        }
+    }
+
+    fn bloom(&self) -> BlockedBloom {
+        match self {
+            Self::Short(index) => {
+                let mut bloom = BlockedBloom::for_keys(index.len());
+                for &key in index.keys() {
+                    bloom.insert_hash(BlockedBloom::mix(key));
+                }
+                bloom
+            }
+            Self::Long(index) => {
+                let mut bloom = BlockedBloom::for_keys(index.len());
+                for &key in index.keys() {
+                    bloom.insert_hash(BlockedBloom::mix(key as u64 ^ (key >> 64) as u64));
+                }
+                bloom
+            }
+        }
+    }
+
+    fn scan(
+        &self,
+        sequence: &[u8],
+        k: usize,
+        step: usize,
+        bloom: &BlockedBloom,
+        mut visit: impl FnMut(Option<&LocusHits>, bool),
+    ) {
+        match self {
+            Self::Short(index) => scan_kmers_u64(sequence, k, step, true, |key, _| {
+                let may_contain = bloom.may_contain_hash(BlockedBloom::mix(key));
+                visit(may_contain.then(|| index.get(&key)).flatten(), !may_contain);
+            }),
+            Self::Long(index) => scan_kmers(sequence, k, step, true, |key, _| {
+                let may_contain =
+                    bloom.may_contain_hash(BlockedBloom::mix(key as u64 ^ (key >> 64) as u64));
+                visit(may_contain.then(|| index.get(&key)).flatten(), !may_contain);
+            }),
+        }
+    }
+}
+
+impl AnchorIndex {
+    fn new(k: usize) -> Self {
+        if k <= 32 {
+            Self::Short(AHashMap::new())
+        } else {
+            Self::Long(AHashMap::new())
+        }
+    }
+
+    fn insert_sequence(&mut self, bases: &[u8], k: usize, locus: LocusId, sequence: u32) {
+        let insert = |position: usize, hits: &mut AnchorHits| {
+            hits.push(AnchorOccurrence {
+                locus,
+                sequence,
+                position: position as u32,
+            });
+        };
+        match self {
+            Self::Short(index) => scan_kmers_u64(bases, k, 1, false, |key, position| {
+                index
+                    .entry(key)
+                    .and_modify(|hits| insert(position, hits))
+                    .or_insert(AnchorHits::One(AnchorOccurrence {
+                        locus,
+                        sequence,
+                        position: position as u32,
+                    }));
+            }),
+            Self::Long(index) => scan_kmers(bases, k, 1, false, |key, position| {
+                index
+                    .entry(key)
+                    .and_modify(|hits| insert(position, hits))
+                    .or_insert(AnchorHits::One(AnchorOccurrence {
+                        locus,
+                        sequence,
+                        position: position as u32,
+                    }));
+            }),
+        }
+    }
+
+    fn scan(&self, sequence: &[u8], k: usize, mut visit: impl FnMut(&[AnchorOccurrence], usize)) {
+        match self {
+            Self::Short(index) => scan_kmers_u64(sequence, k, 1, false, |key, position| {
+                if let Some(hits) = index.get(&key) {
+                    visit(hits.values(), position);
+                }
+            }),
+            Self::Long(index) => scan_kmers(sequence, k, 1, false, |key, position| {
+                if let Some(hits) = index.get(&key) {
+                    visit(hits.values(), position);
+                }
+            }),
+        }
+    }
+
+    fn entries(&self) -> usize {
+        match self {
+            Self::Short(index) => index.values().map(|hits| hits.values().len()).sum(),
+            Self::Long(index) => index.values().map(|hits| hits.values().len()).sum(),
+        }
+    }
+}
+
 impl AnchorHits {
     fn push(&mut self, occurrence: AnchorOccurrence) {
         match self {
@@ -115,15 +453,16 @@ pub struct OrientedReference {
     pub bases: Vec<u8>,
 }
 
-#[derive(Debug)]
 pub struct UceIndex {
     pub k: usize,
     pub run_k: usize,
     pub loci: Vec<Locus>,
     pub references: Vec<OrientedReference>,
-    recruit: AHashMap<u128, LocusHits>,
-    anchors: AHashMap<u128, AnchorHits>,
+    recruit: RecruitIndex,
+    recruit_bloom: BlockedBloom,
+    anchors: AnchorIndex,
 }
+
 
 fn stripped_extension(path: &Path) -> Option<String> {
     let base = if path
@@ -241,6 +580,56 @@ pub fn scan_kmers(
     }
 }
 
+pub fn scan_kmers_u64(
+    sequence: &[u8],
+    k: usize,
+    step: usize,
+    canonical: bool,
+    mut visit: impl FnMut(u64, usize),
+) {
+    debug_assert!((1..=32).contains(&k));
+    if k == 0 || k > 32 || sequence.len() < k {
+        return;
+    }
+    let mask = if k == 32 {
+        u64::MAX
+    } else {
+        (1_u64 << (2 * k)) - 1
+    };
+    let reverse_shift = 2 * (k - 1);
+    let tail = sequence.len() - k;
+    let (mut forward, mut reverse, mut valid, mut next_probe) = (0_u64, 0_u64, 0_usize, 0_usize);
+    for (end, &base) in sequence.iter().enumerate() {
+        if let Some(value) = code(base) {
+            forward = ((forward << 2) | value as u64) & mask;
+            reverse = (reverse >> 2) | (((3 - value) as u64) << reverse_shift);
+            valid += 1;
+        } else {
+            forward = 0;
+            reverse = 0;
+            valid = 0;
+        }
+        if end + 1 < k {
+            continue;
+        }
+        let start = end + 1 - k;
+        let sampled = start == next_probe;
+        if sampled {
+            next_probe = next_probe.saturating_add(step.max(1));
+        }
+        if valid >= k && (sampled || start == tail) {
+            visit(
+                if canonical {
+                    forward.min(reverse)
+                } else {
+                    forward
+                },
+                start,
+            );
+        }
+    }
+}
+
 impl UceIndex {
     pub fn build(reference: &Path, k: usize) -> Result<Self, String> {
         Self::build_split(reference, reference, k)
@@ -260,8 +649,9 @@ impl UceIndex {
             run_k,
             loci: Vec::new(),
             references: Vec::new(),
-            recruit: AHashMap::new(),
-            anchors: AHashMap::new(),
+            recruit: RecruitIndex::new(k),
+            recruit_bloom: BlockedBloom::for_keys(1),
+            anchors: AnchorIndex::new(run_k),
         };
         for path in reference_paths(verify_reference)? {
             let locus = index.loci.len() as LocusId;
@@ -285,13 +675,7 @@ impl UceIndex {
                 effective_length,
             });
             for original in originals {
-                scan_kmers(&original, k, 1, true, |key, _| {
-                    index
-                        .recruit
-                        .entry(key)
-                        .and_modify(|hits| hits.insert(locus))
-                        .or_insert(LocusHits::One(locus));
-                });
+                index.recruit.insert_sequence(&original, k, locus);
                 index.add_oriented(locus, 1, original.clone());
                 index.add_oriented(locus, 2, reverse_complement(&original));
             }
@@ -312,32 +696,18 @@ impl UceIndex {
                 let mut reader =
                     FastxReader::open(&path, FastxFormat::Fasta).map_err(|e| e.to_string())?;
                 while let Some(record) = reader.next_record().map_err(|e| e.to_string())? {
-                    scan_kmers(&record.sequence, k, 1, true, |key, _| {
-                        index
-                            .recruit
-                            .entry(key)
-                            .and_modify(|hits| hits.insert(locus))
-                            .or_insert(LocusHits::One(locus));
-                    });
+                    index.recruit.insert_sequence(&record.sequence, k, locus);
                 }
             }
         }
+        index.recruit_bloom = index.recruit.bloom();
         Ok(index)
     }
 
     fn add_oriented(&mut self, locus: LocusId, strand: u8, bases: Vec<u8>) {
         let sequence = self.references.len() as u32;
-        scan_kmers(&bases, self.run_k, 1, false, |key, position| {
-            let occurrence = AnchorOccurrence {
-                locus,
-                sequence,
-                position: position as u32,
-            };
-            self.anchors
-                .entry(key)
-                .and_modify(|hits| hits.push(occurrence))
-                .or_insert(AnchorHits::One(occurrence));
-        });
+        self.anchors
+            .insert_sequence(&bases, self.run_k, locus, sequence);
         self.references.push(OrientedReference {
             locus,
             strand,
@@ -345,16 +715,31 @@ impl UceIndex {
         });
     }
 
-    pub fn recruit(&self, sequence: &[u8], step: usize, hits: &mut Vec<LocusId>) {
-        scan_kmers(sequence, self.k, step, true, |key, _| {
-            if let Some(loci) = self.recruit.get(&key) {
-                for &locus in loci.values() {
-                    if !hits.contains(&locus) {
-                        hits.push(locus);
-                    }
+    pub fn recruit(
+        &self,
+        sequence: &[u8],
+        step: usize,
+        hits: &mut RecruitScratch,
+        profile: Option<&mut IndexProfile>,
+    ) {
+        let mut profile = profile;
+        self.recruit.scan(
+            sequence,
+            self.k,
+            step,
+            &self.recruit_bloom,
+            |loci, bloom_rejected| {
+                if let Some(profile) = profile.as_deref_mut() {
+                    profile.recruit_probes += 1;
+                    profile.recruit_bloom_rejected += u64::from(bloom_rejected);
+                    profile.recruit_hits += u64::from(loci.is_some());
                 }
-            }
-        });
+                let Some(loci) = loci else { return };
+                for &locus in loci.values() {
+                    hits.insert(locus);
+                }
+            },
+        );
     }
 
     pub fn orientation_events(&self, sequence: &[u8], candidates: &[LocusId]) -> Vec<Vec<u8>> {
@@ -363,18 +748,99 @@ impl UceIndex {
         if !valid_dna(sequence) || windows == 0 {
             return result;
         }
-        scan_kmers(sequence, self.run_k, 1, false, |key, position| {
-            if let Some(entries) = self.anchors.get(&key) {
-                for occurrence in entries.values() {
+        self.anchors
+            .scan(sequence, self.run_k, |entries, position| {
+                for occurrence in entries {
                     let locus = occurrence.locus;
                     let mask = self.references[occurrence.sequence as usize].strand;
-                    if let Some(i) = candidates.iter().position(|&value| value == locus) {
+                    if let Ok(i) = candidates.binary_search(&locus) {
                         result[i][position] |= mask;
                     }
                 }
-            }
-        });
+            });
         result
+    }
+
+    /// Collects run-k orientation events and the best exact seed for every
+    /// candidate locus in one anchor-index traversal.
+    pub fn read_evidence(
+        &self,
+        read: &[u8],
+        candidates: &[LocusId],
+        result: &mut ReadEvidenceScratch,
+        profile: Option<&mut IndexProfile>,
+    ) {
+        let windows = read.len().saturating_sub(self.run_k).saturating_add(1);
+        result.reset(candidates, windows, self.loci.len());
+        if !valid_dna(read) || windows == 0 || candidates.is_empty() {
+            return;
+        }
+        let mut profile = profile;
+        self.anchors
+            .scan(read, self.run_k, |occurrences, read_pos| {
+                if let Some(profile) = profile.as_deref_mut() {
+                    profile.anchor_hit_keys += 1;
+                    profile.anchor_occurrences += occurrences.len() as u64;
+                }
+                for occurrence in occurrences {
+                    let Some(slot) = result.slot_for(occurrence.locus) else {
+                        continue;
+                    };
+                    let reference = &self.references[occurrence.sequence as usize];
+                    result.orientation_events[slot * windows + read_pos] |= reference.strand;
+                    let ref_pos = occurrence.position as usize;
+                    let diagonal = ref_pos as isize - read_pos as isize;
+                    let coverage_key = (slot, occurrence.sequence, diagonal);
+                    if result
+                        .covered_end(coverage_key)
+                        .is_some_and(|end| read_pos < end)
+                    {
+                        continue;
+                    }
+                    let mut left = 0_usize;
+                    while left < read_pos
+                        && left < ref_pos
+                        && read[read_pos - left - 1] == reference.bases[ref_pos - left - 1]
+                    {
+                        left += 1;
+                    }
+                    let mut right = self.run_k;
+                    while read_pos + right < read.len()
+                        && ref_pos + right < reference.bases.len()
+                        && read[read_pos + right] == reference.bases[ref_pos + right]
+                    {
+                        right += 1;
+                    }
+                    if let Some(profile) = profile.as_deref_mut() {
+                        profile.exact_extensions += 1;
+                        profile.exact_seed_bases += (left + right) as u64;
+                    }
+                    let candidate = ExactSeed {
+                        sequence: occurrence.sequence,
+                        read_start: (read_pos - left).min(u16::MAX as usize) as u16,
+                        read_end: (read_pos + right).min(u16::MAX as usize) as u16,
+                        reference_start: (ref_pos - left).min(u32::MAX as usize) as u32,
+                        reference_end: (ref_pos + right).min(u32::MAX as usize) as u32,
+                    };
+                    let best = &mut result.best_exact[slot];
+                    if best.is_none_or(|current| {
+                        candidate.len() > current.len()
+                            || (candidate.len() == current.len()
+                                && (
+                                    candidate.sequence,
+                                    candidate.reference_start,
+                                    candidate.read_start,
+                                ) < (
+                                    current.sequence,
+                                    current.reference_start,
+                                    current.read_start,
+                                ))
+                    }) {
+                        *best = Some(candidate);
+                    }
+                    result.record_coverage(coverage_key, read_pos + right);
+                }
+            });
     }
 
     pub fn best_exact(&self, read: &[u8], locus: LocusId) -> Option<ExactSeed> {
@@ -383,63 +849,57 @@ impl UceIndex {
         }
         let mut best = None::<ExactSeed>;
         let mut covered: AHashMap<(u32, isize), usize> = AHashMap::new();
-        scan_kmers(read, self.run_k, 1, false, |key, read_pos| {
-            let Some(occurrences) = self.anchors.get(&key) else {
-                return;
-            };
-            for occurrence in occurrences
-                .values()
-                .iter()
-                .filter(|entry| entry.locus == locus)
-            {
-                let reference = &self.references[occurrence.sequence as usize].bases;
-                let ref_pos = occurrence.position as usize;
-                let diagonal = ref_pos as isize - read_pos as isize;
-                if covered
-                    .get(&(occurrence.sequence, diagonal))
-                    .is_some_and(|&end| read_pos < end)
-                {
-                    continue;
+        self.anchors
+            .scan(read, self.run_k, |occurrences, read_pos| {
+                for occurrence in occurrences.iter().filter(|entry| entry.locus == locus) {
+                    let reference = &self.references[occurrence.sequence as usize].bases;
+                    let ref_pos = occurrence.position as usize;
+                    let diagonal = ref_pos as isize - read_pos as isize;
+                    if covered
+                        .get(&(occurrence.sequence, diagonal))
+                        .is_some_and(|&end| read_pos < end)
+                    {
+                        continue;
+                    }
+                    let mut left = 0_usize;
+                    while left < read_pos
+                        && left < ref_pos
+                        && read[read_pos - left - 1] == reference[ref_pos - left - 1]
+                    {
+                        left += 1;
+                    }
+                    let mut right = self.run_k;
+                    while read_pos + right < read.len()
+                        && ref_pos + right < reference.len()
+                        && read[read_pos + right] == reference[ref_pos + right]
+                    {
+                        right += 1;
+                    }
+                    let candidate = ExactSeed {
+                        sequence: occurrence.sequence,
+                        read_start: (read_pos - left).min(u16::MAX as usize) as u16,
+                        read_end: (read_pos + right).min(u16::MAX as usize) as u16,
+                        reference_start: (ref_pos - left).min(u32::MAX as usize) as u32,
+                        reference_end: (ref_pos + right).min(u32::MAX as usize) as u32,
+                    };
+                    if best.is_none_or(|current| {
+                        candidate.len() > current.len()
+                            || (candidate.len() == current.len()
+                                && (
+                                    candidate.sequence,
+                                    candidate.reference_start,
+                                    candidate.read_start,
+                                ) < (
+                                    current.sequence,
+                                    current.reference_start,
+                                    current.read_start,
+                                ))
+                    }) {
+                        best = Some(candidate);
+                    }
+                    covered.insert((occurrence.sequence, diagonal), read_pos + right);
                 }
-                let mut left = 0_usize;
-                while left < read_pos
-                    && left < ref_pos
-                    && read[read_pos - left - 1] == reference[ref_pos - left - 1]
-                {
-                    left += 1;
-                }
-                let mut right = self.run_k;
-                while read_pos + right < read.len()
-                    && ref_pos + right < reference.len()
-                    && read[read_pos + right] == reference[ref_pos + right]
-                {
-                    right += 1;
-                }
-                let candidate = ExactSeed {
-                    sequence: occurrence.sequence,
-                    read_start: (read_pos - left).min(u16::MAX as usize) as u16,
-                    read_end: (read_pos + right).min(u16::MAX as usize) as u16,
-                    reference_start: (ref_pos - left).min(u32::MAX as usize) as u32,
-                    reference_end: (ref_pos + right).min(u32::MAX as usize) as u32,
-                };
-                if best.is_none_or(|current| {
-                    candidate.len() > current.len()
-                        || (candidate.len() == current.len()
-                            && (
-                                candidate.sequence,
-                                candidate.reference_start,
-                                candidate.read_start,
-                            ) < (
-                                current.sequence,
-                                current.reference_start,
-                                current.read_start,
-                            ))
-                }) {
-                    best = Some(candidate);
-                }
-                covered.insert((occurrence.sequence, diagonal), read_pos + right);
-            }
-        });
+            });
         best
     }
 
@@ -448,7 +908,7 @@ impl UceIndex {
     }
 
     pub fn anchor_entries(&self) -> usize {
-        self.anchors.values().map(|hits| hits.values().len()).sum()
+        self.anchors.entries()
     }
 }
 
@@ -525,6 +985,17 @@ mod tests {
                 "k={k}, M={maximum}"
             );
         }
+    }
+
+    #[test]
+    fn evidence_scratch_keeps_slots_beyond_u16_range() {
+        let candidates: Vec<LocusId> = (0..=u16::MAX as u32 + 1).collect();
+        let mut scratch = ReadEvidenceScratch::default();
+        scratch.reset(&candidates, 1, candidates.len());
+        assert_eq!(
+            scratch.slot_for(u16::MAX as u32 + 1),
+            Some(u16::MAX as usize + 1)
+        );
     }
 
     #[test]
