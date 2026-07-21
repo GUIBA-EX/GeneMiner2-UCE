@@ -753,7 +753,7 @@ fn bridge_components(
     loop {
         let links = mate_links(&components, pairs, config);
         let mut ranked: Vec<_> = links.into_iter().collect();
-        ranked.sort_by(|left, right| right.1.cmp(&left.1));
+        ranked.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         let mut joined = None;
         for ((from, to), support) in ranked {
             if support < config.minimum_pair_support || from / 2 == to / 2 {
@@ -920,7 +920,7 @@ pub fn assemble_and_write(
             &mut accepted_links,
         );
     }
-    components.sort_by(|left, right| right.sequence.len().cmp(&left.sequence.len()));
+    components.sort_by_key(|component| std::cmp::Reverse(component.sequence.len()));
     let raw_components = components.clone();
 
     let mut closure = "none";

@@ -157,7 +157,7 @@ fn encode_base(base: u8) -> Option<u8> {
     }
 }
 fn decode_base(bits: u8) -> u8 {
-    [b'A', b'C', b'G', b'T'][bits as usize]
+    b"ACGT"[bits as usize]
 }
 fn decode_kmer(mut value: u64, k: usize) -> Vec<u8> {
     let mut out = vec![b'A'; k];

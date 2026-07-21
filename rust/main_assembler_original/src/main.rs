@@ -178,7 +178,7 @@ fn base_code(base: u8) -> Option<u128> {
 
 #[inline]
 fn base_char(code: u128) -> u8 {
-    [b'A', b'C', b'G', b'T'][code as usize]
+    b"ACGT"[code as usize]
 }
 
 fn normalize_dna(text: &str) -> Vec<u8> {
@@ -857,7 +857,7 @@ fn walk_graph(
                 }
             })
             .collect();
-        nodes.sort_by(|a, b| b.2.cmp(&a.2));
+        nodes.sort_by_key(|node| std::cmp::Reverse(node.2));
         if nodes.is_empty() {
             iteration -= 1;
             let total: u32 = weights.iter().sum();
@@ -944,7 +944,7 @@ fn process_walks(
             })
         })
         .collect();
-    out.sort_by(|a, b| b.support.cmp(&a.support));
+    out.sort_by_key(|candidate| std::cmp::Reverse(candidate.support));
     out
 }
 
@@ -1243,7 +1243,7 @@ fn process_locus(
         fs::remove_file(&best_path)?;
         return Ok((key.to_owned(), "no contigs".to_owned(), 0));
     }
-    selected.sort_by(|a, b| (b.0.support, b.0.weight).cmp(&(a.0.support, a.0.weight)));
+    selected.sort_by_key(|entry| std::cmp::Reverse((entry.0.support, entry.0.weight)));
     let mut all = File::create(&all_path)?;
     for (candidate, seed_count, position) in &selected {
         writeln!(

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, String>;
 const EXCLUDED_FLAGS: u16 = 0x4 | 0x100 | 0x800;
-const BASES: [u8; 6] = [b'-', b'A', b'C', b'G', b'N', b'T'];
+const BASES: [u8; 6] = *b"-ACGNT";
 
 #[derive(Debug)]
 struct Args {
