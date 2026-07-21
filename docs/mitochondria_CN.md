@@ -31,10 +31,11 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 → refilter → Rust UCE 联合图组装
 → 非冗余、信息性 contigs_all 作为样本特异性 seed，从原始 paired reads 再招募一次并联合重组装
 → 严格 overlap、GFA 唯一路径与 mate-link 连接
+→ 原 k 失败时，局部尝试 k−10 / k / k+10 的唯一图路径
 → junction-spanning reads 验证闭环
 ```
 
-所有 bait 写入一个线粒体 locus。参考仅用于招募与 seed；最终序列不按参考坐标拼接或补洞。mate link 只决定候选邻接和方向，断点碱基必须由同一 filtered read pool 的唯一路径恢复；不能恢复时保持断裂，不插入 `N`。
+所有 bait 写入一个线粒体 locus。参考仅用于招募与 seed；最终序列不按参考坐标拼接或补洞。mate link 只决定候选邻接和方向，断点碱基必须由同一 filtered read pool 的唯一路径恢复；不能恢复时保持断裂，不插入 `N`。多 k 仅在原 k 不存在可接受路径时运行，且不能绕过唯一性或 junction-read 条件。
 
 `mito` 默认启用无限延伸与 GFA 图输出；若参考较远或覆盖较低，建议显式使用较敏感的 `-kf 17–25 -s 1`。每个自适应深度仍受 `--mito-max-reads` 限制；需要扫描完整文库时应将其设为不小于输入量。
 无达阈值 mate-link 时不会构建 read graph。
@@ -54,7 +55,9 @@ GenBank gene/rRNA/tRNA + genome/tile baits
 ## 输出
 
 - `<sample>/mito/mitochondrial_assembly.fasta`：闭环序列或 partial components。
-- `<sample>/mito/mitochondrial_assembly_summary.tsv`：状态、连接与 junction 支持。
+- `<sample>/mito/mitochondrial_assembly_summary.tsv`：兼容的粗粒度状态、`resolution_reason`、连接与 junction 支持。
+- `<sample>/mito/mitochondrial_evidence.json`：结构、图、mate-link 与 junction 的机器可读证据。
+- `<sample>/mito/mitochondrial_feature_evidence.tsv`：参考 feature 的 canonical 21-mer 相似度；仅说明与参考的精确锚点共享，不能据此判断远缘样本的基因存在或缺失；`translation_status=not_checked`，不是 CDS 注释或翻译判定。
 - `<sample>/mito/mitochondrial_mate_links.tsv`：已接受的 read-supported links。
 - `.gm2_mito_reference/metadata/mitochondrial_genes.tsv`：bait 元数据；坐标为 0-based 半开区间，`segments_0_half_open` 保留跨 origin 或 `join(...)` feature 的全部片段。
 - <sample>/uce_rescue_round_1/assembly_refs/mito_rescue_seeds.tsv：救援 seed 审计；对含歧义碱基 contig 仅使用其中连续 ACGT 区段；再剔除正反向重复或无信息低复杂度 seed，不按参考相似度筛除远缘序列。

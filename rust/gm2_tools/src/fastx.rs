@@ -32,7 +32,13 @@ struct ZlibBackend {
 }
 
 fn stock_zlib_backend() -> ZlibBackend {
-    ZlibBackend { open: gzopen, read: gzread, close: gzclose, buffer: gzbuffer, name: "system zlib" }
+    ZlibBackend {
+        open: gzopen,
+        read: gzread,
+        close: gzclose,
+        buffer: gzbuffer,
+        name: "system zlib",
+    }
 }
 
 #[cfg(system_zlib_ng)]
@@ -45,11 +51,19 @@ extern "C" {
 
 #[cfg(system_zlib_ng)]
 fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> {
-    Some(ZlibBackend { open: zng_gzopen, read: zng_gzread, close: zng_gzclose, buffer: zng_gzbuffer, name: "zlib-ng (build detected)" })
+    Some(ZlibBackend {
+        open: zng_gzopen,
+        read: zng_gzread,
+        close: zng_gzclose,
+        buffer: zng_gzbuffer,
+        name: "zlib-ng (build detected)",
+    })
 }
 
 #[cfg(not(system_zlib_ng))]
-fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> { None }
+fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> {
+    None
+}
 
 #[cfg(unix)]
 unsafe fn dlsym_typed<F: Copy>(handle: *mut c_void, symbol: &str) -> Option<F> {
@@ -63,13 +77,26 @@ fn detect_zlib_ng() -> Option<ZlibBackend> {
     for library in ["libz-ng.so.2", "libz-ng.so.1", "libz-ng.so"] {
         let library = CString::new(library).expect("static string contains no NUL");
         let handle = unsafe { libc::dlopen(library.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        if handle.is_null() { continue; }
+        if handle.is_null() {
+            continue;
+        }
         let resolved = unsafe {
-            (dlsym_typed::<GzOpenFn>(handle, "zng_gzopen"), dlsym_typed::<GzReadFn>(handle, "zng_gzread"), dlsym_typed::<GzCloseFn>(handle, "zng_gzclose"), dlsym_typed::<GzBufferFn>(handle, "zng_gzbuffer"))
+            (
+                dlsym_typed::<GzOpenFn>(handle, "zng_gzopen"),
+                dlsym_typed::<GzReadFn>(handle, "zng_gzread"),
+                dlsym_typed::<GzCloseFn>(handle, "zng_gzclose"),
+                dlsym_typed::<GzBufferFn>(handle, "zng_gzbuffer"),
+            )
         };
         if let (Some(open), Some(read), Some(close), Some(buffer)) = resolved {
             // Keep the dynamic library resident while its function pointers are used.
-            return Some(ZlibBackend { open, read, close, buffer, name: "zlib-ng" });
+            return Some(ZlibBackend {
+                open,
+                read,
+                close,
+                buffer,
+                name: "zlib-ng",
+            });
         }
         unsafe { libc::dlclose(handle) };
     }
@@ -77,17 +104,26 @@ fn detect_zlib_ng() -> Option<ZlibBackend> {
 }
 
 #[cfg(not(unix))]
-fn detect_zlib_ng() -> Option<ZlibBackend> { None }
+fn detect_zlib_ng() -> Option<ZlibBackend> {
+    None
+}
 
 static ZLIB_BACKEND: OnceLock<ZlibBackend> = OnceLock::new();
 
 fn zlib_backend() -> ZlibBackend {
-    *ZLIB_BACKEND.get_or_init(|| build_detected_zlib_ng_backend().or_else(detect_zlib_ng).unwrap_or_else(stock_zlib_backend))
+    *ZLIB_BACKEND.get_or_init(|| {
+        build_detected_zlib_ng_backend()
+            .or_else(detect_zlib_ng)
+            .unwrap_or_else(stock_zlib_backend)
+    })
 }
 
 /// Gzip reader with a 1 MiB compressed-input buffer.  It uses zlib-ng when a
 /// compatible system library is available, otherwise the platform zlib ABI.
-struct GzipReader { handle: *mut c_void, backend: ZlibBackend }
+struct GzipReader {
+    handle: *mut c_void,
+    backend: ZlibBackend,
+}
 
 impl GzipReader {
     fn open(path: &Path) -> io::Result<Self> {
@@ -96,7 +132,12 @@ impl GzipReader {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
         let mode = CString::new("rb").expect("static string contains no NUL");
         let handle = unsafe { (backend.open)(path.as_ptr(), mode.as_ptr()) };
-        if handle.is_null() { return Err(io::Error::new(io::ErrorKind::NotFound, "cannot open gzip file")); }
+        if handle.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "cannot open gzip file",
+            ));
+        }
         unsafe { (backend.buffer)(handle, READ_BUFFER_SIZE as c_uint) };
         Ok(Self { handle, backend })
     }
@@ -104,18 +145,39 @@ impl GzipReader {
 
 impl Read for GzipReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if buffer.is_empty() { return Ok(0); }
-        let result = unsafe { (self.backend.read)(self.handle, buffer.as_mut_ptr().cast(), buffer.len().min(c_int::MAX as usize) as u32) };
-        if result < 0 { Err(io::Error::new(io::ErrorKind::InvalidData, "gzip decompression failed")) } else { Ok(result as usize) }
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let result = unsafe {
+            (self.backend.read)(
+                self.handle,
+                buffer.as_mut_ptr().cast(),
+                buffer.len().min(c_int::MAX as usize) as u32,
+            )
+        };
+        if result < 0 {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "gzip decompression failed",
+            ))
+        } else {
+            Ok(result as usize)
+        }
     }
 }
 
 impl Drop for GzipReader {
-    fn drop(&mut self) { if !self.handle.is_null() { unsafe { (self.backend.close)(self.handle) }; } }
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { (self.backend.close)(self.handle) };
+        }
+    }
 }
 
 /// Backend selected for gzip files in this process, for profiling/logging.
-pub fn gzip_backend_name() -> &'static str { zlib_backend().name }
+pub fn gzip_backend_name() -> &'static str {
+    zlib_backend().name
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FastxFormat {

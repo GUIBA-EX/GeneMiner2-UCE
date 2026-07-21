@@ -92,6 +92,40 @@ class UceTerminalRescueTests(unittest.TestCase):
             {"growing", "new"},
         )
 
+    def test_terminal_rescue_diagnostics_reports_without_changing_candidates(self):
+        sequence = self.dna(240, 8)
+        before = {
+            "growing": {"accepted": "1", "selected_contig_length": "180", "unique_read_count": "2"},
+            "stable": {"accepted": "1", "selected_contig_length": "180", "unique_read_count": "2"},
+        }
+        after = {
+            "growing": {"accepted": "1", "selected_contig_length": "240", "unique_read_count": "3"},
+            "stable": {"accepted": "1", "selected_contig_length": "180", "unique_read_count": "2"},
+        }
+        candidates = unix_command.select_terminal_rescue_loci(before, after)
+        self.assertEqual(candidates, {"growing"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp)
+            (sample / "results").mkdir()
+            (sample / "filtered").mkdir()
+            (sample / "results" / "growing.fasta").write_text(f">growing\n{sequence}\n")
+            (sample / "filtered" / "growing.fq").write_text(
+                f"@read/1\n{sequence[:150]}\n+\n" + "I" * 150 + "\n"
+            )
+            unix_command.write_uce_terminal_rescue_diagnostics(
+                str(sample), "sample", before, after, candidates, {"growing"}, 60
+            )
+            with (sample / "uce_terminal_rescue_diagnostics.tsv").open(newline="") as handle:
+                rows = {row["locus"]: row for row in csv.DictReader(handle, delimiter="\t")}
+
+        self.assertEqual(rows["growing"]["r2_candidate"], "1")
+        self.assertEqual(rows["growing"]["terminal_bait_written"], "1")
+        self.assertEqual(rows["growing"]["selection_reason"], "length_gain")
+        self.assertEqual(rows["stable"]["r2_candidate"], "0")
+        self.assertEqual(rows["stable"]["terminal_bait_written"], "0")
+        self.assertEqual(rows["stable"]["selection_reason"], "no_r2_admission_signal")
+
 
 if __name__ == "__main__":
     unittest.main()

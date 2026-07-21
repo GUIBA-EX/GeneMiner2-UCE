@@ -289,6 +289,100 @@ fn prepare(options: &HashMap<String, String>) -> Result<(), String> {
     Ok(())
 }
 
+fn canonical_kmers(sequence: &[u8], k: usize) -> HashSet<Vec<u8>> {
+    if k == 0 || sequence.len() < k {
+        return HashSet::new();
+    }
+    sequence
+        .windows(k)
+        .filter(|part| {
+            part.iter()
+                .all(|base| matches!(base.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T'))
+        })
+        .map(|part| {
+            let forward = part.iter().map(u8::to_ascii_uppercase).collect::<Vec<_>>();
+            let reverse = rc(&forward);
+            forward.min(reverse)
+        })
+        .collect()
+}
+
+fn write_feature_evidence(
+    metadata: &Path,
+    reference: &[u8],
+    assembly: &Path,
+    output: &Path,
+) -> Result<(), String> {
+    let records = read_fasta(assembly)?;
+    // Only the selected primary component is evidence for a feature. Including
+    // alternative contigs would turn mutually exclusive graph paths into a
+    // false "recovered" call.
+    let assembled = records
+        .first()
+        .map(|(_, sequence)| sequence.as_slice())
+        .unwrap_or_default();
+    let mut report = BufWriter::new(
+        File::create(output.join("mitochondrial_feature_evidence.tsv"))
+            .map_err(|error| error.to_string())?,
+    );
+    writeln!(report, "feature\treference_bases\tanchor_k\tanchor_kmers\tmatching_anchors\tanchor_fraction\tanchor_evidence\treference_similarity_interpretation\ttranslation_status")
+        .map_err(|error| error.to_string())?;
+    let raw = fs::read_to_string(metadata).map_err(|error| error.to_string())?;
+    for line in raw.lines().skip(1) {
+        let fields: Vec<_> = line.split('\t').collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let reverse = fields[3] == "-1";
+        let mut feature = Vec::new();
+        for interval in fields[4].split(',') {
+            let Some((start, end)) = interval.split_once("..") else {
+                continue;
+            };
+            let (Ok(start), Ok(end)) = (start.parse::<usize>(), end.parse::<usize>()) else {
+                continue;
+            };
+            if start < end && end <= reference.len() {
+                feature.extend_from_slice(&reference[start..end]);
+            }
+        }
+        if reverse {
+            feature = rc(&feature);
+        }
+        let k = feature.len().min(21);
+        let anchors = canonical_kmers(&feature, k);
+        let assembled_anchors = canonical_kmers(assembled, k);
+        let matched = anchors.intersection(&assembled_anchors).count();
+        let fraction = if anchors.is_empty() {
+            0.0
+        } else {
+            matched as f64 / anchors.len() as f64
+        };
+        // Exact 21-mer sharing measures reference similarity, not feature
+        // presence. This remains meaningful for close references, while
+        // avoiding a false gene-loss claim for distant samples.
+        let evidence = if fraction >= 0.80 {
+            "high_anchor_similarity"
+        } else if matched > 0 {
+            "partial_anchor_similarity"
+        } else {
+            "no_exact_reference_anchor"
+        };
+        writeln!(
+            report,
+            "{}\t{}\t{}\t{}\t{}\t{fraction:.6}\t{}\treference_similarity_only\tnot_checked",
+            fields[0],
+            feature.len(),
+            k,
+            anchors.len(),
+            matched,
+            evidence
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    report.flush().map_err(|error| error.to_string())
+}
+
 fn finalize(options: &HashMap<String, String>) -> Result<(), String> {
     let reference = read_fasta(Path::new(required(options, "--reference-genome")))?
         .into_iter()
@@ -330,9 +424,17 @@ fn finalize(options: &HashMap<String, String>) -> Result<(), String> {
         Path::new(required(options, "--out-dir")),
         contigs,
         Path::new(required(options, "--paired-reads")),
-        options.get("--graph").map(|path| Path::new(path)),
+        options.get("--graph").map(Path::new),
         &config,
     )?;
+    if let Some(metadata) = options.get("--gene-metadata") {
+        write_feature_evidence(
+            Path::new(metadata),
+            &reference,
+            &Path::new(required(options, "--out-dir")).join("mitochondrial_assembly.fasta"),
+            Path::new(required(options, "--out-dir")),
+        )?;
+    }
     let require_circular = options
         .get("--require-circular")
         .is_some_and(|value| matches!(value.as_str(), "true" | "1" | "yes"));
@@ -511,6 +613,66 @@ mod tests {
             parse_location("complement(join(16400..16569,1..300))"),
             Some((vec![(16399, 16569), (0, 300)], true))
         );
+    }
+
+    #[test]
+    fn feature_evidence_uses_only_the_primary_assembly_component() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!("gm2_mito_evidence_{}_{}", process::id(), unique));
+        fs::create_dir_all(&root).unwrap();
+        let metadata = root.join("genes.tsv");
+        let assembly = root.join("assembly.fasta");
+        fs::write(
+            &metadata,
+            "gene\tstart_0_inclusive\tend_0_exclusive\tstrand\tsegments_0_half_open\nfeature_a\t0\t28\t1\t0..28\n",
+        )
+        .unwrap();
+        fs::write(
+            &assembly,
+            ">primary\nACGTTGCAGATCCGATGCTAACGGTTAACGAA\n>alternative\nTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT\n",
+        )
+        .unwrap();
+        let reference = b"ACGTTGCAGATCCGATGCTAACGGTTAACGAA";
+        write_feature_evidence(&metadata, reference, &assembly, &root).unwrap();
+        let report = fs::read_to_string(root.join("mitochondrial_feature_evidence.tsv")).unwrap();
+        assert!(report.contains("feature_a\t28\t21\t"));
+        assert!(
+            report.contains("\thigh_anchor_similarity\treference_similarity_only\tnot_checked\n")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn feature_evidence_does_not_call_a_distant_reference_feature_missing() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!("gm2_mito_distant_{}_{}", process::id(), unique));
+        fs::create_dir_all(&root).unwrap();
+        let metadata = root.join("genes.tsv");
+        let assembly = root.join("assembly.fasta");
+        fs::write(&metadata, "gene\tstart_0_inclusive\tend_0_exclusive\tstrand\tsegments_0_half_open\nfeature_a\t0\t42\t1\t0..42\n").unwrap();
+        fs::write(
+            &assembly,
+            ">primary\nTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT\n",
+        )
+        .unwrap();
+        write_feature_evidence(
+            &metadata,
+            b"ACGTTGCAGATCCGATGCTAACGGTTAACGAACCGTTCAGGA",
+            &assembly,
+            &root,
+        )
+        .unwrap();
+        let report = fs::read_to_string(root.join("mitochondrial_feature_evidence.tsv")).unwrap();
+        assert!(report
+            .contains("\tno_exact_reference_anchor\treference_similarity_only\tnot_checked\n"));
+        assert!(!report.contains("not_detected"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

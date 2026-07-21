@@ -213,6 +213,7 @@ class MitoWorkflowTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         command = run.call_args.args[0]
         self.assertEqual(command[0:2], ["/gm2/mito_workflow", "finalize"])
+        self.assertTrue(command[command.index("--gene-metadata") + 1].endswith("metadata/mitochondrial_genes.tsv"))
         self.assertEqual(command[command.index("--minimum-overlap") + 1], "41")
         self.assertEqual(command[command.index("--minimum-identity") + 1], "0.98")
         self.assertEqual(command[command.index("--terminal-window") + 1], "500")
