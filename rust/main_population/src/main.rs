@@ -78,6 +78,7 @@ struct Args {
     start_at: Stage,
     stop_after: Stage,
     skip_plink: bool,
+    skip_relatedness_qc: bool,
     skip_admixture: bool,
     admixture_k_min: usize,
     admixture_k_max: usize,
@@ -114,6 +115,7 @@ impl Default for Args {
             start_at: Stage::Reference,
             stop_after: Stage::Selection,
             skip_plink: false,
+            skip_relatedness_qc: false,
             skip_admixture: false,
             admixture_k_min: 2,
             admixture_k_max: 6,
@@ -134,6 +136,8 @@ struct Sample {
     vcf_id: String,
     read1: PathBuf,
     read2: PathBuf,
+    population: String,
+    batch: String,
 }
 
 #[derive(Clone, Debug)]
@@ -168,7 +172,7 @@ fn print_help() {
         "main_population (GeneMiner2-UCE Rust population pipeline)\n\
          Usage: main_population --output DIR --samples FILE [options]\n\n\
          --output DIR              Existing GeneMiner2 output directory\n\
-         --samples FILE            Original GeneMiner2 sample TSV\n\
+         --samples FILE            TSV: sample, R1, [R2, population, batch]\n\
          --engine STR              pseudoref, panref, or panrefv2 (default: pseudoref)\n\
          --panref-baits DIR       Per-locus bait FASTA directory required by panref or panrefv2\n\
          --panrefv2-include-low-confidence  Include short or low-support PanRefV2 loci in FASTA\n\
@@ -187,6 +191,7 @@ fn print_help() {
          --ld-r2 FLOAT             LD pruning r^2 threshold (default: 0.2)\n\
          --skip-mark-duplicates    Skip samtools fixmate/markdup\n\
          --skip-plink              Do not create PLINK/PCA/LD-pruned panels\n\
+         --skip-relatedness-qc     Skip PLINK pairwise relatedness calculation\n\
          --skip-admixture          Do not run ADMIXTURE on the primary panel\n\
          --admixture-k-min INT     Minimum ADMIXTURE K (default: 2)\n\
          --admixture-k-max INT     Maximum ADMIXTURE K (default: 6)\n\
@@ -319,6 +324,7 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
             "--ld-r2" => args.ld_r2 = parse_num(take_value(&argv, &mut i, "--ld-r2")?, "--ld-r2")?,
             "--skip-mark-duplicates" => args.mark_duplicates = false,
             "--skip-plink" => args.skip_plink = true,
+            "--skip-relatedness-qc" => args.skip_relatedness_qc = true,
             "--skip-admixture" => args.skip_admixture = true,
             "--admixture-k-min" => {
                 args.admixture_k_min = parse_num(
@@ -491,6 +497,16 @@ fn read_samples(path: &Path) -> AppResult<Vec<Sample>> {
             vcf_id,
             read1: PathBuf::from(&fields[1]),
             read2: PathBuf::from(fields.get(2).unwrap_or(&fields[1])),
+            population: fields
+                .get(3)
+                .map(|value| value.trim())
+                .unwrap_or("")
+                .to_string(),
+            batch: fields
+                .get(4)
+                .map(|value| value.trim())
+                .unwrap_or("")
+                .to_string(),
         });
     }
     if samples.is_empty() {
@@ -1065,7 +1081,7 @@ fn write_sample_manifest(path: &Path, samples: &[Sample]) -> AppResult<()> {
     );
     writeln!(
         out,
-        "original_sample_id\tinternal_sample_id\tvcf_sample_id\tread1\tread2\tlayout"
+        "original_sample_id\tinternal_sample_id\tvcf_sample_id\tread1\tread2\tlayout\tpopulation\tbatch"
     )
     .map_err(|e| e.to_string())?;
     for sample in samples {
@@ -1076,13 +1092,15 @@ fn write_sample_manifest(path: &Path, samples: &[Sample]) -> AppResult<()> {
         };
         writeln!(
             out,
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             sample.original,
             sample.internal,
             sample.vcf_id,
             sample.read1.display(),
             sample.read2.display(),
-            layout
+            layout,
+            sample.population,
+            sample.batch
         )
         .map_err(|e| e.to_string())?;
     }
@@ -2026,6 +2044,43 @@ fn parse_cv_error(text: &str) -> Option<f64> {
     })
 }
 
+fn run_population_qc(args: &Args, primary_bed: &Path) -> AppResult<()> {
+    let directory = args.output.join("population").join("structure").join("qc");
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let prefix = directory.join("individuals");
+    for mode in ["--missing", "--het"] {
+        run_command(
+            &args.plink,
+            &[
+                "--bfile".into(),
+                primary_bed.with_extension("").display().to_string(),
+                "--allow-extra-chr".into(),
+                mode.into(),
+                "--out".into(),
+                prefix.display().to_string(),
+            ],
+        )?;
+    }
+    if !args.skip_relatedness_qc {
+        run_command(
+            &args.plink,
+            &[
+                "--bfile".into(),
+                primary_bed.with_extension("").display().to_string(),
+                "--allow-extra-chr".into(),
+                "--genome".into(),
+                "--out".into(),
+                prefix.display().to_string(),
+            ],
+        )?;
+    }
+    fs::write(
+        directory.join("README.txt"),
+        "individuals.imiss: per-sample genotype missingness\nindividuals.het: observed/expected heterozygosity\nindividuals.genome: pairwise PI_HAT relatedness (absent with --skip-relatedness-qc)\n",
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn run_admixture(args: &Args, primary_bed: &Path, sample_count: usize) -> AppResult<()> {
     let directory = args
         .output
@@ -2173,6 +2228,7 @@ fn run(args: &Args) -> AppResult<()> {
     println!("One-SNP-per-UCE VCF: {}", final_vcf.display());
     if !args.skip_plink {
         let panels = build_structure_panels(args, &all_vcf, &final_vcf)?;
+        run_population_qc(args, &panels.primary_bed)?;
         run_admixture(args, &panels.primary_bed, samples.len())?;
     }
     Ok(())
@@ -2397,6 +2453,8 @@ printf 'CV error (K=%s): 0.%s\n' "$last" "$last"
             vcf_id: "Coral_1".into(),
             read1: "r1.fq.gz".into(),
             read2: "r2.fq.gz".into(),
+            population: String::new(),
+            batch: String::new(),
         };
         let argv = minibwa_map_args(&args, &sample, Path::new("ref.fa"));
         assert_eq!(argv[0], "map");
@@ -2425,6 +2483,8 @@ printf 'CV error (K=%s): 0.%s\n' "$last" "$last"
             vcf_id: "A".into(),
             read1: "a.fq".into(),
             read2: "a.fq".into(),
+            population: String::new(),
+            batch: String::new(),
         }];
         let reference = prepare_reference(&args, &samples).unwrap();
         assert_eq!(fs::read_to_string(&reference).unwrap(), ">uce_1\nACGT\n");
@@ -2482,6 +2542,8 @@ printf 'CV error (K=%s): 0.%s\n' "$last" "$last"
                 vcf_id: "A".into(),
                 read1: "a.fq".into(),
                 read2: "a.fq".into(),
+                population: String::new(),
+                batch: String::new(),
             },
             Sample {
                 original: "B".into(),
@@ -2489,6 +2551,8 @@ printf 'CV error (K=%s): 0.%s\n' "$last" "$last"
                 vcf_id: "B".into(),
                 read1: "b.fq".into(),
                 read2: "b.fq".into(),
+                population: String::new(),
+                batch: String::new(),
             },
         ];
         let reference = build_reference(&args, &samples).unwrap();

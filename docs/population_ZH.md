@@ -6,7 +6,7 @@
 
 ## 输入与运行
 
-每个样本需要保留：`uce_assembly_summary.csv`、`results/`中的接受 contig，以及样本表中的原始 R1/R2。运行依赖 minibwa、samtools、bcftools 和 PLINK 1.9；ADMIXTURE 缺失时，其余结果仍会完成。
+每个样本需要保留：`uce_assembly_summary.csv`、`results/`中的接受 contig，以及样本表中的原始 R1/R2。样本表可在 R2 后附加可选的 `population` 和 `batch` 列。运行依赖 minibwa、samtools、bcftools 和 PLINK 1.9；ADMIXTURE 缺失时，其余结果仍会完成。
 
 推荐以 PanRefV2 构建公共 UCE 参考：
 
@@ -70,6 +70,7 @@ PanRefV2额外输出到 `population/reference/panrefv2/`：
 - `mapping/mapping_qc.tsv`：mapping rate、breadth和depth；
 - `variants/variant_qc.tsv`：各过滤阶段SNP数；
 - `structure/panel_summary.tsv`：三套面板的位点数；
+- `structure/qc/individuals.imiss`、`individuals.het`、`individuals.genome`：个体缺失率、杂合度与成对 PI_HAT；样本很多时可用 `--skip-relatedness-qc` 跳过最后一项。
 - 三套面板PCA是否给出一致的主要结构；以及ADMIXTURE不同K的CV误差。
 
 主解释通常使用每UCE一个SNP的面板，并以all-SNP和LD-pruned结果作敏感性检查。

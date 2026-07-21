@@ -80,7 +80,7 @@ Sample_B	/data/reads/Sample_B_R1.fq.gz	/data/reads/Sample_B_R2.fq.gz
 Sample_C	/data/reads/Sample_C_R1.fq.gz	/data/reads/Sample_C_R2.fq.gz
 ```
 
-建议使用绝对路径。样本名应保持唯一；population 会另行生成内部样本名和 VCF 样本名的对应表。
+建议使用绝对路径。样本名应保持唯一；`population` 可在 R2 后追加可选的 `population` 与 `batch` 列，单端样本若填写元数据则应保留空 R2 列；population 会另行生成内部样本名和 VCF 样本名的对应表。
 
 ### 2.2 参考序列目录
 
@@ -203,7 +203,7 @@ cli/geneminer2 population \
   --population-admixture-k-min 2 --population-admixture-k-max 6
 ```
 
-公共伪参考策略、分阶段重启、SNP 面板和必查 QC 见[Population 流程说明](../../docs/population_ZH.md)。仅在对应阶段产物已经通过校验时使用 `--population-start-at`。
+公共伪参考策略、分阶段重启、SNP 面板和必查 QC 见[Population 流程说明](../../docs/population_ZH.md)。个体缺失率、杂合度和成对 PI_HAT 写入 `population/structure/qc/`；大队列可用 `--skip-relatedness-qc` 跳过亲缘关系计算。仅在对应阶段产物已经通过校验时使用 `--population-start-at`。
 
 ## 6. 分步运行示例
 

@@ -80,7 +80,7 @@ Sample_B	/data/reads/Sample_B_R1.fq.gz	/data/reads/Sample_B_R2.fq.gz
 Sample_C	/data/reads/Sample_C_R1.fq.gz	/data/reads/Sample_C_R2.fq.gz
 ```
 
-Absolute paths are recommended. Sample names must be unique. Population analysis writes a manifest linking the original names to internal directory and VCF sample IDs.
+Absolute paths are recommended. Sample names must be unique. For `population`, optional `population` and `batch` fields may follow R2; leave the R2 field empty for single-end samples with metadata. Population analysis writes a manifest linking the original names to internal directory and VCF sample IDs.
 
 ### 2.2 Reference directory
 
@@ -203,7 +203,7 @@ cli/geneminer2 population \
   --population-admixture-k-min 2 --population-admixture-k-max 6
 ```
 
-For pseudo-reference strategies, stage restarts, SNP panels, and required QC, see the [Population workflow guide](../../docs/population_EN.md). Use `--population-start-at` only with validated outputs from the requested stage.
+For pseudo-reference strategies, stage restarts, SNP panels, and required QC, see the [Population workflow guide](../../docs/population_EN.md). Individual missingness, heterozygosity, and pairwise PI_HAT are written under `population/structure/qc/`; use `--skip-relatedness-qc` for large cohorts. Use `--population-start-at` only with validated outputs from the requested stage.
 
 ## 6. Staged-run examples
 

@@ -6,7 +6,7 @@
 
 ## Input and quick start
 
-Each sample needs its completed UCE assembly (`uce_assembly_summary.csv` and accepted contigs in `results/`) plus the original R1/R2 files listed in the sample table. The workflow requires minibwa, samtools, bcftools, and PLINK 1.9; ADMIXTURE is optional.
+Each sample needs its completed UCE assembly (`uce_assembly_summary.csv` and accepted contigs in `results/`) plus the original R1/R2 files listed in the sample table. For `population`, optional `population` and `batch` fields may follow R2; leave the R2 field empty for single-end samples with metadata. The workflow requires minibwa, samtools, bcftools, and PLINK 1.9; ADMIXTURE is optional.
 
 ```bash
 cli/geneminer2 population \
@@ -47,4 +47,4 @@ Only `pass` loci enter `population_reference.fasta` by default. `short`, `low_sa
 
 ## QC
 
-Default filters are MAPQ 20, base quality 20, genotype DP 5, GQ 20, site QUAL 20, call rate 0.8, and MAC 2. Check PanRefV2 locus status, mapping QC, variant QC, panel counts, PCA agreement across the three panels, and ADMIXTURE CV error before interpretation.
+Default filters are MAPQ 20, base quality 20, genotype DP 5, GQ 20, site QUAL 20, call rate 0.8, and MAC 2. Check PanRefV2 locus status, mapping QC, variant QC, panel counts, PCA agreement across the three panels, and ADMIXTURE CV error before interpretation. Individual QC is written to `structure/qc/individuals.imiss`, `individuals.het`, and `individuals.genome` (pairwise PI_HAT); use `--skip-relatedness-qc` to omit the quadratic relatedness calculation for large cohorts.
