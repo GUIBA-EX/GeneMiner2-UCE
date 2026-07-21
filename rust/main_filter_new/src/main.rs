@@ -213,6 +213,32 @@ fn stock_zlib_backend() -> ZlibBackend {
     }
 }
 
+// 构建时经 pkg-config 确认的原生 zlib-ng 直接链接，避免每次启动再走
+// dlopen/dlsym。保留运行时探测作为可移植的后备路径。
+#[cfg(system_zlib_ng)]
+extern "C" {
+    fn zng_gzopen(path: *const c_char, mode: *const c_char) -> *mut c_void;
+    fn zng_gzread(file: *mut c_void, buffer: *mut c_void, length: u32) -> c_int;
+    fn zng_gzclose(file: *mut c_void) -> c_int;
+    fn zng_gzbuffer(file: *mut c_void, size: c_uint) -> c_int;
+}
+
+#[cfg(system_zlib_ng)]
+fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> {
+    Some(ZlibBackend {
+        open: zng_gzopen,
+        read: zng_gzread,
+        close: zng_gzclose,
+        buffer: zng_gzbuffer,
+        name: "zlib-ng (build detected)",
+    })
+}
+
+#[cfg(not(system_zlib_ng))]
+fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> {
+    None
+}
+
 // dlopen 一个符号,类型对不上就当没找到,不瞎猜。
 #[cfg(unix)]
 unsafe fn dlsym_typed<F: Copy>(handle: *mut c_void, symbol: &str) -> Option<F> {
@@ -268,7 +294,11 @@ fn detect_zlib_ng() -> Option<ZlibBackend> {
 static ZLIB_BACKEND: std::sync::OnceLock<ZlibBackend> = std::sync::OnceLock::new();
 
 fn zlib_backend() -> ZlibBackend {
-    *ZLIB_BACKEND.get_or_init(|| detect_zlib_ng().unwrap_or_else(stock_zlib_backend))
+    *ZLIB_BACKEND.get_or_init(|| {
+        build_detected_zlib_ng_backend()
+            .or_else(detect_zlib_ng)
+            .unwrap_or_else(stock_zlib_backend)
+    })
 }
 
 struct GzipReader {

@@ -12,6 +12,9 @@ ORIGINAL_ASSEMBLER_SOURCE := scripts/main_assembler_original.py
 ASSEMBLER_RUST_MANIFEST := rust/main_assembler/Cargo.toml
 ASSEMBLER_RUST_SOURCES := $(ASSEMBLER_RUST_MANIFEST) $(wildcard rust/main_assembler/src/*.rs)
 REFILTER_BIN := cli/bin/main_refilter_new
+UCE_FILTER_BIN := cli/bin/uce_filter
+UCE_FILTER_MANIFEST := rust/uce_filter/Cargo.toml
+UCE_FILTER_SOURCES := $(UCE_FILTER_MANIFEST) $(wildcard rust/uce_filter/src/*.rs) $(wildcard rust/uce_filter_core/src/*.rs) rust/uce_filter_core/Cargo.toml
 FILTER_RUST_MANIFEST := rust/main_filter_new/Cargo.toml
 FILTER_RUST_SOURCES := $(FILTER_RUST_MANIFEST) rust/main_filter_new/src/main.rs
 POPULATION_BIN := cli/bin/main_population
@@ -33,7 +36,7 @@ FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp script
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(PY_BIN)
+build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(PY_BIN)
 	rm -f -r cli/bin/_internal
 	cp -L -r scripts/dist/unix_command/_internal cli/bin/
 	cd cli && ln -f -r -s bin/unix_command geneminer2
@@ -47,6 +50,8 @@ clean:
 	rm -f -r rust/main_filter_new/target
 	rm -f -r rust/build_consensus/target
 	rm -f -r rust/main_refilter_new/target
+	rm -f -r rust/uce_filter/target
+	rm -f -r rust/uce_filter_core/target
 	rm -f -r rust/main_assembler/target
 	rm -f -r rust/main_population/target
 	rm -f -r rust/main_repeat/target
@@ -97,6 +102,10 @@ $(REFILTER_BIN): scripts/main_refilter_new.py rust/main_refilter_new/Cargo.toml 
 		install -D -t cli/bin scripts/dist/main_refilter_new/main_refilter_new; \
 		cp -L -r -t cli/bin --reflink=auto --update=none scripts/dist/main_refilter_new/_internal; \
 	fi
+
+$(UCE_FILTER_BIN): $(UCE_FILTER_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(UCE_FILTER_MANIFEST)
+	install rust/uce_filter/target/release/uce_filter $(UCE_FILTER_BIN)
 
 $(ORIGINAL_ASSEMBLER_BIN): $(ORIGINAL_ASSEMBLER_SOURCE) | cli/bin
 	cd scripts && pyinstaller -D -y --optimize 2 main_assembler_original.py

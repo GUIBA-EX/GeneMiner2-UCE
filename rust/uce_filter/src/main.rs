@@ -1,0 +1,260 @@
+use std::env;
+use std::path::PathBuf;
+use std::process;
+use uce_filter_core::{run, Config};
+
+fn next_value(argv: &[String], i: &mut usize, key: &str) -> Result<String, String> {
+    *i += 1;
+    argv.get(*i)
+        .cloned()
+        .ok_or_else(|| format!("{key} requires a value"))
+}
+
+fn parse(argv: Vec<String>) -> Result<Config, String> {
+    if argv.iter().any(|v| v == "-h" || v == "--help") {
+        println!(
+            "uce_filter -r REFERENCES -q1 R1 -q2 R2 -o SAMPLE_DIR [--kmer-size 31 --step 4]\n\
+Fused UCE rolling-kmer recruitment, run-k verification and adaptive per-locus selection.\n\
+Use --selection legacy for regression, or --reference-role contig during rescue.\n\
+Optional evidence-only mode: --alignment-shadow [--shadow-per-locus 64 --shadow-band 32 --terminal-window 150]."
+        );
+        process::exit(0);
+    }
+    let mut references = None;
+    let mut read1 = None;
+    let mut read2 = None;
+    let mut output = None;
+    let mut config = Config {
+        references: PathBuf::new(),
+        recruit_references: None,
+        read1: PathBuf::new(),
+        read2: PathBuf::new(),
+        output: PathBuf::new(),
+        kmer_size: 31,
+        step: 4,
+        min_depth: 50,
+        max_depth: 768,
+        max_size_mb: 6,
+        max_fragments: 0,
+        memory_limit_mib: 512,
+        selection_auto: true,
+        reference_is_contig: false,
+        alignment_shadow: false,
+        shadow_per_locus: 64,
+        shadow_band: 32,
+        terminal_window: 150,
+    };
+    let mut i = 0;
+    while i < argv.len() {
+        let key = &argv[i];
+        match key.as_str() {
+            "-r" | "--references" => {
+                references = Some(PathBuf::from(next_value(&argv, &mut i, key)?))
+            }
+            "--recruit-references" => {
+                config.recruit_references = Some(PathBuf::from(next_value(&argv, &mut i, key)?))
+            }
+            "-q1" => read1 = Some(PathBuf::from(next_value(&argv, &mut i, key)?)),
+            "-q2" => read2 = Some(PathBuf::from(next_value(&argv, &mut i, key)?)),
+            "-o" | "--output" => output = Some(PathBuf::from(next_value(&argv, &mut i, key)?)),
+            "-kf" | "--kmer-size" => {
+                config.kmer_size = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "-s" | "--step" => {
+                config.step = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--min-depth" => {
+                config.min_depth = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--max-depth" => {
+                config.max_depth = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--max-size" => {
+                config.max_size_mb = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--max-fragments" | "-m_reads" => {
+                config.max_fragments = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--memory-limit-mib" => {
+                config.memory_limit_mib = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--alignment-shadow" => config.alignment_shadow = true,
+            "--shadow-per-locus" => {
+                config.shadow_per_locus = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--shadow-band" => {
+                config.shadow_band = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--terminal-window" => {
+                config.terminal_window = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?
+            }
+            "--selection" => {
+                let value = next_value(&argv, &mut i, key)?;
+                config.selection_auto = match value.as_str() {
+                    "auto" => true,
+                    "legacy" => false,
+                    _ => return Err("--selection must be auto or legacy".to_string()),
+                };
+            }
+            "--reference-role" => {
+                let value = next_value(&argv, &mut i, key)?;
+                config.reference_is_contig = match value.as_str() {
+                    "bait" => false,
+                    "contig" => true,
+                    _ => return Err("--reference-role must be bait or contig".to_string()),
+                };
+            }
+            "--threads" => {
+                let value: usize = next_value(&argv, &mut i, key)?
+                    .parse()
+                    .map_err(|_| format!("invalid {key}"))?;
+                if value != 1 {
+                    return Err(
+                        "UCEFilter currently preserves one-thread-per-sample execution".to_string(),
+                    );
+                }
+            }
+            _ => return Err(format!("unknown argument {key}")),
+        }
+        i += 1;
+    }
+    config.references = references.ok_or_else(|| "-r is required".to_string())?;
+    config.read1 = read1.ok_or_else(|| "-q1 is required".to_string())?;
+    config.read2 = read2.ok_or_else(|| "-q2 is required".to_string())?;
+    config.output = output.ok_or_else(|| "-o is required".to_string())?;
+    if config.step == 0 {
+        return Err("--step must be positive".to_string());
+    }
+    if config.min_depth < 0 {
+        return Err("--min-depth must be non-negative".to_string());
+    }
+    if config.max_depth <= 0 {
+        return Err("--max-depth must be positive".to_string());
+    }
+    if config.max_size_mb <= 0 {
+        return Err("--max-size must be positive".to_string());
+    }
+    if config.alignment_shadow && config.shadow_per_locus == 0 {
+        return Err("--shadow-per-locus must be positive".to_string());
+    }
+    if config.alignment_shadow && config.shadow_band == 0 {
+        return Err("--shadow-band must be positive".to_string());
+    }
+    Ok(config)
+}
+
+fn main() {
+    let result = parse(env::args().skip(1).collect()).and_then(|config| run(&config));
+    match result {
+        Ok(summary) => {
+            eprintln!(
+                "UCEFilter finished: {} fragments read, {} retained once, {} assignments, {} loci, {:.1} MiB memory + {:.1} MiB spill ({:.3}s)",
+                summary.fragments_read, summary.fragments_retained_once, summary.assignments,
+                summary.loci_written,
+                summary.fragment_memory_bytes as f64 / 1_048_576.0,
+                summary.fragment_spill_bytes as f64 / 1_048_576.0,
+                summary.elapsed_seconds,
+            );
+            if summary.shadow_sampled_assignments > 0 {
+                eprintln!(
+                    "Alignment shadow: {} sampled locus assignments, {} aligned mates ({:.3}s alignment time)",
+                    summary.shadow_sampled_assignments,
+                    summary.shadow_aligned_mates,
+                    summary.shadow_seconds,
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    fn required() -> Vec<String> {
+        ["-r", "refs", "-q1", "r1.fq", "-q2", "r2.fq", "-o", "out"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn rejects_invalid_resource_and_depth_limits() {
+        for extra in [
+            ["--step", "0"],
+            ["--min-depth", "-1"],
+            ["--max-depth", "0"],
+            ["--max-size", "0"],
+            ["--threads", "2"],
+            ["--alignment-shadow", "--shadow-per-locus"],
+        ] {
+            let mut args = required();
+            args.extend(extra.into_iter().map(str::to_string));
+            assert!(parse(args).is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_default_off_and_bounded_alignment_shadow() {
+        let plain = parse(required()).unwrap();
+        assert!(!plain.alignment_shadow);
+        assert!(plain.selection_auto);
+        assert!(!plain.reference_is_contig);
+        let mut args = required();
+        args.extend(
+            [
+                "--alignment-shadow",
+                "--shadow-per-locus",
+                "8",
+                "--shadow-band",
+                "24",
+                "--terminal-window",
+                "100",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        let shadow = parse(args).unwrap();
+        assert!(shadow.alignment_shadow);
+        assert_eq!(shadow.shadow_per_locus, 8);
+        assert_eq!(shadow.shadow_band, 24);
+        assert_eq!(shadow.terminal_window, 100);
+    }
+
+    #[test]
+    fn accepts_legacy_regression_and_contig_rescue_roles() {
+        let mut args = required();
+        args.extend(
+            ["--selection", "legacy", "--reference-role", "contig"]
+                .into_iter()
+                .map(str::to_string),
+        );
+        let config = parse(args).unwrap();
+        assert!(!config.selection_auto);
+        assert!(config.reference_is_contig);
+    }
+}

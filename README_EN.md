@@ -14,9 +14,17 @@ Please cite the [GeneMiner2-UCE GitHub repository](https://github.com/GUIBA-EX/G
 
 > **v1.3.2.** The consensus stage, including SAM/CIGAR handling, IUPAC sequence generation, and the optional mutation-density image, now runs in Rust; the main workflow no longer depends on matplotlib or SciPy.
 
-> **v1.4.** MainFilter output now keeps file handles open across flushes, FASTQ/FASTA parsing is byte-level, and the gzip backend is detected at runtime (zlib-ng's SIMD decompression when present, system zlib otherwise); filtering output is unchanged, byte-for-byte, for identical inputs and parameters. `mito` adds a joint rescue round: contigs retained from the first UCE-style pass become sample-specific seeds combined with the GenBank baits into a rescue reference, then recruited and reassembled together with the original paired reads; the adaptive-stop check is now an exact, cut- and strand-independent circular sequence comparison.
+> **v1.4.** MainFilter output now keeps file handles open across flushes, FASTQ/FASTA parsing is byte-level, and the build automatically links native zlib-ng through `pkg-config` when available; runtime detection remains as a portable fallback to zlib-ng or system zlib. filtering output is unchanged, byte-for-byte, for identical inputs and parameters. `mito` adds a joint rescue round: contigs retained from the first UCE-style pass become sample-specific seeds combined with the GenBank baits into a rescue reference, then recruited and reassembled together with the original paired reads; the adaptive-stop check is now an exact, cut- and strand-independent circular sequence comparison.
 
 ![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
+
+## Performance profiling
+
+Add `--workflow-profile` to write `workflow_profile.tsv` at the output root. It records wall-clock time and input/output bytes by sample and rescue round for UCEFilter recruitment/selection, the Rust assembler, and terminal QC/rollback; it does not change filtering or assembly results. When the selected Rust assembler supports it, this option also writes each sample's `assembly_profile.tsv`, splitting read decoding, k-mer counting, graph processing, path search, and output.
+
+```bash
+geneminer2 filter assemble -f samples.txt -r references -o run --assembly-mode uce --workflow-profile
+```
 
 ## Features
 
@@ -99,7 +107,9 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
   --assembly-mode uce --uce-rescue-reads
 ```
 
-**Notes.** UCE uses `uce-rust` only. Rescue recruits again with first-round contigs plus original references and reverts on worse quality. See the [Assembler chapter](docs/assembler_EN.md).
+**Notes.** UCE now uses the fused Rust `ucefilter` by default. One pass over the original PE reads performs rolling-k-mer recruitment, run-k orientation verification, maximum-exact-match evidence, and adaptive per-locus selection, then writes `filtered/` directly. Low-depth or incompletely covered loci pass through; only saturated loci spanning the reference have redundant core evidence reduced, while PE reads crossing bait or contig edges are retained in overhang-length strata. Users do not need to declare target capture versus genome skimming. No GM2 file, candidate FASTQ, or separate Refilter process is produced; each fragment is stored once and both mates remain atomic. Candidate data beyond 256 MiB per sample are written sequentially to an internal spool that is removed automatically. `refilter` remains accepted in commands for compatibility but is unnecessary in UCE mode. Every sample remains single-threaded from recruitment through rescue. With `--uce-rescue-reads`, a bounded whole-contig round is followed by a terminal round for loci that are still growing. The old core is frozen and unsupported added sides roll back. See the [Assembler chapter](docs/assembler_EN.md).
+
+Experimental `--uce-alignment-shadow` is off by default. It samples at most 64 selected fragments per locus and records internal affine-gap alignment identity, overlap, linked-mate, terminal, and 64-bin breadth evidence without changing read selection or assembly input. Target-capture and genome-skimming evidence still require separate interpretation; a short bait boundary is not a biological contig terminal.
 
 ## TE / repeatome mode
 

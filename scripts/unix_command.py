@@ -1,4 +1,5 @@
 from Bio.SeqIO.FastaIO import SimpleFastaParser
+from Bio.SeqIO.QualityIO import FastqGeneralIterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 import argparse
 import csv
@@ -10,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 
 
 COMMAND_HELP = '''
@@ -51,6 +53,86 @@ HELP_EPILOG = 'quality control of assembled genes:' + DEPTH_DEPRECATION_EXPLAINE
 
 SCRIPT_ROOT = os.path.join(sys._MEIPASS, os.pardir) if hasattr(sys, '_MEIPASS') else os.path.dirname(__file__)
 REFERENCE_EXTENSIONS = ('.fa', '.fas', '.fasta')
+UCE_TERMINAL_MIN_EXTENSION = 30
+
+
+def path_size_bytes(path):
+    """Return the size of a file or directory tree without following links."""
+    if not path or not os.path.exists(path):
+        return 0
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            candidate = os.path.join(root, name)
+            try:
+                total += os.path.getsize(candidate)
+            except OSError:
+                pass
+    return total
+
+
+_ASSEMBLER_PROFILE_SUPPORT = {}
+
+
+def assembler_supports_profile(executable):
+    """Probe once so a new wrapper remains compatible with older packaged binaries."""
+    if executable not in _ASSEMBLER_PROFILE_SUPPORT:
+        try:
+            result = subprocess.run([executable, '--help'], capture_output=True, text=True, check=False)
+            _ASSEMBLER_PROFILE_SUPPORT[executable] = '--profile' in (result.stdout + result.stderr)
+        except OSError:
+            _ASSEMBLER_PROFILE_SUPPORT[executable] = False
+    return _ASSEMBLER_PROFILE_SUPPORT[executable]
+
+
+class WorkflowProfiler:
+    """Small, thread-safe wall-clock profile for the outer GeneMiner2 workflow."""
+    HEADER = ('sample', 'round', 'stage', 'wall_ms', 'input_bytes', 'output_bytes', 'status')
+
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.rows = []
+        self.lock = threading.Lock()
+
+    def run(self, sample, stage, action, inputs=(), outputs=(), round_index=0):
+        if not self.enabled:
+            return action()
+        input_bytes = sum(path_size_bytes(path) for path in inputs)
+        started = time.perf_counter()
+        status = 'ok'
+        try:
+            return action()
+        except Exception:
+            status = 'failed'
+            raise
+        finally:
+            row = (
+                sample, round_index, stage,
+                round((time.perf_counter() - started) * 1000, 3),
+                input_bytes,
+                sum(path_size_bytes(path) for path in outputs),
+                status,
+            )
+            with self.lock:
+                self.rows.append(row)
+
+    def write(self, output_dir):
+        if not self.enabled:
+            return
+        path = os.path.join(output_dir, 'workflow_profile.tsv')
+        temp_path = path + '.tmp'
+        with open(temp_path, 'w', newline='') as handle:
+            writer = csv.writer(handle, delimiter='\t')
+            writer.writerow(self.HEADER)
+            writer.writerows(sorted(self.rows, key=lambda row: (row[0], row[1], row[2])))
+        os.replace(temp_path, path)
+UCE_TERMINAL_MIN_BREADTH = 0.85
+UCE_TERMINAL_MAX_GAP = 30
+UCE_TERMINAL_MIN_FRAGMENTS = 2
+UCE_TERMINAL_MIN_BRIDGES = 1
+UCE_RESCUE_ASSEMBLY_KMER = 21
 
 def is_reference_file_name(name):
     """瞅瞅这文件名儿是不是咱认的参考序列。"""
@@ -355,7 +437,7 @@ def build_mito_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
     return added_contigs
 
 
-def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
+def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len, active_loci=None):
     """拿原参考和靠谱 contig 拼一套 UCE 救援参考。"""
     results_dir = os.path.join(sample_dir, 'results')
     summary_rows = read_uce_summary(os.path.join(sample_dir, 'uce_assembly_summary.csv'))
@@ -378,6 +460,8 @@ def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
                 continue
 
             gene = os.path.splitext(entry.name)[0]
+            if active_loci is not None and gene not in active_loci:
+                continue
             contig_path = os.path.join(results_dir, f'{gene}.fasta')
             rescue_path = os.path.join(rescue_ref_dir, f'{gene}.fasta')
             contig_index = 0
@@ -403,6 +487,211 @@ def build_uce_rescue_refs(ref_dir, sample_dir, rescue_ref_dir, min_contig_len):
                 os.remove(rescue_path)
 
     return added_contigs
+
+
+def reverse_complement_text(sequence):
+    """Return an uppercase reverse complement without accepting ambiguity as evidence."""
+    return sequence.upper().translate(str.maketrans('ACGTN', 'TGCAN'))[::-1]
+
+
+def read_first_fasta_sequence(path):
+    if not os.path.isfile(path):
+        return ''
+    with open(path) as handle:
+        for _, sequence in SimpleFastaParser(handle):
+            return ''.join(sequence.split()).upper()
+    return ''
+
+
+def build_uce_terminal_rescue_refs(sample_dir, bait_dir, active_loci, window, min_contig_len):
+    """Build locus-isolated left/right terminal baits for rescue rounds after round one."""
+    results_dir = os.path.join(sample_dir, 'results')
+    summary_rows = read_uce_summary(os.path.join(sample_dir, 'uce_assembly_summary.csv'))
+    if os.path.isdir(bait_dir):
+        shutil.rmtree(bait_dir, ignore_errors=True)
+    os.makedirs(bait_dir, exist_ok=True)
+    written = set()
+
+    for locus in sorted(active_loci):
+        if not uce_summary_row_is_accepted(summary_rows.get(locus)):
+            continue
+        sequence = read_first_fasta_sequence(os.path.join(results_dir, f'{locus}.fasta'))
+        if len(sequence) < min_contig_len:
+            continue
+        flank = min(max(window, min_contig_len), len(sequence))
+        left = sequence[:flank]
+        right = sequence[-flank:]
+        path = os.path.join(bait_dir, f'{locus}.fasta')
+        with open(path, 'w') as out:
+            write_fasta_record(out, f'{locus}_gm2_left_terminal', left)
+            if right != left:
+                write_fasta_record(out, f'{locus}_gm2_right_terminal', right)
+        written.add(locus)
+
+    return written
+
+
+def select_terminal_rescue_loci(before_rows, after_rows):
+    """Continue only loci that gained sequence or independent reads in the previous round."""
+    active = set()
+    for locus, after in after_rows.items():
+        if not uce_summary_row_is_accepted(after):
+            continue
+        before = before_rows.get(locus, {})
+        growth = delta_or_blank(after.get('selected_contig_length'), before.get('selected_contig_length'))
+        read_growth = delta_or_blank(after.get('unique_read_count'), before.get('unique_read_count'))
+        if before and growth != '' and growth >= UCE_TERMINAL_MIN_EXTENSION:
+            active.add(locus)
+        elif before and read_growth != '' and read_growth >= UCE_TERMINAL_MIN_FRAGMENTS:
+            active.add(locus)
+        elif not uce_summary_row_is_accepted(before):
+            active.add(locus)
+    return active
+
+
+def read_locus_fastq(sample_dir, locus):
+    path = os.path.join(sample_dir, 'filtered', f'{locus}.fq')
+    if not os.path.isfile(path):
+        return []
+    with open(path) as handle:
+        return [(title.split()[0], sequence.upper()) for title, sequence, _ in FastqGeneralIterator(handle)]
+
+
+def maximum_false_run(values):
+    longest = current = 0
+    for value in values:
+        if value:
+            current = 0
+        else:
+            current += 1
+            longest = max(longest, current)
+    return longest
+
+
+def terminal_support_metrics(sequence, old_start, old_end, reads, kmer_size=21):
+    """Measure added-side breadth and independent fragments using exact canonical read k-mers."""
+    covered = [False] * len(sequence)
+    fragment_regions = {}
+    left_core_end = min(old_end, old_start + 150)
+    right_core_start = max(old_start, old_end - 150)
+
+    kmer_positions = {}
+    for start in range(max(0, len(sequence) - kmer_size + 1)):
+        kmer = sequence[start:start + kmer_size]
+        if set(kmer) <= {'A', 'C', 'G', 'T'}:
+            kmer_positions.setdefault(kmer, []).append(start)
+
+    for title, read in reads:
+        fragment = title.rsplit('/', 1)[0]
+        regions = fragment_regions.setdefault(fragment, set())
+        observed_kmers = set()
+        for oriented in (read, reverse_complement_text(read)):
+            observed_kmers.update(
+                oriented[offset:offset + kmer_size]
+                for offset in range(max(0, len(oriented) - kmer_size + 1))
+            )
+        for kmer in observed_kmers:
+            for start in kmer_positions.get(kmer, ()):
+                end = start + kmer_size
+                for position in range(start, end):
+                    covered[position] = True
+                if start < old_start:
+                    regions.add('left_extension')
+                if end > old_end:
+                    regions.add('right_extension')
+                if end > old_start and start < left_core_end:
+                    regions.add('left_core')
+                if end > right_core_start and start < old_end:
+                    regions.add('right_core')
+
+    def side_metrics(start, end, extension_region, core_region):
+        length = max(0, end - start)
+        if length == 0:
+            return {'length': 0, 'breadth': 1.0, 'max_gap': 0, 'fragments': 0, 'bridges': 0, 'accepted': False}
+        side_coverage = covered[start:end]
+        fragments = sum(extension_region in regions for regions in fragment_regions.values())
+        bridges = sum(extension_region in regions and core_region in regions for regions in fragment_regions.values())
+        breadth = sum(side_coverage) / length
+        max_gap = maximum_false_run(side_coverage)
+        accepted = (
+            length >= UCE_TERMINAL_MIN_EXTENSION
+            and breadth >= UCE_TERMINAL_MIN_BREADTH
+            and max_gap <= UCE_TERMINAL_MAX_GAP
+            and fragments >= UCE_TERMINAL_MIN_FRAGMENTS
+            and bridges >= UCE_TERMINAL_MIN_BRIDGES
+        )
+        return {'length': length, 'breadth': breadth, 'max_gap': max_gap, 'fragments': fragments, 'bridges': bridges, 'accepted': accepted}
+
+    return (
+        side_metrics(0, old_start, 'left_extension', 'left_core'),
+        side_metrics(old_end, len(sequence), 'right_extension', 'right_core'),
+        covered,
+        fragment_regions,
+    )
+
+
+def write_trimmed_locus_sequence(sample_dir, locus, sequence):
+    """Replace only the selected result; preserve all candidate-contig audit files."""
+    path = os.path.join(sample_dir, 'results', f'{locus}.fasta')
+    if not os.path.isfile(path):
+        return
+    title = locus
+    with open(path) as handle:
+        for current_title, _ in SimpleFastaParser(handle):
+            title = current_title
+            break
+    with open(path, 'w') as out:
+        write_fasta_record(out, title, sequence)
+
+
+def terminal_reconcile_locus(sample_dir, backup_dir, locus, after_row):
+    """Freeze the previous contig and accept left/right additions independently."""
+    old_sequence = read_first_fasta_sequence(os.path.join(backup_dir, 'results', f'{locus}.fasta'))
+    new_sequence = read_first_fasta_sequence(os.path.join(sample_dir, 'results', f'{locus}.fasta'))
+    if not old_sequence or not new_sequence:
+        return None, 'missing_contig'
+
+    old_start = new_sequence.find(old_sequence)
+    if old_start < 0:
+        reverse = reverse_complement_text(new_sequence)
+        old_start = reverse.find(old_sequence)
+        if old_start < 0:
+            return None, 'core_changed'
+        new_sequence = reverse
+    old_end = old_start + len(old_sequence)
+    reads = read_locus_fastq(sample_dir, locus)
+    left, right, covered, fragment_regions = terminal_support_metrics(
+        new_sequence, old_start, old_end, reads
+    )
+    kept_left = new_sequence[:old_start] if left['accepted'] else ''
+    kept_right = new_sequence[old_end:] if right['accepted'] else ''
+    accepted_sequence = kept_left + old_sequence + kept_right
+    if accepted_sequence == old_sequence:
+        return {'left': left, 'right': right, 'sequence': old_sequence, 'stable': True}, 'no_supported_extension'
+
+    write_trimmed_locus_sequence(sample_dir, locus, accepted_sequence)
+    accepted_start = old_start - len(kept_left)
+    accepted_end = old_end + len(kept_right)
+    accepted_coverage = covered[accepted_start:accepted_end]
+    supported = sum(accepted_coverage)
+    supported_positions = [index for index, value in enumerate(accepted_coverage) if value]
+    supported_span = (
+        supported_positions[-1] - supported_positions[0] + 1
+        if supported_positions else 0
+    )
+    fragments = sum(bool(regions) for regions in fragment_regions.values())
+    after_row['selected_contig_length'] = str(len(accepted_sequence))
+    after_row['read_supported_span'] = str(supported_span)
+    after_row['slice_supported_bases'] = str(supported)
+    after_row['slice_support_breadth'] = f'{supported / len(accepted_sequence):.6f}'
+    after_row['max_slice_support_gap'] = str(maximum_false_run(accepted_coverage))
+    after_row['read_count'] = str(fragments)
+    unique_count = int_or_blank(after_row.get('unique_read_count'))
+    if unique_count != '':
+        after_row['read_density'] = f'{fragments / len(accepted_sequence):.6f}'
+        after_row['unique_read_density'] = f'{unique_count / len(accepted_sequence):.6f}'
+    return {'left': left, 'right': right, 'sequence': accepted_sequence, 'stable': False}, 'accepted'
+
 
 def read_uce_summary(summary_path):
     """把 UCE 汇总表按 locus 收拢成一摞，后头好查。"""
@@ -519,6 +808,15 @@ UCE_ASSEMBLY_SUMMARY_FIELDS = [
     'kmer_max_depth_ratio',
     'candidate_count',
     'low_quality',
+]
+
+UCE_RESCUE_ROUND_FIELDS = [
+    'sample', 'round', 'locus', 'round_status', 'before_status', 'after_status',
+    'before_length', 'after_length', 'length_delta', 'before_unique_reads',
+    'after_unique_reads', 'unique_read_delta',
+    'left_extension_length', 'left_breadth', 'left_max_gap', 'left_fragments',
+    'left_bridges', 'left_accepted', 'right_extension_length', 'right_breadth',
+    'right_max_gap', 'right_fragments', 'right_bridges', 'right_accepted',
 ]
 
 UCE_RESCUE_SUMMARY_FIELDS = [
@@ -648,37 +946,119 @@ def format_float_or_blank(value, digits=6):
 
     return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
 
-def revert_invalid_rescue_loci(sample_dir, backup_dir, before_rows, rescue_rows, min_density_ratio):
-    """救援后变孬的 locus 给它退回原样，别硬留着。"""
+def restore_locus_state(sample_dir, backup_dir, locus):
+    """Restore one locus across sequence, read, and count outputs."""
+    for subdir in ('results', 'contigs_all', 'contigs_all_low'):
+        restore_locus_file(sample_dir, backup_dir, subdir, locus)
+    for subdir in ('filtered', 'filtered_pe'):
+        restore_locus_directory_files(sample_dir, backup_dir, subdir, locus)
+    restore_locus_read_count(sample_dir, backup_dir, locus)
+
+
+def revert_invalid_rescue_loci(sample_dir, backup_dir, before_rows, rescue_rows, min_density_ratio, active_loci=None, terminal_round=False, terminal_evidence=None):
+    """Merge a bounded rescue round, restoring inactive, failed, or unsupported loci."""
     reverted = {}
+    terminal_evidence = {} if terminal_evidence is None else terminal_evidence
     final_rows = {locus: row.copy() for locus, row in rescue_rows.items()}
+    active_loci = None if active_loci is None else set(active_loci)
 
     for locus, before in before_rows.items():
-        after = rescue_rows.get(locus)
-        if not uce_summary_row_is_accepted(before):
+        after = final_rows.get(locus)
+        if active_loci is not None and locus not in active_loci:
+            restore_locus_state(sample_dir, backup_dir, locus)
+            final_rows[locus] = before.copy()
+            reverted[locus] = 'stable_not_recruited'
             continue
 
         if not uce_summary_row_is_accepted(after):
-            status = 'reverted_failed_rescue'
-        elif rescue_density_below_ratio(before, after, min_density_ratio):
-            status = 'reverted_density_drop'
-        else:
+            restore_locus_state(sample_dir, backup_dir, locus)
+            final_rows[locus] = before.copy()
+            reverted[locus] = (
+                'reverted_failed_rescue'
+                if uce_summary_row_is_accepted(before)
+                else 'not_recovered'
+            )
             continue
 
-        for subdir in ('results', 'contigs_all', 'contigs_all_low'):
-            restore_locus_file(sample_dir, backup_dir, subdir, locus)
-        for subdir in ('filtered', 'filtered_pe'):
-            restore_locus_directory_files(sample_dir, backup_dir, subdir, locus)
-        restore_locus_read_count(sample_dir, backup_dir, locus)
+        if uce_summary_row_is_accepted(before) and rescue_density_below_ratio(before, after, min_density_ratio):
+            restore_locus_state(sample_dir, backup_dir, locus)
+            final_rows[locus] = before.copy()
+            reverted[locus] = 'reverted_density_drop'
+            continue
 
-        final_rows[locus] = before.copy()
-        reverted[locus] = status
+        if terminal_round and uce_summary_row_is_accepted(before):
+            evidence, terminal_status = terminal_reconcile_locus(
+                sample_dir, backup_dir, locus, after
+            )
+            if evidence is not None:
+                terminal_evidence[locus] = evidence
+            if evidence is None:
+                restore_locus_state(sample_dir, backup_dir, locus)
+                final_rows[locus] = before.copy()
+                reverted[locus] = f'reverted_{terminal_status}'
+                continue
+            if terminal_status == 'no_supported_extension':
+                restore_locus_state(sample_dir, backup_dir, locus)
+                final_rows[locus] = before.copy()
+                reverted[locus] = 'stable_no_supported_extension'
+                continue
+            final_rows[locus] = after
+            reverted[locus] = (
+                f"terminal_left_{'kept' if evidence['left']['accepted'] else 'trimmed'}_"
+                f"right_{'kept' if evidence['right']['accepted'] else 'trimmed'}"
+            )
 
-    if reverted:
-        write_uce_assembly_summary_rows(os.path.join(sample_dir, 'uce_assembly_summary.csv'), final_rows)
-        write_result_dict_from_uce_summary(sample_dir, final_rows)
-
+    write_uce_assembly_summary_rows(os.path.join(sample_dir, 'uce_assembly_summary.csv'), final_rows)
+    write_result_dict_from_uce_summary(sample_dir, final_rows)
     return reverted
+
+def write_sample_uce_rescue_rounds(sample_dir, sample, records):
+    """Write auditable per-locus decisions for every bounded rescue round."""
+    path = os.path.join(sample_dir, 'uce_rescue_rounds.csv')
+    with open(path, 'w', newline='') as out:
+        writer = csv.DictWriter(out, fieldnames=UCE_RESCUE_ROUND_FIELDS)
+        writer.writeheader()
+        writer.writerows(records)
+
+
+def append_uce_rescue_round_records(records, sample, round_index, before_rows, after_rows, statuses, active_loci=None, terminal_evidence=None):
+    loci = sorted(set(before_rows) | set(after_rows))
+    terminal_evidence = {} if terminal_evidence is None else terminal_evidence
+    if active_loci is not None:
+        loci = [locus for locus in loci if locus in active_loci]
+    for locus in loci:
+        before = before_rows.get(locus, {})
+        after = after_rows.get(locus, {})
+        evidence = terminal_evidence.get(locus, {})
+        left = evidence.get('left', {})
+        right = evidence.get('right', {})
+        records.append({
+            'sample': sample,
+            'round': round_index,
+            'locus': locus,
+            'round_status': statuses.get(locus, 'accepted'),
+            'before_status': before.get('status', ''),
+            'after_status': after.get('status', ''),
+            'before_length': before.get('selected_contig_length', ''),
+            'after_length': after.get('selected_contig_length', ''),
+            'length_delta': delta_or_blank(after.get('selected_contig_length'), before.get('selected_contig_length')),
+            'before_unique_reads': before.get('unique_read_count', ''),
+            'after_unique_reads': after.get('unique_read_count', ''),
+            'unique_read_delta': delta_or_blank(after.get('unique_read_count'), before.get('unique_read_count')),
+            'left_extension_length': left.get('length', ''),
+            'left_breadth': format_float_or_blank(left.get('breadth', '')),
+            'left_max_gap': left.get('max_gap', ''),
+            'left_fragments': left.get('fragments', ''),
+            'left_bridges': left.get('bridges', ''),
+            'left_accepted': int(left['accepted']) if 'accepted' in left else '',
+            'right_extension_length': right.get('length', ''),
+            'right_breadth': format_float_or_blank(right.get('breadth', '')),
+            'right_max_gap': right.get('max_gap', ''),
+            'right_fragments': right.get('fragments', ''),
+            'right_bridges': right.get('bridges', ''),
+            'right_accepted': int(right['accepted']) if 'accepted' in right else '',
+        })
+
 
 def write_sample_uce_rescue_summary(sample_dir, sample, before_rows, after_rows, rescue_status, error='', status_by_locus=None, error_by_locus=None):
     """把一个样本救援前后的变化明明白白写进表里。"""
@@ -784,29 +1164,96 @@ def get_rescue_sample_names(samples, failures):
     failed = {sample for sample, _, _ in failures}
     return [name for name in samples if name not in failed]
 
+def get_uce_sample_parallelism(total_threads, sample_count):
+    """Limit complete UCE sample workers by GeneMiner2's normal process budget."""
+    return max(1, min(total_threads, sample_count)), 1
+
+
+def run_ordered_sample_stages(name, do_filter, do_refilter, do_assemble, do_rescue,
+                              filter_stage, refilter_stage, assemble_stage, rescue_stage):
+    """Run one sample end-to-end; stages are injected to keep scheduling testable."""
+    if do_filter:
+        filter_stage(name)
+    if do_refilter:
+        refilter_stage(name)
+    if do_assemble:
+        assemble_stage(name)
+    if do_rescue:
+        rescue_stage(name)
+
+
 def get_uce_rescue_parallelism(total_threads, sample_count):
-    """按总线程和样本数掂量救援咋分工最合适。"""
+    """Keep the legacy rescue scheduler for non-UCE workflows such as mitochondria."""
     rescue_threads = max(1, min(4, total_threads))
     rescue_workers = max(1, min(4, sample_count, total_threads // rescue_threads))
     return rescue_workers, rescue_threads
 
+def use_ucefilter(args):
+    """UCE defaults to text candidates; --legacy-uce-filter retains GM2 compatibility."""
+    return (getattr(args, 'assembly_mode', 'original') == 'uce'
+            and not getattr(args, 'is_mito_workflow', False)
+            and not getattr(args, 'legacy_uce_filter', False))
+
+
+def ucefilter_candidate_subdir(args):
+    return 'filtered' if use_ucefilter(args) else 'filtered_pe'
+
+
+def build_fused_ucefilter_command(filter_bin, verify_ref_dir, recruit_ref_dir,
+                                  sample_dir, q1, q2, args, reference_role='bait'):
+    """Build the single-pass UCE recruit+verify+select command."""
+    command = [
+        filter_bin, '-r', verify_ref_dir, '--recruit-references', recruit_ref_dir,
+        '-q1', q1, '-q2', q2, '-o', sample_dir,
+        '-kf', str(args.kf), '-s', str(args.step_size),
+        '--selection', 'auto', '--reference-role', reference_role, '--threads', '1',
+        '--memory-limit-mib', '256',
+        '--min-depth', str(args.depth_low_water_mark),
+        '--max-depth', str(args.depth_limit),
+        '--max-size', str(args.file_size_limit),
+    ]
+    if args.max_reads > 0:
+        command.extend(['--max-fragments', str(args.max_reads)])
+    if getattr(args, 'uce_alignment_shadow', False):
+        command.extend([
+            '--alignment-shadow',
+            '--shadow-per-locus', str(args.uce_shadow_per_locus),
+            '--shadow-band', str(args.uce_shadow_band),
+            '--terminal-window', str(args.uce_shadow_terminal_window),
+        ])
+    return command
+
+
+def preserve_alignment_shadow(sample_dir, destination_dir, suffix=''):
+    """Copy optional evidence files before a later rescue round overwrites sample outputs."""
+    os.makedirs(destination_dir, exist_ok=True)
+    for stem in ('alignment_shadow', 'alignment_shadow_summary'):
+        source = os.path.join(sample_dir, f'{stem}.tsv')
+        if os.path.isfile(source):
+            target = os.path.join(destination_dir, f'{stem}{suffix}.tsv')
+            shutil.copy2(source, target)
+
+
 def build_uce_rescue_filter_commands(filter_bin, rescue_ref_dir, sample_dir, q1, q2, args, rescue_kmer_dict_path, is_mito=False):
-    """把 UCE 救援过滤要跑的两趟命令整齐备好。"""
+    """Build one UCE recruitment pass; default UCE output contains ordinary FASTQ, never GM2."""
     dict_cmd = [filter_bin, '-r', rescue_ref_dir, '-o', sample_dir, '-kf', str(args.kf),
                 '-s', str(args.step_size), '-gr', '-lkd', rescue_kmer_dict_path, '-m', '2']
+    candidate_subdir = 'filtered_pe' if is_mito else ucefilter_candidate_subdir(args)
+    mode = '4' if is_mito or use_ucefilter(args) else '5'
     reads_cmd = [filter_bin, '-r', rescue_ref_dir, '-q1', q1, '-q2', q2, '-o', sample_dir,
-                 '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                 '-m', '4' if is_mito else '5', '-lb', '-lkd', rescue_kmer_dict_path]
+                 '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', candidate_subdir,
+                 '-m', mode, '-lb', '-lkd', rescue_kmer_dict_path]
 
     if args.max_reads > 0:
         reads_cmd.extend(['-m_reads', str(args.max_reads)])
 
     return dict_cmd, reads_cmd
 
-def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, backend='uce-rust'):
+def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_boundary, thr, backend='uce-rust', assembly_kmer=None, force_single_thread=False):
     """照实现类型拼组装命令，老原版不掺 UCE 新参数。"""
+    assembly_kmer = args.ka if assembly_kmer is None else assembly_kmer
     command = [
-        assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(args.ka),
+        assembler_bin, '-r', ref_dir, '-o', sample_dir, '-ka', str(assembly_kmer),
         '-k_min', str(args.min_ka), '-k_max', str(args.max_ka),
         '-limit_count', str(args.error_threshold), '-iteration', str(args.search_depth),
         '-sb', soft_boundary, '-cov_min', str(args.min_coverage), '-p', str(thr),
@@ -834,13 +1281,16 @@ def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_bound
     ])
 
     if backend == 'uce-rust':
+        kmer_count_threads = 1 if force_single_thread else getattr(args, 'assembler_kmer_count_threads', 0)
         command.extend([
             '--uce-path-strategy', getattr(args, 'uce_path_strategy', 'backbone'),
             '--uce-backbone-lookahead', str(getattr(args, 'uce_backbone_lookahead', 24)),
             '--assembler-read-chunk-size', str(getattr(args, 'assembler_read_chunk_size', 8192)),
-            '--assembler-kmer-count-threads', str(getattr(args, 'assembler_kmer_count_threads', 0)),
+            '--assembler-kmer-count-threads', str(kmer_count_threads),
             '--assembler-graph-format', getattr(args, 'assembler_graph_format', 'none'),
         ])
+        if getattr(args, 'workflow_profile', False) and assembler_supports_profile(assembler_bin):
+            command.append('--profile')
 
     assembler_cache_dir = getattr(args, 'assembler_reference_cache_dir', None)
     original_ref_dir = getattr(args, 'r', None)
@@ -855,8 +1305,11 @@ def build_assembler_command(assembler_bin, args, sample_dir, ref_dir, soft_bound
 def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignore_hook=lambda *_, **__: None):
     """把过滤、再过滤、组装和救援这一大趟活儿串起来。"""
     out_loc = args.o.strip()
+    workflow_profiler = WorkflowProfiler(getattr(args, 'workflow_profile', False))
     is_profiling = "profiling" in getattr(args, "command", ())
     is_mito = bool(getattr(args, "is_mito_workflow", False))
+    ucefilter_enabled = use_ucefilter(args)
+    ucefilter_subdir = ucefilter_candidate_subdir(args)
     kmer_dict_path = get_reference_kmer_dict_path(args, out_loc)
     args.assembler_reference_cache_dir = get_assembler_reference_cache_dir(args, out_loc)
     # Mito always performs one seed-and-recruit round per adaptive depth.
@@ -864,8 +1317,13 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
     failed_samples = []
     rescue_workers, rescue_threads = get_uce_rescue_parallelism(args.p, len(samples))
 
-    if rescue_enabled and (args.assembly_mode != 'uce' or not do_filter or not do_refilter or not do_assemble):
-        raise RuntimeError('--uce-rescue-reads requires --assembly-mode uce and the filter, refilter and assemble steps')
+    refilter_required = not ucefilter_enabled
+    if rescue_enabled and (
+        args.assembly_mode != 'uce' or not do_filter or not do_assemble
+        or (refilter_required and not do_refilter)
+    ):
+        required = 'filter and assemble' if ucefilter_enabled else 'filter, refilter and assemble'
+        raise RuntimeError(f'--uce-rescue-reads requires --assembly-mode uce and the {required} steps')
 
     if args.soft_boundary == 'auto':
         soft_boundary = -1
@@ -883,27 +1341,32 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
     soft_boundary = str(soft_boundary)
 
     if do_filter:
-        filter_bin = find_executable('MainFilterNew', internal=True)
+        filter_bin = find_executable('uce_filter' if ucefilter_enabled else 'MainFilterNew', internal=True)
 
-        os.makedirs(os.path.dirname(kmer_dict_path), exist_ok=True)
+        if not ucefilter_enabled:
+            os.makedirs(os.path.dirname(kmer_dict_path), exist_ok=True)
 
-        if os.path.isfile(kmer_dict_path) and args.reuse_reference_cache:
-            print(f'Reusing reference k-mer cache: {kmer_dict_path}')
-        elif os.path.isfile(kmer_dict_path):
-            os.remove(kmer_dict_path)
+            if os.path.isfile(kmer_dict_path) and args.reuse_reference_cache:
+                print(f'Reusing reference k-mer cache: {kmer_dict_path}')
+            elif os.path.isfile(kmer_dict_path):
+                os.remove(kmer_dict_path)
 
-        if not os.path.isfile(kmer_dict_path):
-            try:
-                subprocess.run([filter_bin, '-r', args.r, '-o', out_loc, '-kf', str(args.kf), '-s', str(args.step_size),
-                                '-gr', '-lkd', kmer_dict_path, '-m', '2'], check=True)
-            except subprocess.SubprocessError as e:
-                raise RuntimeError(f"Unable to build k-mer dictionary: {e}")
+            if not os.path.isfile(kmer_dict_path):
+                try:
+                    workflow_profiler.run(
+                        '__reference__', 'mainfilter_index',
+                        lambda: subprocess.run([filter_bin, '-r', args.r, '-o', out_loc, '-kf', str(args.kf), '-s', str(args.step_size),
+                                                '-gr', '-lkd', kmer_dict_path, '-m', '2'], check=True),
+                        inputs=(args.r,), outputs=(kmer_dict_path,),
+                    )
+                except subprocess.SubprocessError as e:
+                    raise RuntimeError(f"Unable to build k-mer dictionary: {e}")
 
         def run_filter(name):
             """给这个样本捞参考相关读段，再把输出归拢好。"""
             q1, q2 = samples[name]
             read_count_path = os.path.join(out_loc, name, 'ref_reads_count_dict.txt')
-            out_dir = os.path.join(out_loc, name, 'filtered_pe')
+            out_dir = os.path.join(out_loc, name, ucefilter_subdir)
 
             if os.path.isfile(read_count_path):
                 os.remove(read_count_path)
@@ -911,14 +1374,37 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
             if os.path.isdir(out_dir):
                 shutil.rmtree(out_dir, ignore_errors=True)
 
+            if ucefilter_enabled:
+                sample_dir = os.path.join(out_loc, name)
+                filtered_dir = os.path.join(sample_dir, 'filtered')
+                if os.path.isdir(filtered_dir):
+                    shutil.rmtree(filtered_dir, ignore_errors=True)
+                params = build_fused_ucefilter_command(
+                    filter_bin, args.r, args.r, sample_dir, q1, q2, args,
+                )
+                workflow_profiler.run(
+                    name, 'ucefilter', lambda: subprocess.run(params, check=True),
+                    inputs=(q1, q2, args.r),
+                    outputs=(filtered_dir, read_count_path, os.path.join(sample_dir, 'uce_filter_summary.tsv')),
+                )
+                if not os.path.isfile(read_count_path) or not os.path.isdir(filtered_dir):
+                    raise RuntimeError('UCEFilter failed')
+                if getattr(args, 'uce_alignment_shadow', False):
+                    preserve_alignment_shadow(sample_dir, sample_dir, '_initial')
+                return
+
+            filter_mode = '4' if is_profiling or is_mito or ucefilter_enabled else '5'
             params = [filter_bin, '-r', args.r, '-q1', q1, '-q2', q2, '-o', os.path.join(out_loc, name),
-                      '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', 'filtered_pe',
-                      '-m', '4' if is_profiling or is_mito else '5', '-lb', '-lkd', kmer_dict_path]
+                      '-kf', str(args.kf), '-s', str(args.step_size), '-gr', '-subdir', ucefilter_subdir,
+                      '-m', filter_mode, '-lb', '-lkd', kmer_dict_path]
 
             if args.max_reads > 0:
                 params.extend(['-m_reads', str(args.max_reads)])
 
-            subprocess.run(params, check=True)
+            workflow_profiler.run(
+                name, 'ucefilter_recruit' if ucefilter_enabled else 'mainfilter_scan', lambda: subprocess.run(params, check=True),
+                inputs=(q1, q2), outputs=(out_dir, read_count_path),
+            )
 
             if not os.path.isfile(read_count_path):
                 raise RuntimeError('Filter failed')
@@ -974,11 +1460,16 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         run_filter = ignore_hook
 
     if do_refilter:
-        refilter_bin = find_executable('main_refilter_new', internal=True)
+        refilter_bin = None if ucefilter_enabled else find_executable('main_refilter_new', internal=True)
 
-        def run_refilter(name, thr=1, ref_dir=None):
+        def run_refilter(name, thr=1, ref_dir=None, profile_round=0):
             """把样本读段再筛一遍，杂的赖的往外挑。"""
-            in_dir  = os.path.join(out_loc, name, 'filtered_pe')
+            if ucefilter_enabled:
+                filtered_dir = os.path.join(out_loc, name, 'filtered')
+                if not os.path.isdir(filtered_dir):
+                    raise RuntimeError('UCEFilter did not produce filtered reads')
+                return
+            in_dir  = os.path.join(out_loc, name, ucefilter_subdir)
             out_dir = os.path.join(out_loc, name, 'filtered')
             ref_dir = args.r if ref_dir is None else ref_dir
 
@@ -992,13 +1483,16 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                       '-p', str(thr), '--log-file', os.path.join(out_loc, name, 'log.txt'),
                       '--min-depth', str(args.depth_low_water_mark), '--max-depth', str(args.depth_limit),
                       '--max-size', str(args.file_size_limit)]
-            if not is_mito:
+            if not is_mito and not ucefilter_enabled:
                 params.append('--use-gm2-format')
 
             if args.assembly_mode == 'uce' or is_profiling:
                 params.append('--keep-linked-mates')
 
-            subprocess.run(params, check=True)
+            workflow_profiler.run(
+                name, 'ucefilter_select' if ucefilter_enabled else 'refilter', lambda: subprocess.run(params, check=True),
+                inputs=(in_dir,), outputs=(out_dir,), round_index=profile_round,
+            )
 
             if do_filter and os.path.isdir(in_dir) and os.path.isdir(out_dir):
                 shutil.rmtree(in_dir, ignore_errors=True)
@@ -1027,7 +1521,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 )
             rust_assembler_bin = find_executable('main_assembler-rust', internal=True)
 
-        def run_assembler(name, thr=1, ref_dir=None):
+        def run_assembler(name, thr=1, ref_dir=None, assembly_kmer=None, force_single_thread=False, profile_round=0):
             """组装这个样本；original 默认 original-rust，UCE 默认 uce-rust。"""
             sample_dir = os.path.join(out_loc, name)
             in_dir = os.path.join(sample_dir, 'filtered')
@@ -1093,9 +1587,15 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                 """真把组装器跑起来，再瞅瞅结果落地没。"""
                 clear_assembly_outputs()
                 command = build_assembler_command(
-                    executable, args, sample_dir, ref_dir, soft_boundary, thr, backend=backend
+                    executable, args, sample_dir, ref_dir, soft_boundary, thr,
+                    backend=backend, assembly_kmer=assembly_kmer,
+                    force_single_thread=force_single_thread,
                 )
-                subprocess.run(command, check=True)
+                workflow_profiler.run(
+                    name, 'assembler', lambda: subprocess.run(command, check=True),
+                    inputs=(in_dir,), outputs=(out_dir, result_path, os.path.join(sample_dir, 'assembly_profile.tsv')),
+                    round_index=profile_round,
+                )
                 if not os.path.isfile(result_path):
                     raise RuntimeError('Assembly failed to produce result_dict.txt')
 
@@ -1110,222 +1610,352 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         run_assembler = ignore_hook
 
     if rescue_enabled:
-        def run_uce_rescue(name, thr=1):
-            """拿初组装结果再捞一轮读段，救救这个 UCE 样本。"""
+        def run_uce_rescue(name, thr=1, force_single_thread=False):
+            """Run one whole-contig rescue and optional terminal-only bounded rounds."""
             sample_dir = os.path.join(out_loc, name)
-            rescue_ref_dir = os.path.join(sample_dir, 'uce_rescue_refs')
-            rescue_kmer_dict_path = os.path.join(sample_dir, f'uce_rescue_kmer_dict_k{args.kf}.dict')
             summary_path = os.path.join(sample_dir, 'uce_assembly_summary.csv')
             read_count_path = os.path.join(sample_dir, 'ref_reads_count_dict.txt')
-            filtered_pe_dir = os.path.join(sample_dir, 'filtered_pe')
+            filtered_pe_dir = os.path.join(sample_dir, ucefilter_subdir)
             filtered_dir = os.path.join(sample_dir, 'filtered')
+            initial_rows = read_uce_summary(summary_path)
+            current_rows = initial_rows
+            previous_round_input = initial_rows
+            round_records = []
+            combined_statuses = {}
+            combined_errors = {}
+            maximum_rounds = 1 if is_mito else args.uce_rescue_rounds
+            completed_rounds = 0
+            final_rescue_status = 'success'
+            final_rescue_error = ''
 
-            before_rows = read_uce_summary(summary_path)
-            added_contigs = (
-                build_mito_rescue_refs(args.r, sample_dir, rescue_ref_dir, args.uce_rescue_min_contig_length)
-                if is_mito else
-                build_uce_rescue_refs(args.r, sample_dir, rescue_ref_dir, args.uce_rescue_min_contig_length)
-            )
+            for round_index in range(1, maximum_rounds + 1):
+                round_before = current_rows
+                active_loci = None
+                terminal_round = round_index > 1 and not is_mito
+                round_root = os.path.join(sample_dir, f'uce_rescue_round_{round_index}')
+                assembly_ref_dir = os.path.join(round_root, 'assembly_refs')
+                filter_ref_dir = assembly_ref_dir
+                rescue_kmer_dict_path = os.path.join(round_root, f'filter_k{args.kf}.dict')
 
-            if added_contigs == 0:
-                print(f'No preliminary UCE contigs for {name}; skipping raw-read rescue.')
-                write_sample_uce_rescue_summary(sample_dir, name, before_rows, before_rows, 'skipped')
-                return
+                if is_mito:
+                    added_contigs = build_mito_rescue_refs(
+                        args.r, sample_dir, assembly_ref_dir,
+                        args.uce_rescue_min_contig_length,
+                    )
+                elif terminal_round:
+                    active_loci = select_terminal_rescue_loci(previous_round_input, current_rows)
+                    if not active_loci:
+                        print(f'No growing UCE loci remain for {name}; stopping after round {round_index - 1}.')
+                        break
+                    added_contigs = build_uce_rescue_refs(
+                        args.r, sample_dir, assembly_ref_dir,
+                        args.uce_rescue_min_contig_length,
+                        active_loci=active_loci,
+                    )
+                    filter_ref_dir = os.path.join(round_root, 'terminal_baits')
+                    active_loci = build_uce_terminal_rescue_refs(
+                        sample_dir, filter_ref_dir, active_loci,
+                        args.uce_rescue_terminal_window,
+                        args.uce_rescue_min_contig_length,
+                    )
+                    if not active_loci:
+                        print(f'No informative terminal baits remain for {name}; stopping after round {round_index - 1}.')
+                        break
+                else:
+                    added_contigs = build_uce_rescue_refs(
+                        args.r, sample_dir, assembly_ref_dir,
+                        args.uce_rescue_min_contig_length,
+                    )
 
-            print(f'Running one-round UCE raw-read rescue for {name} using {added_contigs} preliminary contig(s).')
-            backup_dir = backup_sample_state(sample_dir)
+                if added_contigs == 0:
+                    print(f'No preliminary UCE contigs for {name}; skipping rescue round {round_index}.')
+                    if round_index == 1:
+                        final_rescue_status = 'skipped'
+                    break
 
-            try:
-                if os.path.isfile(rescue_kmer_dict_path):
-                    os.remove(rescue_kmer_dict_path)
-
-                q1, q2 = samples[name]
-                dict_cmd, reads_cmd = build_uce_rescue_filter_commands(
-                    filter_bin,
-                    rescue_ref_dir,
-                    sample_dir,
-                    q1,
-                    q2,
-                    args,
-                    rescue_kmer_dict_path,
-                    is_mito=is_mito,
+                kind = 'terminal-only' if terminal_round else 'whole-contig'
+                print(
+                    f'Running UCE rescue round {round_index}/{maximum_rounds} for {name}: '
+                    f'{kind}, {added_contigs} preliminary contig(s).'
                 )
+                backup_dir = backup_sample_state(sample_dir)
 
-                subprocess.run(dict_cmd, check=True)
-
-                if os.path.isfile(read_count_path):
-                    os.remove(read_count_path)
-
-                if os.path.isdir(filtered_pe_dir):
-                    shutil.rmtree(filtered_pe_dir, ignore_errors=True)
-
-                if os.path.isdir(filtered_dir):
-                    shutil.rmtree(filtered_dir, ignore_errors=True)
-
-                subprocess.run(reads_cmd, check=True)
-
-                if not os.path.isfile(read_count_path):
-                    raise RuntimeError('UCE rescue filter failed')
-
-                run_refilter(name, thr=thr, ref_dir=rescue_ref_dir)
-                run_assembler(name, thr=thr, ref_dir=rescue_ref_dir)
-
-            except Exception as e:
-                restore_sample_state(sample_dir, backup_dir)
-                write_sample_uce_rescue_summary(sample_dir, name, before_rows, before_rows, 'failed_rolled_back', str(e))
-                print(f'Warning: UCE raw-read rescue failed for {name}; first-round assembly was restored: {e}')
-                return
-
-            else:
-                after_rows = read_uce_summary(summary_path)
-                reverted_loci = revert_invalid_rescue_loci(
-                    sample_dir,
-                    backup_dir,
-                    before_rows,
-                    after_rows,
-                    args.uce_rescue_min_density_ratio,
-                )
-                status_by_locus = reverted_loci
-                error_by_locus = {}
-                for locus, status in reverted_loci.items():
-                    if status == 'reverted_density_drop':
-                        error_by_locus[locus] = (
-                            f'rescue unique read density ratio below '
-                            f'{args.uce_rescue_min_density_ratio:g}; first-round contig restored')
+                try:
+                    os.makedirs(round_root, exist_ok=True)
+                    q1, q2 = samples[name]
+                    if os.path.isfile(read_count_path):
+                        os.remove(read_count_path)
+                    for directory in (filtered_pe_dir, filtered_dir):
+                        if os.path.isdir(directory):
+                            shutil.rmtree(directory, ignore_errors=True)
+                    if ucefilter_enabled:
+                        reads_cmd = build_fused_ucefilter_command(
+                            filter_bin, assembly_ref_dir, filter_ref_dir,
+                            sample_dir, q1, q2, args, reference_role='contig',
+                        )
+                        workflow_profiler.run(
+                            name, 'ucefilter_rescue', lambda: subprocess.run(reads_cmd, check=True),
+                            inputs=(q1, q2, filter_ref_dir, assembly_ref_dir),
+                            outputs=(filtered_dir, read_count_path, os.path.join(sample_dir, 'uce_filter_summary.tsv')),
+                            round_index=round_index,
+                        )
+                        if getattr(args, 'uce_alignment_shadow', False):
+                            preserve_alignment_shadow(sample_dir, round_root)
                     else:
-                        error_by_locus[locus] = (
-                            'rescue result missing or rejected; first-round contig restored')
-                final_rows = read_uce_summary(summary_path)
-                write_sample_uce_rescue_summary(sample_dir, name, before_rows, final_rows, 'success', status_by_locus=status_by_locus, error_by_locus=error_by_locus)
-                discard_sample_state_backup(backup_dir)
+                        if os.path.isfile(rescue_kmer_dict_path):
+                            os.remove(rescue_kmer_dict_path)
+                        dict_cmd, reads_cmd = build_uce_rescue_filter_commands(
+                            filter_bin, filter_ref_dir, sample_dir, q1, q2, args,
+                            rescue_kmer_dict_path, is_mito=is_mito,
+                        )
+                        workflow_profiler.run(
+                            name, 'rescue_mainfilter_index', lambda: subprocess.run(dict_cmd, check=True),
+                            inputs=(filter_ref_dir,), outputs=(rescue_kmer_dict_path,), round_index=round_index,
+                        )
+                        workflow_profiler.run(
+                            name, 'rescue_mainfilter_scan', lambda: subprocess.run(reads_cmd, check=True),
+                            inputs=(q1, q2), outputs=(filtered_pe_dir, read_count_path), round_index=round_index,
+                        )
+                    if not os.path.isfile(read_count_path):
+                        raise RuntimeError('UCE rescue filter failed')
+                    run_refilter(name, thr=thr, ref_dir=assembly_ref_dir, profile_round=round_index)
+                    run_assembler(
+                        name, thr=thr, ref_dir=assembly_ref_dir,
+                        assembly_kmer=None if is_mito else UCE_RESCUE_ASSEMBLY_KMER,
+                        force_single_thread=force_single_thread, profile_round=round_index,
+                    )
+                except Exception as error:
+                    restore_sample_state(sample_dir, backup_dir)
+                    current_rows = read_uce_summary(summary_path)
+                    final_rescue_error = str(error)
+                    final_rescue_status = (
+                        'failed_rolled_back'
+                        if completed_rounds == 0
+                        else f'success_round_{round_index}_failed_rolled_back'
+                    )
+                    print(
+                        f'Warning: UCE rescue round {round_index} failed for {name}; '
+                        f'previous assembly restored: {error}'
+                    )
+                    break
+                else:
+                    raw_after = read_uce_summary(summary_path)
+                    terminal_evidence = {}
+                    statuses = workflow_profiler.run(
+                        name, 'terminal_qc_rollback',
+                        lambda: revert_invalid_rescue_loci(
+                            sample_dir, backup_dir, round_before, raw_after,
+                            args.uce_rescue_min_density_ratio,
+                            active_loci=active_loci,
+                            terminal_round=terminal_round,
+                            terminal_evidence=terminal_evidence,
+                        ),
+                        inputs=(backup_dir, os.path.join(sample_dir, 'results')),
+                        outputs=(os.path.join(sample_dir, 'results'), summary_path),
+                        round_index=round_index,
+                    )
+                    current_rows = read_uce_summary(summary_path)
+                    append_uce_rescue_round_records(
+                        round_records, name, round_index, round_before,
+                        current_rows, statuses, active_loci=active_loci,
+                        terminal_evidence=terminal_evidence,
+                    )
+                    for locus, status in statuses.items():
+                        if status not in {'stable_not_recruited'}:
+                            combined_statuses[locus] = status
+                        if status == 'reverted_density_drop':
+                            combined_errors[locus] = (
+                                f'rescue unique read density ratio below '
+                                f'{args.uce_rescue_min_density_ratio:g}; previous contig restored'
+                            )
+                        elif status.startswith('reverted_'):
+                            combined_errors[locus] = (
+                                f'{status}; previous contig restored'
+                            )
+                    discard_sample_state_backup(backup_dir)
+                    previous_round_input = round_before
+                    completed_rounds += 1
+
+            write_sample_uce_rescue_rounds(sample_dir, name, round_records)
+            final_rows = read_uce_summary(summary_path)
+            write_sample_uce_rescue_summary(
+                sample_dir, name, initial_rows, final_rows, final_rescue_status,
+                final_rescue_error,
+                status_by_locus=combined_statuses,
+                error_by_locus=combined_errors,
+            )
     else:
         run_uce_rescue = ignore_hook
 
-    if args.p > 1:
-        avail_cpu = args.p
-        asm_thr   = max(min(args.p // 2, 6), 2)
-        filt_thr  = 1 if args.p < 4 else 2
+    # UCE is intentionally scheduled at sample granularity.  A worker owns one
+    # sample from filtering through optional rescue, so MainFilter remains
+    # single-threaded and samples never contend through the stage scheduler.
+    uce_sample_pipeline = args.assembly_mode == 'uce' and not is_mito and not is_profiling
 
-        def calc_task_thr():
-            """瞅着手头空闲 CPU，给下个任务匀点线程。"""
-            min_thr = min(asm_thr, filt_thr) if filter_list else asm_thr
-            return avail_cpu if avail_cpu - asm_thr < min_thr else asm_thr
+    if uce_sample_pipeline:
+        sample_workers, sample_threads = get_uce_sample_parallelism(args.p, len(samples))
+        print(
+            f'Running UCE as {sample_workers} whole-sample pipeline(s) in parallel; '
+            f'each sample uses {sample_threads} thread.'
+        )
 
-        filter_list   = []
-        refilter_list = []
-        assemble_list = []
+        def run_uce_sample_pipeline(name):
+            run_ordered_sample_stages(
+                name, do_filter, do_refilter, do_assemble, rescue_enabled,
+                run_filter,
+                lambda sample: run_refilter(sample, thr=sample_threads),
+                lambda sample: run_assembler(sample, thr=sample_threads, force_single_thread=True),
+                lambda sample: run_uce_rescue(sample, thr=sample_threads, force_single_thread=True),
+            )
 
-        executor      = ThreadPoolExecutor(max_workers=math.ceil(avail_cpu / filt_thr))
-        running_tasks = {}
-        task_metadata = {} # (stage, threads)
-
-        if do_filter:
-            filter_list.extend(reversed(samples.keys()))
-        elif do_refilter:
-            refilter_list.extend(reversed(samples.keys()))
-        elif do_assemble:
-            assemble_list.extend(reversed(samples.keys()))
-
-        while True:
-            while refilter_list and avail_cpu >= filt_thr:
-                sample = refilter_list.pop()
-                task_thr = calc_task_thr()
-                avail_cpu -= task_thr
-                running_tasks[sample] = executor.submit(run_refilter, sample, thr=task_thr)
-                task_metadata[sample] = (2, task_thr)
-
-            while assemble_list and avail_cpu >= asm_thr:
-                sample = assemble_list.pop()
-                task_thr = calc_task_thr()
-                avail_cpu -= task_thr
-                running_tasks[sample] = executor.submit(run_assembler, sample, thr=task_thr)
-                task_metadata[sample] = (3, task_thr)
-
-            while filter_list and avail_cpu >= filt_thr:
-                sample = filter_list.pop()
-                avail_cpu -= filt_thr
-                running_tasks[sample] = executor.submit(run_filter, sample)
-                task_metadata[sample] = (1, filt_thr)
-
-            if not running_tasks:
-                break
-
-            wait(running_tasks.values(), return_when=FIRST_COMPLETED)
-
-            processed_samples = set()
-
-            for sample, task in running_tasks.items():
-                if not task.done():
-                    continue
-
-                processed_samples.add(sample)
-
-                stage, thr_cnt = task_metadata[sample]
-                avail_cpu += thr_cnt
-
+        if sample_workers > 1:
+            with ThreadPoolExecutor(max_workers=sample_workers) as executor:
+                running_samples = {
+                    executor.submit(run_uce_sample_pipeline, name): name
+                    for name in samples
+                }
+                for task in as_completed(running_samples):
+                    name = running_samples[task]
+                    try:
+                        task.result()
+                    except Exception as error:
+                        print(f'An error occurred while processing {name}: {error}')
+                        failed_samples.append((name, 'uce_sample_pipeline', str(error)))
+        else:
+            for name in samples:
                 try:
-                    task.result()
-                except Exception as e:
-                    print(f'An error occurred while processing {sample}: {e}')
-                    failed_samples.append((sample, {1: 'filter', 2: 'refilter', 3: 'assemble'}.get(stage, 'unknown'), str(e)))
-                    continue
-
-                if stage == 1:
-                    if do_refilter:
-                        refilter_list.append(sample)
-                    elif do_assemble:
-                        assemble_list.append(sample)
-                elif stage == 2 and do_assemble:
-                    assemble_list.append(sample)
-
-            for sample in processed_samples:
-                del running_tasks[sample]
-                del task_metadata[sample]
-
-        executor.shutdown()
+                    run_uce_sample_pipeline(name)
+                except Exception as error:
+                    print(f'An error occurred while processing {name}: {error}')
+                    failed_samples.append((name, 'uce_sample_pipeline', str(error)))
 
     else:
-        for name in samples.keys():
-            try:
-                if do_filter:
-                    run_filter(name)
-                if do_refilter:
-                    run_refilter(name)
-                if do_assemble:
-                    run_assembler(name)
-            except Exception as e:
-                print(f'An error occurred while processing {name}: {e}')
-                failed_samples.append((name, 'filter/refilter/assemble', str(e)))
-                continue
+        if args.p > 1:
+            avail_cpu = args.p
+            asm_thr   = max(min(args.p // 2, 6), 2)
+            filt_thr  = 1 if args.p < 4 else 2
 
-    if rescue_enabled:
-        rescue_samples = get_rescue_sample_names(samples, failed_samples)
-        print(f'Running UCE raw-read rescue with up to {rescue_workers} sample(s) in parallel and {rescue_threads} thread(s) per sample.')
+            def calc_task_thr():
+                """瞅着手头空闲 CPU，给下个任务匀点线程。"""
+                min_thr = min(asm_thr, filt_thr) if filter_list else asm_thr
+                return avail_cpu if avail_cpu - asm_thr < min_thr else asm_thr
 
-        if rescue_workers > 1:
-            with ThreadPoolExecutor(max_workers=rescue_workers) as executor:
-                running_rescues = {
-                    executor.submit(run_uce_rescue, name, thr=rescue_threads): name
-                    for name in rescue_samples
-                }
+            filter_list   = []
+            refilter_list = []
+            assemble_list = []
 
-                for task in as_completed(running_rescues):
-                    name = running_rescues[task]
+            executor      = ThreadPoolExecutor(max_workers=math.ceil(avail_cpu / filt_thr))
+            running_tasks = {}
+            task_metadata = {} # (stage, threads)
+
+            if do_filter:
+                filter_list.extend(reversed(samples.keys()))
+            elif do_refilter:
+                refilter_list.extend(reversed(samples.keys()))
+            elif do_assemble:
+                assemble_list.extend(reversed(samples.keys()))
+
+            while True:
+                while refilter_list and avail_cpu >= filt_thr:
+                    sample = refilter_list.pop()
+                    task_thr = calc_task_thr()
+                    avail_cpu -= task_thr
+                    running_tasks[sample] = executor.submit(run_refilter, sample, thr=task_thr)
+                    task_metadata[sample] = (2, task_thr)
+
+                while assemble_list and avail_cpu >= asm_thr:
+                    sample = assemble_list.pop()
+                    task_thr = calc_task_thr()
+                    avail_cpu -= task_thr
+                    running_tasks[sample] = executor.submit(run_assembler, sample, thr=task_thr)
+                    task_metadata[sample] = (3, task_thr)
+
+                while filter_list and avail_cpu >= filt_thr:
+                    sample = filter_list.pop()
+                    avail_cpu -= filt_thr
+                    running_tasks[sample] = executor.submit(run_filter, sample)
+                    task_metadata[sample] = (1, filt_thr)
+
+                if not running_tasks:
+                    break
+
+                wait(running_tasks.values(), return_when=FIRST_COMPLETED)
+
+                processed_samples = set()
+
+                for sample, task in running_tasks.items():
+                    if not task.done():
+                        continue
+
+                    processed_samples.add(sample)
+
+                    stage, thr_cnt = task_metadata[sample]
+                    avail_cpu += thr_cnt
 
                     try:
                         task.result()
                     except Exception as e:
-                        print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
-                        failed_samples.append((name, 'uce_rescue', str(e)))
+                        print(f'An error occurred while processing {sample}: {e}')
+                        failed_samples.append((sample, {1: 'filter', 2: 'refilter', 3: 'assemble'}.get(stage, 'unknown'), str(e)))
+                        continue
+
+                    if stage == 1:
+                        if do_refilter:
+                            refilter_list.append(sample)
+                        elif do_assemble:
+                            assemble_list.append(sample)
+                    elif stage == 2 and do_assemble:
+                        assemble_list.append(sample)
+
+                for sample in processed_samples:
+                    del running_tasks[sample]
+                    del task_metadata[sample]
+
+            executor.shutdown()
+
         else:
-            for name in rescue_samples:
+            for name in samples.keys():
                 try:
-                    run_uce_rescue(name, thr=rescue_threads)
+                    if do_filter:
+                        run_filter(name)
+                    if do_refilter:
+                        run_refilter(name)
+                    if do_assemble:
+                        run_assembler(name)
                 except Exception as e:
-                    print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
-                    failed_samples.append((name, 'uce_rescue', str(e)))
+                    print(f'An error occurred while processing {name}: {e}')
+                    failed_samples.append((name, 'filter/refilter/assemble', str(e)))
                     continue
 
+        if rescue_enabled:
+            rescue_samples = get_rescue_sample_names(samples, failed_samples)
+            print(f'Running UCE raw-read rescue with up to {rescue_workers} sample(s) in parallel and {rescue_threads} thread(s) per sample.')
+
+            if rescue_workers > 1:
+                with ThreadPoolExecutor(max_workers=rescue_workers) as executor:
+                    running_rescues = {
+                        executor.submit(run_uce_rescue, name, thr=rescue_threads): name
+                        for name in rescue_samples
+                    }
+
+                    for task in as_completed(running_rescues):
+                        name = running_rescues[task]
+
+                        try:
+                            task.result()
+                        except Exception as e:
+                            print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
+                            failed_samples.append((name, 'uce_rescue', str(e)))
+            else:
+                for name in rescue_samples:
+                    try:
+                        run_uce_rescue(name, thr=rescue_threads)
+                    except Exception as e:
+                        print(f'An error occurred during UCE raw-read rescue for {name}: {e}')
+                        failed_samples.append((name, 'uce_rescue', str(e)))
+                        continue
+
+    workflow_profiler.write(out_loc)
     write_failed_samples(out_loc, failed_samples)
 
     if failed_samples:
@@ -1456,6 +2086,25 @@ def write_uce_rescue_summary(args, samples):
     if not wrote_any:
         os.remove(out_path)
 
+def write_uce_rescue_rounds(args, samples):
+    """Merge per-sample bounded-round decisions into one audit table."""
+    out_path = os.path.join(args.o.strip(), 'uce_rescue_rounds.csv')
+    wrote_any = False
+    with open(out_path, 'w', newline='') as out:
+        writer = csv.DictWriter(out, fieldnames=UCE_RESCUE_ROUND_FIELDS)
+        writer.writeheader()
+        for sample in samples.keys():
+            path = os.path.join(args.o.strip(), sample, 'uce_rescue_rounds.csv')
+            if not os.path.isfile(path):
+                continue
+            with open(path, newline='') as handle:
+                for row in csv.DictReader(handle):
+                    writer.writerow({name: row.get(name, '') for name in UCE_RESCUE_ROUND_FIELDS})
+                    wrote_any = True
+    if not wrote_any:
+        os.remove(out_path)
+
+
 def write_uce_outputs(args, samples):
     """把 UCE 后续要用的 contig 和汇总产物一气儿写全。"""
     write_uce_contigs_for_phyluce(args, samples)
@@ -1463,6 +2112,7 @@ def write_uce_outputs(args, samples):
 
     if args.uce_rescue_reads:
         write_uce_rescue_summary(args, samples)
+        write_uce_rescue_rounds(args, samples)
 
 def run_population(args):
     """把 population 模式参数攒齐，交给主程序开整。"""
@@ -2407,7 +3057,7 @@ def run_mito_adaptive(args, samples):
                 if all(current[sample]["status"] == "circular" for sample in samples):
                     return
                 statuses = ", ".join(
-                    f"{sample}={current[sample]["status"]}" for sample in samples
+                    f"{sample}={current[sample]['status']}" for sample in samples
                 )
                 raise RuntimeError(
                     "mito adaptive stop reached a stable non-circular assembly; "
@@ -2716,11 +3366,13 @@ if __name__ == '__main__':
     group_filter.add_argument('--max-reads', default=0, help='Million reads to process per file', metavar='INT', type=int)
     group_filter.add_argument('--reuse-reference-cache', action='store_true', default=False, help='Reuse a fingerprinted reference k-mer cache instead of rebuilding it every run')
     group_filter.add_argument('--reference-cache-dir', default=None, help='Directory for --reuse-reference-cache files (default = output/.gm2_reference_cache)', metavar='DIR')
+    group_filter.add_argument('--legacy-uce-filter', action='store_true', default=False, help=argparse.SUPPRESS)
 
     group_refilter = parser.add_argument_group('arguments for futher filtering')
     group_refilter.add_argument('--depth-low-water-mark', default=50, help='If depth is lower than this value, try to find more reads with relaxed criteria', metavar='INT', type=int)
     group_refilter.add_argument('--depth-limit', default=768, help='Maximum depth processed during re-filtering', metavar='INT', type=int)
     group_refilter.add_argument('--file-size-limit', default=6, help='Maximum file size during re-filtering', metavar='INT', type=int)
+    group_refilter.add_argument('--workflow-profile', action='store_true', default=False, help='Write per-sample end-to-end stage timings to workflow_profile.tsv; does not change results')
 
     group_assembly = parser.add_argument_group('arguments for assembly')
     group_assembly.add_argument('-ka', default=0, help='Assembly k-mer size (default = auto)', metavar='INT', type=int)
@@ -2744,17 +3396,23 @@ if __name__ == '__main__':
     group_profile.add_argument('--profile-index-memory-gb', default=2, help='Profiling: Themisto index-build memory limit in GiB (default = 2)', metavar='INT', type=int)
     group_profile.add_argument('--profile-themisto', default='', help='Profiling: Themisto executable path; by default use PATH', metavar='FILE')
     group_profile.add_argument('--profile-force-rebuild', action='store_true', default=False, help='Profiling: rebuild the cached Themisto reference index')
-    group_assembly.add_argument('--uce-side-candidates', default=8, help='One-sided branch candidates to combine in UCE mode (default = 8)', metavar='INT', type=int)
-    group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help='UCE path handling: backbone commits one bounded-lookahead path without backtracking; search preserves legacy branch enumeration (default = backbone)')
-    group_assembly.add_argument('--uce-backbone-lookahead', default=24, help='Greedy look-ahead steps used to choose a UCE backbone edge at each bubble (default = 24)', metavar='INT', type=int)
-    group_assembly.add_argument('--uce-max-contig-length', default=0, help='Maximum UCE contig length kept before scoring; use 0 to disable (default = 0)', metavar='INT', type=int)
-    group_assembly.add_argument('--uce-min-read-density', default=0.003, help='Minimum uniquely placed read_count/length for long UCE contigs before scoring (default = 0.003)', metavar='FLOAT', type=float)
-    group_assembly.add_argument('--uce-density-check-min-length', default=1000, help='Minimum contig length where the UCE read-density guardrail applies (default = 1000)', metavar='INT', type=int)
-    group_assembly.add_argument('--uce-max-depth-cv', default=0, help='Optional maximum k-mer depth coefficient of variation for UCE contigs; 0 disables (default = 0)', metavar='FLOAT', type=float)
-    group_assembly.add_argument('--uce-max-depth-ratio', default=0, help='Optional maximum max/median k-mer depth ratio for UCE contigs; 0 disables (default = 0)', metavar='FLOAT', type=float)
-    group_assembly.add_argument('--uce-rescue-reads', action='store_true', default=False, help='UCE mode only: after the first assembly, recruit raw reads once using preliminary contigs plus original references, then re-filter and re-assemble')
-    group_assembly.add_argument('--uce-rescue-min-contig-length', default=60, help='Minimum preliminary contig length used as a UCE raw-read rescue reference (default = 60)', metavar='INT', type=int)
-    group_assembly.add_argument('--uce-rescue-min-density-ratio', default=0.5, help='Minimum rescue/before read-density ratio kept after UCE raw-read rescue (default = 0.5)', metavar='FLOAT', type=float)
+    group_assembly.add_argument('--uce-side-candidates', default=8, help=argparse.SUPPRESS, metavar='INT', type=int)
+    group_assembly.add_argument('--uce-path-strategy', choices=('search', 'backbone'), default='backbone', help=argparse.SUPPRESS)
+    group_assembly.add_argument('--uce-backbone-lookahead', default=24, help=argparse.SUPPRESS, metavar='INT', type=int)
+    group_assembly.add_argument('--uce-max-contig-length', default=0, help=argparse.SUPPRESS, metavar='INT', type=int)
+    group_assembly.add_argument('--uce-min-read-density', default=0.003, help=argparse.SUPPRESS, metavar='FLOAT', type=float)
+    group_assembly.add_argument('--uce-density-check-min-length', default=1000, help=argparse.SUPPRESS, metavar='INT', type=int)
+    group_assembly.add_argument('--uce-max-depth-cv', default=0, help=argparse.SUPPRESS, metavar='FLOAT', type=float)
+    group_assembly.add_argument('--uce-max-depth-ratio', default=0, help=argparse.SUPPRESS, metavar='FLOAT', type=float)
+    group_assembly.add_argument('--uce-rescue-reads', action='store_true', default=False, help='UCE mode only: run fixed-k=21 whole-contig rescue followed by an optional terminal-only round; keep linked mates and revert unsupported loci')
+    group_assembly.add_argument('--uce-alignment-shadow', action='store_true', default=False, help='UCE mode only: collect bounded internal alignment evidence without changing adaptive read selection')
+    group_assembly.add_argument('--uce-shadow-per-locus', default=64, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_assembly.add_argument('--uce-shadow-band', default=32, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_assembly.add_argument('--uce-shadow-terminal-window', default=150, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_assembly.add_argument('--uce-rescue-rounds', choices=(1, 2), default=2, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_assembly.add_argument('--uce-rescue-terminal-window', default=350, type=int, help=argparse.SUPPRESS, metavar='INT')
+    group_assembly.add_argument('--uce-rescue-min-contig-length', default=60, help=argparse.SUPPRESS, metavar='INT', type=int)
+    group_assembly.add_argument('--uce-rescue-min-density-ratio', default=0.5, help=argparse.SUPPRESS, metavar='FLOAT', type=float)
 
     group_te = parser.add_argument_group('arguments for reference-free repeatome analysis')
     group_te.add_argument('--te-stage', choices=('all', 'discover', 'curate', 'annotate', 'quantify'), default='all', help='Repeatome stage: discover, curate, annotate, or quantify (default = all)')
@@ -2931,6 +3589,7 @@ if __name__ == '__main__':
     args.uce_max_contig_length = max(args.uce_max_contig_length, 0)
     args.uce_density_check_min_length = max(args.uce_density_check_min_length, 1)
     args.uce_rescue_min_contig_length = max(args.uce_rescue_min_contig_length, args.kf)
+    args.uce_rescue_terminal_window = max(args.uce_rescue_terminal_window, args.uce_rescue_min_contig_length)
 
     if args.uce_min_read_density < 0:
         parser.error('--uce-min-read-density must be greater than or equal to 0')
@@ -2943,6 +3602,12 @@ if __name__ == '__main__':
 
     if args.uce_rescue_min_density_ratio <= 0:
         parser.error('--uce-rescue-min-density-ratio must be greater than 0')
+
+    if args.uce_alignment_shadow and args.assembly_mode != 'uce':
+        parser.error('--uce-alignment-shadow requires --assembly-mode uce')
+
+    if args.uce_shadow_per_locus < 1 or args.uce_shadow_band < 1 or args.uce_shadow_terminal_window < 1:
+        parser.error('UCE alignment-shadow limits must be positive')
 
     if args.population_min_mapq < 0 or args.population_min_baseq < 0:
         parser.error('population mapping and base quality thresholds must be non-negative')

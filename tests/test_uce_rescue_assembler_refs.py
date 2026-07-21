@@ -10,7 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from unix_command import build_assembler_command, build_uce_rescue_refs
+from unix_command import WorkflowProfiler, build_assembler_command, build_uce_rescue_refs
 
 
 class UceRescueAssemblerReferenceTests(unittest.TestCase):
@@ -40,6 +40,47 @@ class UceRescueAssemblerReferenceTests(unittest.TestCase):
             self.assertEqual(added, 1)
             self.assertIn('AAAAGGGG', (rescue / 'accepted.fasta').read_text())
             self.assertNotIn('CCCCTTTT', (rescue / 'rejected.fasta').read_text())
+
+    def test_workflow_profiler_records_bytes_and_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'input.fq'
+            output = root / 'output.fq'
+            source.write_bytes(b'ACGT')
+            profiler = WorkflowProfiler(True)
+            profiler.run('sample_a', 'mainfilter_scan', lambda: output.write_bytes(b'ACGTAC'),
+                         inputs=(str(source),), outputs=(str(output),))
+            with self.assertRaisesRegex(RuntimeError, 'expected'):
+                profiler.run('sample_a', 'refilter', lambda: (_ for _ in ()).throw(RuntimeError('expected')),
+                             inputs=(str(output),), outputs=(str(root / 'missing'),), round_index=1)
+            profiler.write(str(root))
+            with (root / 'workflow_profile.tsv').open() as handle:
+                rows = list(csv.DictReader(handle, delimiter='\t'))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]['stage'], 'mainfilter_scan')
+            self.assertEqual(rows[0]['input_bytes'], '4')
+            self.assertEqual(rows[0]['output_bytes'], '6')
+            self.assertEqual(rows[1]['round'], '1')
+            self.assertEqual(rows[1]['status'], 'failed')
+
+    def test_single_thread_override_blocks_explicit_kmer_workers(self):
+        args = SimpleNamespace(
+            ka=21, min_ka=21, max_ka=21, error_threshold=1,
+            search_depth=4096, min_coverage=0, assembly_mode='uce',
+            uce_side_candidates=8, uce_max_contig_length=5000,
+            uce_min_read_density=0.003, uce_density_check_min_length=1000,
+            uce_max_depth_cv=0, uce_max_depth_ratio=0,
+            assembler_kmer_count_threads=16,
+            assembler_reference_cache_dir=None,
+        )
+        command = build_assembler_command(
+            'main_assembler', args, '/tmp/out/sample', '/tmp/ref', '10000', 1,
+            force_single_thread=True,
+        )
+        self.assertEqual(command[command.index('-p') + 1], '1')
+        self.assertEqual(
+            command[command.index('--assembler-kmer-count-threads') + 1], '1'
+        )
 
     def test_assembler_command_uses_supplied_reference_dir(self):
         args = SimpleNamespace(
@@ -151,6 +192,22 @@ class UceRescueAssemblerReferenceTests(unittest.TestCase):
 
         self.assertNotIn("--assembler-reference-cache-dir", cmd)
 
+
+    def test_rescue_can_override_only_the_assembly_kmer(self):
+        args = SimpleNamespace(
+            ka=0, min_ka=21, max_ka=51, error_threshold=1,
+            search_depth=4096, min_coverage=0, assembly_mode="uce",
+            uce_side_candidates=8, uce_max_contig_length=5000,
+            uce_min_read_density=0.003, uce_density_check_min_length=1000,
+            uce_max_depth_cv=0, uce_max_depth_ratio=0,
+            assembler_reference_cache_dir=None,
+        )
+        cmd = build_assembler_command(
+            "main_assembler", args, "/tmp/out/sample", "/tmp/rescue",
+            "10000", 4, assembly_kmer=21,
+        )
+        self.assertEqual(cmd[cmd.index("-ka") + 1], "21")
+        self.assertEqual(args.ka, 0)
 
     def test_original_rust_gets_cache_but_not_uce_options(self):
         args = SimpleNamespace(

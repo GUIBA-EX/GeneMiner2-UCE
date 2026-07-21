@@ -179,7 +179,7 @@ class RustMainFilterTests(unittest.TestCase):
             self.assertIn("@hit/2", interleaved)
             self.assertTrue((work / "mode_1" / "filtered" / "all_1.fq").is_file())
             self.assertTrue((work / "mode_1" / "filtered" / "all_2.fq").is_file())
-            self.assertEqual(list((work / "mode_3" / "filtered").iterdir()), [])
+            self.assertFalse((work / "mode_3" / "filtered").exists())
 
     def test_long_kmer_cache_roundtrip(self):
         reference = "ACGTTGCATGTCAGTACGATCGTACCTGACGTAGCTAGCATGGCATACGTTAGCCATGCACTGA"
@@ -233,7 +233,7 @@ class RustMainFilterTests(unittest.TestCase):
                  "-kf", "16", "-lkd", str(dictionary), "-m", "2"],
                 check=True, cwd=ROOT,
             )
-            self.assertEqual(int.from_bytes(dictionary.read_bytes()[4:6], "little"), 3)
+            self.assertEqual(int.from_bytes(dictionary.read_bytes()[4:6], "little"), 4)
             reference.write_text(f">locus\n{replacement}\n")
             output = work / "output"
             subprocess.run(

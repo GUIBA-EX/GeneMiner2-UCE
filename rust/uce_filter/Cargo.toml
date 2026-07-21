@@ -1,0 +1,16 @@
+[package]
+name = "uce_filter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "uce_filter"
+path = "src/main.rs"
+
+[dependencies]
+uce_filter_core = { path = "../uce_filter_core" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

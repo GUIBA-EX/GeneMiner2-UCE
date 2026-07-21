@@ -117,7 +117,7 @@ references/
 不显式指定子命令时：
 
 - `--assembly-mode original`（默认）用于 exon、SCO 及核/线粒体 marker 的参考引导恢复，运行 `filter refilter assemble trim combine tree`；
-- `--assembly-mode uce` 用于从 genome skimming 或 target capture 恢复 UCE，运行 `filter refilter assemble combine tree`，跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围；
+- `--assembly-mode uce` 用于从 genome skimming 或 target capture 恢复 UCE，运行 `filter assemble combine tree`；融合 UCEFilter 已包含 refilter 语义，并跳过 `trim`，避免新恢复的 UCE 侧翼再次被裁回参考范围；
 - `profiling` 先做一次招募，再由 Themisto 伪比对并输出参考序列级支持；不组装，也不运行下游系统发育步骤。
 
 默认 original 模式示例：
@@ -134,7 +134,9 @@ cli/geneminer2 \
 
 ### 4.1 UCE
 
-UCE 模式用于从 genome skimming 或 target capture reads 恢复 UCE core 及有 read 支持的 flank。refilter 时任一 mate 通过即可保留整对 reads；默认流程跳过 `trim`，避免新恢复的 flank 被裁回参考范围。
+UCE 模式用于从 genome skimming 或 target capture reads 恢复 UCE core 及有 read 支持的 flank。默认融合 `ucefilter` 在一次扫描中完成招募、run-k 验证和逐 locus 自动选择，低深度 locus 原样通过，饱和 locus 才压缩冗余核心并保留 bait/contig 两端的 overhang 阶梯，直接写最终 per-locus FASTQ；完整 read pair 作为一个单位保留，不写 GM2 或候选 FASTQ。默认流程跳过 `trim`，避免新恢复的 flank 被裁回参考范围。
+
+可选 `--uce-alignment-shadow` 只收集有界的内部比对证据，不改变自动 reads 选择；默认关闭。
 
 ```bash
 cli/geneminer2 \
@@ -271,17 +273,8 @@ cli/geneminer2 stats \
 | `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
 | `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |
 | `--assembly-mode MODE` | `original` 或 `uce`；默认 `original` |
-| `--uce-path-strategy MODE` | `backbone`（默认）在气泡处提交单一路径且不回溯；`search` 保留旧的分支枚举 |
-| `--uce-backbone-lookahead INT` | backbone 在每个气泡处的线性前瞻步数，默认 `24`，最小为 `1` |
-| `--uce-side-candidates INT` | 仅在 `--uce-path-strategy search` 下使用；每侧候选数默认 `8`，最小为 `3` |
-| `--uce-max-contig-length INT` | 进入评分的 UCE contig 最大长度，默认 `0`（不限制）；可显式设为如 `5000` 以启用上限 |
-| `--uce-min-read-density FLOAT` | 长 contig 的最低唯一 reads/长度，默认 `0.003` |
-| `--uce-density-check-min-length INT` | 启用 density 阈值的最短 contig，默认 `1000` |
-| `--uce-max-depth-cv FLOAT` | k-mer depth CV 上限，默认 `0`，表示关闭 |
-| `--uce-max-depth-ratio FLOAT` | 最大/中位 k-mer depth 上限，默认 `0`，表示关闭 |
-| `--uce-rescue-reads` | 执行一轮 UCE raw-read rescue |
-| `--uce-rescue-min-contig-length INT` | rescue reference 的最短 contig，默认 `60`，且不会小于 `-kf` |
-| `--uce-rescue-min-density-ratio FLOAT` | 保留 rescue 结果的最低 rescue/首轮 density，默认 `0.5` |
+| `--assembly-mode uce` | 默认使用 UCEFilter，并采用固定的 backbone 与 QC 安全设置；高级 UCE 调参默认隐藏 |
+| `--uce-rescue-reads` | 可选固定 k=21 的受控 rescue：首轮 whole-contig，随后 terminal-only |
 
 ### 7.4 Population
 

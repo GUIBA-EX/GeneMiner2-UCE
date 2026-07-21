@@ -10,6 +10,14 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
+## 性能定位
+
+对完整流程加 `--workflow-profile`，会在输出根目录写入 `workflow_profile.tsv`。它按样本和救援轮次记录 UCEFilter 招募/选择、Rust assembler、末端 QC 与回滚的墙钟时间及输入输出字节数；不会改变过滤或组装结果。若所用 Rust assembler 支持该开关，也会写出每个样本的 `assembly_profile.tsv`，进一步拆分 reads 解码、k-mer 计数、图处理、路径搜索和输出。
+
+```bash
+geneminer2 filter assemble -f samples.txt -r references -o run --assembly-mode uce --workflow-profile
+```
+
 ## 功能
 
 - 从 genome skimming 或 target-capture reads 恢复 marker。
@@ -91,7 +99,9 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
   --assembly-mode uce --uce-rescue-reads
 ```
 
-**说明。** UCE 只使用 `uce-rust`。rescue 用第一轮 contig 加原始参考再招一次 reads；质量变差时退回第一轮。见 [Assembler 章节](docs/assembler_ZH.md)。
+**说明。** UCE 默认使用融合的 Rust `ucefilter`：一次读取原始 PE reads，同时完成 rolling k-mer 粗招募、run-k 方向验证、最大精确匹配与逐 locus 自动选择，直接写入 `filtered/`；不再生成 GM2、候选 FASTQ，也不再启动独立 Refilter。低深度或参考覆盖不完整的 locus 原样通过；只有参考覆盖充分且饱和的 locus 才压缩冗余核心，同时按 overhang 长度分层保留跨 bait/contig 两端的 PE reads。算法不要求用户预先声明 target capture 或 genome skimming。相同 fragment 只保存一次，完整 PE 始终作为一个单位；超过每样品 256 MiB 的候选数据会顺序写入一个自动清理的内部 spool。命令中仍接受 `refilter` 作为旧脚本兼容步骤，但 UCE 已不需要它。样品从招募到 rescue 均为单线程。加 `--uce-rescue-reads` 时执行两轮受控延伸：whole-contig 招募后，仅对仍增长的 locus 做 terminal 招募；旧 core 冻结，缺少独立 fragment、跨边界、breadth 或 gap 支持的新增侧会回退。见 [Assembler 章节](docs/assembler_ZH.md)。
+
+实验性 `--uce-alignment-shadow` 默认关闭。它对每个 locus 最多抽取 64 个已选 fragment，记录内部 affine-gap 比对的 identity、overlap、linked-mate、terminal 与 64-bin breadth；不会改变 reads 选择或组装输入。Target capture 与 genome skimming 的证据仍需分别解释，短 bait 的边界不能当作真实 contig terminal。
 
 ## TE / Repeatome 模式
 

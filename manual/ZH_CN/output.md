@@ -6,9 +6,13 @@
 
 输入样本表中的每个样本都会在输出目录下生成一个同名文件夹。
 
-**filtered_pe**：第一轮参考 k-mer 过滤后分配到各 locus 的临时 paired-end reads。如果同一次运行继续完成 re-filter，该目录通常会在 re-filter 成功后被删除。
+**uce_filter_summary.tsv**：逐 locus 自动选择审计表。`selection_mode` 为 `pass-through`、`core`、`rescue` 或 `legacy-fallback`；同时报告合格/已选 fragment、64-bin breadth、核心目标以及左右端候选与保留数。
+
+**filtered**：默认融合 UCEFilter 直接写出的每-locus interleaved paired-end FASTQ。UCE 模式不再生成 `ucefilter_candidates`；**filtered_pe** 仅保留给 legacy MainFilter/GM2 回退路径。
 
 **filtered**：进一步过滤后保留的 reads。UCE 模式下，只要 paired-end 的任一端通过 locus 过滤，整对 reads 都会被保留。
+
+**alignment_shadow.tsv**：仅在 `--uce-alignment-shadow` 下生成的逐 mate 内部比对证据，包括 identity、overlap、linked-mate、terminal 和参考坐标。**alignment_shadow_summary.tsv** 是对应的 per-locus 计数与 64-bin breadth 汇总。初始结果另存为 `alignment_shadow_initial*.tsv`；rescue 证据保存在对应 `uce_rescue_round_N/`。
 
 **large_files**：进一步过滤时超过深度限制或文件大小限制的 reads。只有产生这类文件时才会出现。
 
@@ -30,7 +34,9 @@
 
 **uce_assembly_summary.csv**：UCE 模式下的单样本逐 locus 组装摘要，包含状态、最佳 contig 长度、reads 支持跨度、read count、read density、支持比例、侧翼平衡度、k-mer 深度指标、候选数和低质量标记。
 
-**uce_rescue_summary.csv**：使用 `--assembly-mode uce --uce-rescue-reads` 时生成的单样本 raw-read rescue 摘要。
+**uce_rescue_summary.csv**：使用 `--assembly-mode uce --uce-rescue-reads` 时生成的单样本首轮至最终结果摘要。
+
+**uce_rescue_rounds.csv**：逐轮、逐 locus 记录 active/revert/terminal-side 决策、长度和 unique-read 增量；第二轮还记录左右新增长度、breadth、最大 gap、fragment 数、跨旧 core 边界 fragment 数及是否接受。
 
 **assembly_graphs**：仅在使用 `--assembler-graph-format gfa`、`dot` 或 `both` 时生成的逐 locus 压缩组装图；默认不生成。
 
@@ -66,7 +72,9 @@
 
 **uce_contigs**：UCE 组装模式生成的 phyluce 兼容 contig 输出。每个样本一个 `*.contigs.fasta` 文件。`sample_name_map.tsv` 记录 GeneMiner2 样本名与 phyluce 安全样本名的对应关系。
 
-**uce_rescue_summary.csv**：跨样本合并后的 rescue 摘要。使用 `--assembly-mode uce --uce-rescue-reads` 时生成。
+**uce_rescue_summary.csv**：跨样本合并后的首轮至最终 rescue 摘要。使用 `--assembly-mode uce --uce-rescue-reads` 时生成。
+
+**uce_rescue_rounds.csv**：跨样本合并后的逐轮 rescue 审计表。
 
 ## Population 输出
 

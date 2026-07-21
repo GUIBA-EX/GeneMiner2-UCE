@@ -117,7 +117,7 @@ One or more subcommands can be listed in execution order:
 When no subcommand is given:
 
 - `--assembly-mode original` (default) is for reference-guided recovery of exons, SCOs, and nuclear or mitochondrial markers; it runs `filter refilter assemble trim combine tree`;
-- `--assembly-mode uce` is for UCE recovery from genome skimming or target capture; it runs `filter refilter assemble combine tree`, omitting `trim` so newly recovered UCE flanks are not cut back to the reference interval;
+- `--assembly-mode uce` is for UCE recovery from genome skimming or target capture; it runs `filter assemble combine tree`. The fused UCEFilter already includes refilter semantics and omits `trim` so newly recovered UCE flanks are not cut back to the reference interval;
 - `profiling` runs one recruitment step followed by Themisto pseudoalignment and reference-level support reporting; it does not assemble or run downstream phylogenetic steps.
 
 Default original-mode example:
@@ -134,7 +134,9 @@ cli/geneminer2 \
 
 ### 4.1 UCE
 
-UCE mode recovers UCE cores and read-supported flanks from genome-skimming or target-capture reads. It retains a paired-end fragment when either mate passes refiltering; the default workflow skips `trim` to preserve recovered flanks.
+UCE mode recovers UCE cores and read-supported flanks from genome-skimming or target-capture reads. The fused `ucefilter` performs recruitment, run-k verification, and adaptive per-locus selection in one scan. Low-depth loci pass through, while only saturated loci have redundant core evidence reduced with bait/contig-edge overhang ladders protected; final per-locus FASTQ is written directly. A complete paired-end fragment is retained atomically, with no GM2 or candidate FASTQ. The default workflow skips `trim` to preserve recovered flanks.
+
+Optional `--uce-alignment-shadow` collects bounded internal alignment evidence without changing adaptive read selection. It is disabled by default.
 
 ```bash
 cli/geneminer2 \
@@ -271,17 +273,8 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `--assembler-kmer-count-threads INT` | K-mer sorting/counting workers per locus; default `0` selects automatically |
 | `--assembler-graph-format MODE` | Optional graph output: `none` (default), `gfa`, `dot`, or `both` |
 | `--assembly-mode MODE` | `original` or `uce`; default `original` |
-| `--uce-path-strategy MODE` | `backbone` (default) commits one path at bubbles without backtracking; `search` preserves legacy branch enumeration |
-| `--uce-backbone-lookahead INT` | Linear look-ahead steps per backbone bubble; default `24`, minimum `1` |
-| `--uce-side-candidates INT` | Used only with `--uce-path-strategy search`; default `8`, minimum `3` |
-| `--uce-max-contig-length INT` | Maximum UCE contig length before scoring; default `0` (unlimited); set, for example, `5000` to enable a cap |
-| `--uce-min-read-density FLOAT` | Minimum unique-read/length ratio for long contigs; default `0.003` |
-| `--uce-density-check-min-length INT` | Minimum contig length for the density guardrail; default `1000` |
-| `--uce-max-depth-cv FLOAT` | Maximum k-mer-depth CV; default `0` disables |
-| `--uce-max-depth-ratio FLOAT` | Maximum/median k-mer-depth ratio; default `0` disables |
-| `--uce-rescue-reads` | Perform one UCE raw-read rescue round |
-| `--uce-rescue-min-contig-length INT` | Minimum rescue-reference contig; default `60` and never below `-kf` |
-| `--uce-rescue-min-density-ratio FLOAT` | Minimum rescue/first-round density retained; default `0.5` |
+| `--assembly-mode uce` | Uses UCEFilter by default, with fixed safe backbone and QC settings; UCE advanced tuning is intentionally hidden |
+| `--uce-rescue-reads` | Optional fixed-k=21 bounded rescue: whole-contig first, then terminal-only |
 
 ### 7.4 Population options
 

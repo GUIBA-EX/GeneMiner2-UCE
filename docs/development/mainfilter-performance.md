@@ -56,7 +56,7 @@
 | 索引查找 | 通用散列表与对象访问 | `AHashMap` 的原生整数/字节 key。 | 哈希表迭代顺序不作为输出语义。 |
 | dictionary cache | 旧格式、较多逐项 I/O | v4 cache、参考内容 SHA-256、4 MiB `BufWriter`、加载时直写 `packed_hits`。 | cache 不匹配、损坏或过期时安全重建。 |
 | FASTA/FASTQ | Haxe 字符串与对象路径 | 字节级 `read_until`、复用行与记录缓冲，不进行全 read 大写复制。 | 正常 FASTA/FASTQ 输出字节不变。 |
-| gzip | 历史 `GzipReader` 路径 | 外层 reader 与 zlib `gzbuffer` 均为 1 MiB；可用时运行时选 zlib-ng，否则用系统 zlib。 | 解压得到的字节不变；zlib-ng 不是构建依赖。 |
+| gzip | 历史 `GzipReader` 路径 | 外层 reader 与 zlib `gzbuffer` 均为 1 MiB；构建时通过 `pkg-config zlib-ng` 自动直连原生 zlib-ng，未检测到时保留运行时 zlib-ng 探测并最终回退系统 zlib。 | 解压得到的字节不变；zlib-ng 仍是可选构建依赖。 |
 | 输出 | buffer flush 与反复文件操作 | 常驻句柄、每 locus 缓冲、64 MiB 高水位/32 MiB 低水位批量 flush。 | 每个文件的记录内容与顺序不变。 |
 | 内存回收 | 热 locus 峰值容量易常驻 | 有界 buffer pool；大于 1 MiB 的 buffer 在 flush 后释放。 | 不影响已写或后续记录。 |
 | 编码/日志 | 临时对象与小写入 | 文本/GM2 scratch buffer 复用、缓冲日志。 | 编码格式与日志语义不变。 |
