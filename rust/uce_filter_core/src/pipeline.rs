@@ -950,9 +950,8 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         .map_err(|e| e.to_string())?;
     }
     let mut candidates = Vec::<Candidate>::new();
-    for locus_id in 0..index.loci.len() {
+    for (locus_id, locus) in index.loci.iter().enumerate() {
         locus_candidates.copy_locus(locus_id, &mut candidates);
-        let locus = &index.loci[locus_id];
         let decision = choose_legacy(
             &candidates,
             locus.effective_length,

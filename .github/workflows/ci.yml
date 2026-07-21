@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  python:
+    name: Python workflow tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run workflow regression suite
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+
+  rust-format:
+    name: Rust formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check every Rust crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r manifest; do
+            cargo fmt --manifest-path "$manifest" -- --check
+          done < <(find rust -mindepth 2 -maxdepth 2 -name Cargo.toml | sort)
+
+  rust:
+    name: Rust ${{ matrix.crate }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: build_consensus
+            manifest: rust/build_consensus/Cargo.toml
+          - crate: geneminer2_cli
+            manifest: rust/geneminer2_cli/Cargo.toml
+          - crate: gm2_tools
+            manifest: rust/gm2_tools/Cargo.toml
+          - crate: main_assembler
+            manifest: rust/main_assembler/Cargo.toml
+          - crate: main_assembler_original
+            manifest: rust/main_assembler_original/Cargo.toml
+          - crate: main_filter_new
+            manifest: rust/main_filter_new/Cargo.toml
+          - crate: main_population
+            manifest: rust/main_population/Cargo.toml
+          - crate: main_refilter_new
+            manifest: rust/main_refilter_new/Cargo.toml
+          - crate: main_repeat
+            manifest: rust/main_repeat/Cargo.toml
+          - crate: marker_profile
+            manifest: rust/marker_profile/Cargo.toml
+          - crate: uce_filter
+            manifest: rust/uce_filter/Cargo.toml
+          - crate: uce_filter_core
+            manifest: rust/uce_filter_core/Cargo.toml
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/${{ matrix.crate }}
+          key: ${{ runner.os }}-cargo-${{ matrix.crate }}-${{ hashFiles('rust/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.crate }}-
+      - name: Test
+        run: cargo test --locked --manifest-path ${{ matrix.manifest }}
+      - name: Lint
+        run: cargo clippy --locked --manifest-path ${{ matrix.manifest }} --all-targets -- -D warnings

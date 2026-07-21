@@ -382,7 +382,7 @@ mod tests {
     }
     #[test]
     fn sample_breadth_outranks_pe_depth_and_length() {
-        let unitigs = vec![
+        let unitigs = [
             Unitig {
                 sequence: b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec(),
                 kmer_count: 1,

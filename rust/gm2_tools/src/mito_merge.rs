@@ -34,12 +34,17 @@ struct UnrolledCycle {
     matches: usize,
 }
 
+type OrientedSegment = (String, bool);
+type GfaEdges = HashMap<OrientedSegment, Vec<(String, bool, usize)>>;
+type ComponentPair = (usize, usize);
+type ComponentLinks = HashMap<ComponentPair, usize>;
+
 /// Directed unitig graph read from the assembler GFA.  Segment orientation is
 /// represented at traversal time, avoiding a second copy of every sequence.
 #[derive(Clone, Debug)]
 struct GfaGraph {
     segments: HashMap<String, Vec<u8>>,
-    edges: HashMap<(String, bool), Vec<(String, bool, usize)>>,
+    edges: GfaEdges,
 }
 
 /// Compact directed read graph. Most mito runs use k <= 32, so a packed u64
@@ -442,7 +447,7 @@ fn mate_links_from_reads(
     components: &[Component],
     paired_reads: &Path,
     config: &LinkConfig,
-) -> Result<(HashMap<(usize, usize), usize>, usize), String> {
+) -> Result<(ComponentLinks, usize), String> {
     let (suffix, prefix) = terminal_indexes(components, config.link_kmer, config.terminal_window);
     let mut links = HashMap::new();
     let count = visit_interleaved_pairs(paired_reads, |first, second| {
