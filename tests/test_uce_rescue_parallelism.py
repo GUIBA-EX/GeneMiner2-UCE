@@ -28,10 +28,11 @@ class UceRescueParallelismTests(unittest.TestCase):
         self.assertFalse(use_ucefilter(SimpleNamespace(assembly_mode='uce', is_mito_workflow=True)))
         self.assertFalse(use_ucefilter(SimpleNamespace(assembly_mode='uce', legacy_uce_filter=True)))
 
-    def test_uce_pipeline_uses_one_thread_per_sample(self):
-        self.assertEqual(get_uce_sample_parallelism(32, 45), (32, 1))
-        self.assertEqual(get_uce_sample_parallelism(16, 45), (16, 1))
+    def test_uce_pipeline_budgets_two_decode_workers_per_sample(self):
+        self.assertEqual(get_uce_sample_parallelism(32, 45), (10, 1))
+        self.assertEqual(get_uce_sample_parallelism(16, 45), (5, 1))
         self.assertEqual(get_uce_sample_parallelism(32, 2), (2, 1))
+        self.assertEqual(get_uce_sample_parallelism(2, 45), (1, 1))
         self.assertEqual(get_uce_sample_parallelism(1, 45), (1, 1))
 
     def test_sample_pipeline_runs_stages_in_order_once(self):

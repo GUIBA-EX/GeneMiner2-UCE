@@ -21,21 +21,22 @@ impl Fragment {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Candidate {
+    /// Candidates are appended in fragment order, so this compact identifier
+    /// is also the stable input-order tie breaker used by selection.
     pub fragment_id: FragmentId,
-    pub ordinal: u64,
     pub fragment_bases: u32,
-    pub max_exact: u16,
     /// Normalized coverage of the verification reference in 64 bins.
     pub covered_bins: u64,
-    /// Bit 0/1: exact evidence extends the left/right end of a contig reference.
-    pub terminal_mask: u8,
+    pub max_exact: u16,
     /// Maximum exact-seed overhang beyond the left/right reference edge.
     pub left_extension: u16,
     pub right_extension: u16,
-    /// Number of mates with an exact seed on this locus.
-    pub aligned_mates: u8,
     /// Number of loci to which this fragment passed run-k verification.
     pub locus_count: u16,
+    /// Bit 0/1: exact evidence extends the left/right end of a contig reference.
+    pub terminal_mask: u8,
+    /// Number of mates with an exact seed on this locus.
+    pub aligned_mates: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -250,6 +251,11 @@ mod tests {
             plus: b"+".to_vec(),
             quality: vec![b'I'; sequence.len()],
         }
+    }
+
+    #[test]
+    fn candidate_layout_remains_compact() {
+        assert!(std::mem::size_of::<Candidate>() <= 32);
     }
 
     #[test]

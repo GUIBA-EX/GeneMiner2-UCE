@@ -133,7 +133,7 @@ Use --profile to print read/decode, recruitment, evidence and candidate-store ti
                     .map_err(|_| format!("invalid {key}"))?;
                 if value != 1 {
                     return Err(
-                        "UCEFilter currently preserves one-thread-per-sample execution".to_string(),
+                        "UCEFilter uses one compute thread plus two bounded background decode workers per sample".to_string(),
                     );
                 }
             }
@@ -174,10 +174,11 @@ fn main() {
     match result {
         Ok((summary, profile)) => {
             eprintln!(
-                "UCEFilter finished: {} fragments read, {} retained once, {} assignments, {} loci, {:.1} MiB memory + {:.1} MiB spill ({:.3}s)",
+                "UCEFilter finished: {} fragments read, {} retained once, {} assignments, {} loci, {:.1} MiB fragments + {:.1} MiB candidates + {:.1} MiB spill ({:.3}s)",
                 summary.fragments_read, summary.fragments_retained_once, summary.assignments,
                 summary.loci_written,
                 summary.fragment_memory_bytes as f64 / 1_048_576.0,
+                summary.candidate_memory_bytes as f64 / 1_048_576.0,
                 summary.fragment_spill_bytes as f64 / 1_048_576.0,
                 summary.elapsed_seconds,
             );
@@ -190,22 +191,29 @@ fn main() {
                     summary.output_seconds,
                 );
                 eprintln!(
-                    "UCEFilter scan profile: FASTQ/gzip {:.3}s, recruit {:.3}s, run-k/exact {:.3}s, candidate store {:.3}s",
+                    "UCEFilter scan profile: FASTQ wait/parse {:.3}s, recruit {:.3}s, run-k/exact {:.3}s, candidate store {:.3}s",
                     summary.decode_seconds,
                     summary.recruit_seconds,
                     summary.evidence_seconds,
                     summary.store_seconds,
                 );
+                eprintln!(
+                    "UCEFilter storage profile: evidence scratch {:.3} MiB, candidate pool {:.3} MiB",
+                    summary.evidence_scratch_bytes as f64 / 1_048_576.0,
+                    summary.candidate_memory_bytes as f64 / 1_048_576.0,
+                );
                 let profile = &summary.index_profile;
                 eprintln!(
-                    "UCEFilter index profile: {} recruit probes / {} Bloom negatives / {} hits, {} anchor hit keys / {} occurrences, {} exact extensions / {} seed bp",
+                    "UCEFilter index profile: {} recruit probes / {} Bloom negatives / {} hits, {} exact locus queries / {} per-locus index queries, {} run-k windows / {} matching, {} MEM starts / {} MEM bp",
                     profile.recruit_probes,
                     profile.recruit_bloom_rejected,
                     profile.recruit_hits,
-                    profile.anchor_hit_keys,
-                    profile.anchor_occurrences,
-                    profile.exact_extensions,
-                    profile.exact_seed_bases,
+                    profile.exact_locus_queries,
+                    profile.exact_index_queries,
+                    profile.exact_run_windows,
+                    profile.exact_matching_windows,
+                    profile.mem_starts,
+                    profile.mem_bases,
                 );
             }
             if summary.shadow_sampled_assignments > 0 {

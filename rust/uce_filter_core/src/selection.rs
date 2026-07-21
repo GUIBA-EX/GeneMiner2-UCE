@@ -152,12 +152,12 @@ fn legacy_ids(candidates: &[Candidate], decision: &LegacyDecision) -> Vec<u32> {
         .collect()
 }
 
-fn quality_key(candidate: &Candidate) -> (u16, std::cmp::Reverse<u16>, std::cmp::Reverse<u8>, u64) {
+fn quality_key(candidate: &Candidate) -> (u16, std::cmp::Reverse<u16>, std::cmp::Reverse<u8>, u32) {
     (
         candidate.locus_count,
         std::cmp::Reverse(candidate.max_exact),
         std::cmp::Reverse(candidate.aligned_mates),
-        candidate.ordinal,
+        candidate.fragment_id,
     )
 }
 
@@ -169,7 +169,7 @@ fn terminal_quality_key(
     u16,
     std::cmp::Reverse<u16>,
     std::cmp::Reverse<u8>,
-    u64,
+    u32,
 ) {
     let extension = if terminal_bit == 1 {
         candidate.left_extension
@@ -181,7 +181,7 @@ fn terminal_quality_key(
         candidate.locus_count,
         std::cmp::Reverse(candidate.max_exact),
         std::cmp::Reverse(candidate.aligned_mates),
-        candidate.ordinal,
+        candidate.fragment_id,
     )
 }
 
@@ -392,7 +392,6 @@ mod tests {
     fn candidate(ordinal: u64, bases: u32, maximum: u16) -> Candidate {
         Candidate {
             fragment_id: ordinal as u32,
-            ordinal,
             fragment_bases: bases,
             max_exact: maximum,
             covered_bins: u64::MAX,

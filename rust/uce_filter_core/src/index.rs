@@ -1,3 +1,4 @@
+use crate::mem_index::{build_locus_indexes, LocusMemIndex, MemQueryProfile, MemSeed};
 use crate::model::{Locus, LocusId};
 use ahash::AHashMap;
 use gm2_tools::fastx::{FastxFormat, FastxReader};
@@ -38,10 +39,12 @@ pub struct IndexProfile {
     pub recruit_probes: u64,
     pub recruit_bloom_rejected: u64,
     pub recruit_hits: u64,
-    pub anchor_hit_keys: u64,
-    pub anchor_occurrences: u64,
-    pub exact_extensions: u64,
-    pub exact_seed_bases: u64,
+    pub exact_locus_queries: u64,
+    pub exact_index_queries: u64,
+    pub exact_run_windows: u64,
+    pub exact_matching_windows: u64,
+    pub mem_starts: u64,
+    pub mem_bases: u64,
 }
 
 /// Four probes confined to one 64-bit word. It has no false negatives; a
@@ -95,13 +98,6 @@ impl BlockedBloom {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct AnchorOccurrence {
-    pub locus: LocusId,
-    pub sequence: u32,
-    pub position: u32,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactSeed {
     pub sequence: u32,
@@ -121,50 +117,34 @@ impl ExactSeed {
     }
 }
 
+fn exact_seed(seed: MemSeed) -> ExactSeed {
+    ExactSeed {
+        sequence: seed.sequence,
+        read_start: seed.read_start.min(u16::MAX as usize) as u16,
+        read_end: seed.read_end.min(u16::MAX as usize) as u16,
+        reference_start: seed.reference_start.min(u32::MAX as usize) as u32,
+        reference_end: seed.reference_end.min(u32::MAX as usize) as u32,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ReadEvidenceScratch {
     orientation_events: Vec<u8>,
     windows: usize,
     best_exact: Vec<Option<ExactSeed>>,
-    covered_small: Vec<((usize, u32, isize), usize)>,
-    covered_large: AHashMap<(usize, u32, isize), usize>,
-    large_coverage: bool,
-    locus_generation: Vec<u32>,
-    locus_slots: Vec<usize>,
-    generation: u32,
+    occurrence_counts: Vec<u32>,
+    strand_masks: Vec<u8>,
 }
 
 impl ReadEvidenceScratch {
-    const SMALL_COVERAGE_LIMIT: usize = 16;
-
-    fn reset(&mut self, candidates: &[LocusId], windows: usize, locus_count: usize) {
+    fn reset(&mut self, candidate_count: usize, windows: usize) {
         self.windows = windows;
-        self.orientation_events
-            .resize(candidates.len() * windows, 0);
+        self.orientation_events.resize(candidate_count * windows, 0);
         self.orientation_events.fill(0);
-        self.best_exact.resize(candidates.len(), None);
+        self.best_exact.resize(candidate_count, None);
         self.best_exact.fill(None);
-        self.covered_small.clear();
-        self.covered_large.clear();
-        self.large_coverage = false;
-        self.locus_generation.resize(locus_count, 0);
-        self.locus_slots.resize(locus_count, 0);
-        self.generation = self.generation.wrapping_add(1);
-        if self.generation == 0 {
-            self.locus_generation.fill(0);
-            self.generation = 1;
-        }
-        for (slot, &locus) in candidates.iter().enumerate() {
-            let locus = locus as usize;
-            self.locus_generation[locus] = self.generation;
-            self.locus_slots[locus] = slot;
-        }
-    }
-
-    #[inline(always)]
-    fn slot_for(&self, locus: LocusId) -> Option<usize> {
-        let locus = locus as usize;
-        (self.locus_generation[locus] == self.generation).then_some(self.locus_slots[locus])
+        self.occurrence_counts.resize(windows, 0);
+        self.strand_masks.resize(windows, 0);
     }
 
     pub fn orientation(&self, candidate: usize) -> &[u8] {
@@ -176,36 +156,11 @@ impl ReadEvidenceScratch {
         self.best_exact[candidate]
     }
 
-    fn covered_end(&self, key: (usize, u32, isize)) -> Option<usize> {
-        if self.large_coverage {
-            self.covered_large.get(&key).copied()
-        } else {
-            self.covered_small
-                .iter()
-                .find_map(|&(candidate, end)| (candidate == key).then_some(end))
-        }
-    }
-
-    fn record_coverage(&mut self, key: (usize, u32, isize), end: usize) {
-        if self.large_coverage {
-            self.covered_large.insert(key, end);
-            return;
-        }
-        if let Some(entry) = self
-            .covered_small
-            .iter_mut()
-            .find(|(candidate, _)| *candidate == key)
-        {
-            entry.1 = end;
-            return;
-        }
-        if self.covered_small.len() < Self::SMALL_COVERAGE_LIMIT {
-            self.covered_small.push((key, end));
-            return;
-        }
-        self.covered_large.extend(self.covered_small.drain(..));
-        self.large_coverage = true;
-        self.covered_large.insert(key, end);
+    pub fn allocated_bytes(&self) -> usize {
+        self.orientation_events.capacity() * std::mem::size_of::<u8>()
+            + self.best_exact.capacity() * std::mem::size_of::<Option<ExactSeed>>()
+            + self.occurrence_counts.capacity() * std::mem::size_of::<u32>()
+            + self.strand_masks.capacity() * std::mem::size_of::<u8>()
     }
 }
 
@@ -274,20 +229,9 @@ impl LocusHits {
 }
 
 #[derive(Debug)]
-enum AnchorHits {
-    One(AnchorOccurrence),
-    Many(Vec<AnchorOccurrence>),
-}
-
-#[derive(Debug)]
 enum RecruitIndex {
     Short(AHashMap<u64, LocusHits>),
     Long(AHashMap<u128, LocusHits>),
-}
-
-enum AnchorIndex {
-    Short(AHashMap<u64, AnchorHits>),
-    Long(AHashMap<u128, AnchorHits>),
 }
 
 impl RecruitIndex {
@@ -364,88 +308,6 @@ impl RecruitIndex {
     }
 }
 
-impl AnchorIndex {
-    fn new(k: usize) -> Self {
-        if k <= 32 {
-            Self::Short(AHashMap::new())
-        } else {
-            Self::Long(AHashMap::new())
-        }
-    }
-
-    fn insert_sequence(&mut self, bases: &[u8], k: usize, locus: LocusId, sequence: u32) {
-        let insert = |position: usize, hits: &mut AnchorHits| {
-            hits.push(AnchorOccurrence {
-                locus,
-                sequence,
-                position: position as u32,
-            });
-        };
-        match self {
-            Self::Short(index) => scan_kmers_u64(bases, k, 1, false, |key, position| {
-                index
-                    .entry(key)
-                    .and_modify(|hits| insert(position, hits))
-                    .or_insert(AnchorHits::One(AnchorOccurrence {
-                        locus,
-                        sequence,
-                        position: position as u32,
-                    }));
-            }),
-            Self::Long(index) => scan_kmers(bases, k, 1, false, |key, position| {
-                index
-                    .entry(key)
-                    .and_modify(|hits| insert(position, hits))
-                    .or_insert(AnchorHits::One(AnchorOccurrence {
-                        locus,
-                        sequence,
-                        position: position as u32,
-                    }));
-            }),
-        }
-    }
-
-    fn scan(&self, sequence: &[u8], k: usize, mut visit: impl FnMut(&[AnchorOccurrence], usize)) {
-        match self {
-            Self::Short(index) => scan_kmers_u64(sequence, k, 1, false, |key, position| {
-                if let Some(hits) = index.get(&key) {
-                    visit(hits.values(), position);
-                }
-            }),
-            Self::Long(index) => scan_kmers(sequence, k, 1, false, |key, position| {
-                if let Some(hits) = index.get(&key) {
-                    visit(hits.values(), position);
-                }
-            }),
-        }
-    }
-
-    fn entries(&self) -> usize {
-        match self {
-            Self::Short(index) => index.values().map(|hits| hits.values().len()).sum(),
-            Self::Long(index) => index.values().map(|hits| hits.values().len()).sum(),
-        }
-    }
-}
-
-impl AnchorHits {
-    fn push(&mut self, occurrence: AnchorOccurrence) {
-        match self {
-            Self::One(existing) => {
-                *self = Self::Many(vec![*existing, occurrence]);
-            }
-            Self::Many(values) => values.push(occurrence),
-        }
-    }
-
-    fn values(&self) -> &[AnchorOccurrence] {
-        match self {
-            Self::One(value) => std::slice::from_ref(value),
-            Self::Many(values) => values,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct OrientedReference {
     pub locus: LocusId,
@@ -460,9 +322,8 @@ pub struct UceIndex {
     pub references: Vec<OrientedReference>,
     recruit: RecruitIndex,
     recruit_bloom: BlockedBloom,
-    anchors: AnchorIndex,
+    exact: Vec<LocusMemIndex>,
 }
-
 
 fn stripped_extension(path: &Path) -> Option<String> {
     let base = if path
@@ -651,7 +512,7 @@ impl UceIndex {
             references: Vec::new(),
             recruit: RecruitIndex::new(k),
             recruit_bloom: BlockedBloom::for_keys(1),
-            anchors: AnchorIndex::new(run_k),
+            exact: Vec::new(),
         };
         for path in reference_paths(verify_reference)? {
             let locus = index.loci.len() as LocusId;
@@ -701,13 +562,11 @@ impl UceIndex {
             }
         }
         index.recruit_bloom = index.recruit.bloom();
+        index.exact = build_locus_indexes(&index.references, index.loci.len(), run_k)?;
         Ok(index)
     }
 
     fn add_oriented(&mut self, locus: LocusId, strand: u8, bases: Vec<u8>) {
-        let sequence = self.references.len() as u32;
-        self.anchors
-            .insert_sequence(&bases, self.run_k, locus, sequence);
         self.references.push(OrientedReference {
             locus,
             strand,
@@ -743,26 +602,16 @@ impl UceIndex {
     }
 
     pub fn orientation_events(&self, sequence: &[u8], candidates: &[LocusId]) -> Vec<Vec<u8>> {
-        let windows = sequence.len().saturating_sub(self.run_k).saturating_add(1);
-        let mut result = vec![vec![0_u8; windows]; candidates.len()];
-        if !valid_dna(sequence) || windows == 0 {
-            return result;
-        }
-        self.anchors
-            .scan(sequence, self.run_k, |entries, position| {
-                for occurrence in entries {
-                    let locus = occurrence.locus;
-                    let mask = self.references[occurrence.sequence as usize].strand;
-                    if let Ok(i) = candidates.binary_search(&locus) {
-                        result[i][position] |= mask;
-                    }
-                }
-            });
-        result
+        let mut scratch = ReadEvidenceScratch::default();
+        self.read_evidence(sequence, candidates, &mut scratch, None);
+        (0..candidates.len())
+            .map(|candidate| scratch.orientation(candidate).to_vec())
+            .collect()
     }
 
-    /// Collects run-k orientation events and the best exact seed for every
-    /// candidate locus in one anchor-index traversal.
+    /// Queries each recruited locus directly. A run-k event contributes a
+    /// direction only when it occurs exactly once in that locus; repeated
+    /// windows still contribute to the MEM used for position and exact length.
     pub fn read_evidence(
         &self,
         read: &[u8],
@@ -771,144 +620,67 @@ impl UceIndex {
         profile: Option<&mut IndexProfile>,
     ) {
         let windows = read.len().saturating_sub(self.run_k).saturating_add(1);
-        result.reset(candidates, windows, self.loci.len());
+        result.reset(candidates.len(), windows);
         if !valid_dna(read) || windows == 0 || candidates.is_empty() {
             return;
         }
         let mut profile = profile;
-        self.anchors
-            .scan(read, self.run_k, |occurrences, read_pos| {
-                if let Some(profile) = profile.as_deref_mut() {
-                    profile.anchor_hit_keys += 1;
-                    profile.anchor_occurrences += occurrences.len() as u64;
-                }
-                for occurrence in occurrences {
-                    let Some(slot) = result.slot_for(occurrence.locus) else {
-                        continue;
+        for (slot, &locus) in candidates.iter().enumerate() {
+            result.occurrence_counts.fill(0);
+            result.strand_masks.fill(0);
+            let mut query_profile = MemQueryProfile::default();
+            let best = self.exact[locus as usize].collect(
+                read,
+                self.run_k,
+                &mut result.occurrence_counts,
+                &mut result.strand_masks,
+                &mut query_profile,
+            );
+            let start = slot * windows;
+            for position in 0..windows {
+                result.orientation_events[start + position] =
+                    if result.occurrence_counts[position] == 1 {
+                        result.strand_masks[position]
+                    } else {
+                        0
                     };
-                    let reference = &self.references[occurrence.sequence as usize];
-                    result.orientation_events[slot * windows + read_pos] |= reference.strand;
-                    let ref_pos = occurrence.position as usize;
-                    let diagonal = ref_pos as isize - read_pos as isize;
-                    let coverage_key = (slot, occurrence.sequence, diagonal);
-                    if result
-                        .covered_end(coverage_key)
-                        .is_some_and(|end| read_pos < end)
-                    {
-                        continue;
-                    }
-                    let mut left = 0_usize;
-                    while left < read_pos
-                        && left < ref_pos
-                        && read[read_pos - left - 1] == reference.bases[ref_pos - left - 1]
-                    {
-                        left += 1;
-                    }
-                    let mut right = self.run_k;
-                    while read_pos + right < read.len()
-                        && ref_pos + right < reference.bases.len()
-                        && read[read_pos + right] == reference.bases[ref_pos + right]
-                    {
-                        right += 1;
-                    }
-                    if let Some(profile) = profile.as_deref_mut() {
-                        profile.exact_extensions += 1;
-                        profile.exact_seed_bases += (left + right) as u64;
-                    }
-                    let candidate = ExactSeed {
-                        sequence: occurrence.sequence,
-                        read_start: (read_pos - left).min(u16::MAX as usize) as u16,
-                        read_end: (read_pos + right).min(u16::MAX as usize) as u16,
-                        reference_start: (ref_pos - left).min(u32::MAX as usize) as u32,
-                        reference_end: (ref_pos + right).min(u32::MAX as usize) as u32,
-                    };
-                    let best = &mut result.best_exact[slot];
-                    if best.is_none_or(|current| {
-                        candidate.len() > current.len()
-                            || (candidate.len() == current.len()
-                                && (
-                                    candidate.sequence,
-                                    candidate.reference_start,
-                                    candidate.read_start,
-                                ) < (
-                                    current.sequence,
-                                    current.reference_start,
-                                    current.read_start,
-                                ))
-                    }) {
-                        *best = Some(candidate);
-                    }
-                    result.record_coverage(coverage_key, read_pos + right);
-                }
-            });
+            }
+            result.best_exact[slot] = best.map(exact_seed);
+            if let Some(profile) = profile.as_deref_mut() {
+                profile.exact_locus_queries += 1;
+                profile.exact_index_queries += query_profile.index_queries;
+                profile.exact_run_windows += query_profile.run_windows;
+                profile.exact_matching_windows += query_profile.matching_windows;
+                profile.mem_starts += query_profile.mem_starts;
+                profile.mem_bases += query_profile.mem_bases;
+            }
+        }
     }
 
     pub fn best_exact(&self, read: &[u8], locus: LocusId) -> Option<ExactSeed> {
         if !valid_dna(read) || read.len() < self.run_k {
             return None;
         }
-        let mut best = None::<ExactSeed>;
-        let mut covered: AHashMap<(u32, isize), usize> = AHashMap::new();
-        self.anchors
-            .scan(read, self.run_k, |occurrences, read_pos| {
-                for occurrence in occurrences.iter().filter(|entry| entry.locus == locus) {
-                    let reference = &self.references[occurrence.sequence as usize].bases;
-                    let ref_pos = occurrence.position as usize;
-                    let diagonal = ref_pos as isize - read_pos as isize;
-                    if covered
-                        .get(&(occurrence.sequence, diagonal))
-                        .is_some_and(|&end| read_pos < end)
-                    {
-                        continue;
-                    }
-                    let mut left = 0_usize;
-                    while left < read_pos
-                        && left < ref_pos
-                        && read[read_pos - left - 1] == reference[ref_pos - left - 1]
-                    {
-                        left += 1;
-                    }
-                    let mut right = self.run_k;
-                    while read_pos + right < read.len()
-                        && ref_pos + right < reference.len()
-                        && read[read_pos + right] == reference[ref_pos + right]
-                    {
-                        right += 1;
-                    }
-                    let candidate = ExactSeed {
-                        sequence: occurrence.sequence,
-                        read_start: (read_pos - left).min(u16::MAX as usize) as u16,
-                        read_end: (read_pos + right).min(u16::MAX as usize) as u16,
-                        reference_start: (ref_pos - left).min(u32::MAX as usize) as u32,
-                        reference_end: (ref_pos + right).min(u32::MAX as usize) as u32,
-                    };
-                    if best.is_none_or(|current| {
-                        candidate.len() > current.len()
-                            || (candidate.len() == current.len()
-                                && (
-                                    candidate.sequence,
-                                    candidate.reference_start,
-                                    candidate.read_start,
-                                ) < (
-                                    current.sequence,
-                                    current.reference_start,
-                                    current.read_start,
-                                ))
-                    }) {
-                        best = Some(candidate);
-                    }
-                    covered.insert((occurrence.sequence, diagonal), read_pos + right);
-                }
-            });
-        best
+        let windows = read.len() - self.run_k + 1;
+        let mut occurrence_counts = vec![0_u32; windows];
+        let mut strand_masks = vec![0_u8; windows];
+        self.exact[locus as usize]
+            .collect(
+                read,
+                self.run_k,
+                &mut occurrence_counts,
+                &mut strand_masks,
+                &mut MemQueryProfile::default(),
+            )
+            .map(exact_seed)
     }
 
     pub fn max_exact(&self, read: &[u8], locus: LocusId) -> usize {
         self.best_exact(read, locus).map_or(0, ExactSeed::len)
     }
 
-    pub fn anchor_entries(&self) -> usize {
-        self.anchors.entries()
+    pub fn exact_index_symbols(&self) -> usize {
+        self.exact.iter().map(LocusMemIndex::symbols).sum()
     }
 }
 
@@ -947,6 +719,56 @@ mod tests {
             reference.windows(k).any(|candidate| candidate == window)
                 || reverse.windows(k).any(|candidate| candidate == window)
         })
+    }
+
+    fn brute_max_exact(read: &[u8], reference: &[u8]) -> usize {
+        let reverse = reverse_complement(reference);
+        [reference, reverse.as_slice()]
+            .into_iter()
+            .flat_map(|oriented| {
+                (0..read.len()).flat_map(move |read_start| {
+                    (0..oriented.len()).map(move |reference_start| {
+                        read[read_start..]
+                            .iter()
+                            .zip(&oriented[reference_start..])
+                            .take_while(|(left, right)| code(**left) == code(**right))
+                            .count()
+                    })
+                })
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn fm_maximum_exact_matches_brute_force_across_mutated_reads() {
+        let mut state = 0x9e37_79b9_u32;
+        let mut reference = Vec::with_capacity(180);
+        for _ in 0..180 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            reference.push(b"ACGT"[((state >> 29) & 3) as usize]);
+        }
+        let index = test_index(16, &reference);
+        for iteration in 0..64 {
+            let start = iteration * 2 % 110;
+            let mut read = reference[start..start + 60].to_vec();
+            let mutation = (iteration * 7 + 11) % read.len();
+            read[mutation] = b"ACGT"[(iteration + 1) % 4];
+            if iteration % 2 == 1 {
+                read = reverse_complement(&read);
+            }
+            let brute = brute_max_exact(&read, &reference);
+            let expected = if brute >= index.run_k { brute } else { 0 };
+            assert_eq!(index.max_exact(&read, 0), expected, "iteration={iteration}");
+        }
+    }
+
+    #[test]
+    fn fm_exact_matching_is_case_insensitive() {
+        let reference = b"acgttgcaacgattcggtaccatgcaagttcg";
+        let read = b"ACGTTGCAACGATTCGGTACC";
+        let index = test_index(16, reference);
+        assert_eq!(index.max_exact(read, 0), read.len());
     }
 
     #[test]
@@ -988,14 +810,23 @@ mod tests {
     }
 
     #[test]
-    fn evidence_scratch_keeps_slots_beyond_u16_range() {
-        let candidates: Vec<LocusId> = (0..=u16::MAX as u32 + 1).collect();
-        let mut scratch = ReadEvidenceScratch::default();
-        scratch.reset(&candidates, 1, candidates.len());
-        assert_eq!(
-            scratch.slot_for(u16::MAX as u32 + 1),
-            Some(u16::MAX as usize + 1)
-        );
+    fn unique_run_windows_cast_orientation_votes() {
+        let reference = b"ACGTTGCAACGATTCGGTACCATGCAAGTTCG";
+        let read = &reference[3..28];
+        let index = test_index(16, reference);
+        let events = index.orientation_events(read, &[0]);
+        assert_eq!(events[0].len(), read.len() - index.run_k + 1);
+        assert!(events[0].iter().all(|&event| event == 1));
+    }
+
+    #[test]
+    fn repeated_run_windows_do_not_vote_but_still_form_a_mem() {
+        let motif = b"ACGTTGCAACGATTCG";
+        let reference = b"ACGTTGCAACGATTCGTTAAACGTTGCAACGATTCG";
+        let index = test_index(16, reference);
+        let events = index.orientation_events(motif, &[0]);
+        assert!(events[0].iter().all(|&event| event == 0));
+        assert_eq!(index.max_exact(motif, 0), motif.len());
     }
 
     #[test]

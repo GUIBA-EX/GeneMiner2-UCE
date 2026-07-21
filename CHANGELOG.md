@@ -1,4 +1,11 @@
 # Changelog
+## v1.5.4 — UCEFilter FM-index performance pipeline
+
+- Replaced positional-anchor verification with per-locus FM indexes that report maximal exact matches, retaining repeat-aware orientation handling while substantially reducing UCEFilter index memory.
+- Added bounded parallel R1/R2 gzip decode, with zlib-ng used automatically when available; decode overlaps recruitment without changing paired-read ordering or filtering output.
+- Compacted evidence and per-locus candidate storage, added memory reporting, and updated the UCE scheduler to budget one compute worker plus two decode workers per sample.
+- Validated byte-identical full Octocoral output against the prior storage implementation, alongside Rust and workflow regression suites.
+
 ## v1.5.3 — Conservative mitochondrial rescue efficiency
 
 - Kept the existing global adaptive-stop semantics while avoiding a read de Bruijn graph when no terminal mate link reaches the established support threshold; this cannot remove an otherwise admissible component bridge.

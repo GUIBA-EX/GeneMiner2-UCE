@@ -1307,8 +1307,10 @@ def get_rescue_sample_names(samples, failures):
     return [name for name in samples if name not in failed]
 
 def get_uce_sample_parallelism(total_threads, sample_count):
-    """Limit complete UCE sample workers by GeneMiner2's normal process budget."""
-    return max(1, min(total_threads, sample_count)), 1
+    """Budget one compute thread and two bounded decode workers per UCE sample."""
+    active_threads_per_sample = 3
+    worker_budget = max(1, total_threads // active_threads_per_sample)
+    return max(1, min(worker_budget, sample_count)), 1
 
 
 def run_ordered_sample_stages(name, do_filter, do_refilter, do_assemble, do_rescue,
@@ -1942,7 +1944,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         sample_workers, sample_threads = get_uce_sample_parallelism(args.p, len(samples))
         print(
             f'Running UCE as {sample_workers} whole-sample pipeline(s) in parallel; '
-            f'each sample uses {sample_threads} thread.'
+            'each filter uses 1 compute thread and 2 bounded decode workers.'
         )
 
         def run_uce_sample_pipeline(name):
