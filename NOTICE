@@ -1,0 +1,16 @@
+GeneMiner2-UCE
+Copyright (C) 2026 Fei Xia
+
+Unless a file states otherwise, the original Rust implementation, project
+documentation, tests, and workflow extensions in this repository are licensed
+under the GNU General Public License, version 3 or (at your option) any later
+version (GPL-3.0-or-later).
+
+This project is informed by GeneMiner2 and interoperates with related
+workflows. Scientific concepts, interfaces, and upstream software remain
+attributed to their respective authors. Material directly derived from a
+third-party work retains its original copyright and license notice.
+
+Earlier releases made under the MIT License remain available under the terms
+of that license. This notice applies to the current and later releases unless
+a file states otherwise.

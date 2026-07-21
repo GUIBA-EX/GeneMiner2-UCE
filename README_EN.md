@@ -189,3 +189,7 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. [https://doi.org/10.1111/1755-0998.70111](https://doi.org/10.1111/1755-0998.70111)
 
 Related tools include [Easy353](https://doi.org/10.1093/molbev/msac261) and [GeneMiner](https://doi.org/10.1111/1755-0998.13924). When using `--alignment-filter alifilter`, also cite [AliFilter](https://doi.org/10.1093/molbev/msag097). Contact the maintainer at [xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp).
+
+## Copyright and citation
+
+Unless a file states otherwise, copyright for the original Rust implementation, documentation, tests, and workflow extensions in the current and later releases belongs to Fei Xia and is released under [GPL-3.0-or-later](LICENSE). Earlier releases made under the MIT License remain available under their original terms. This project retains the original copyright and license notices of third-party or directly ported code; see [NOTICE](NOTICE) for provenance boundaries. When publishing work that uses this software or its results, please cite this project and the original papers for relevant methods and software.

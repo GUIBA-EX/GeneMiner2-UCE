@@ -8,14 +8,6 @@ GeneMiner2-UCE 是 GeneMiner2 的 UCE 扩展版，面向 target-enrichment、UCE
 
 > **测试阶段。** 项目仍在持续验证中；如遇到 bug、异常结果或文档问题，请提交 [GitHub Issue](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues) 或邮件联系 [xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp)。
 
-> **v1.3。** MainFilter 现使用 canonical k-mer 双链索引、紧凑 locus posting 表和带参考内容 SHA-256 的可复用字典缓存；相同输入与参数下筛选输出保持不变。
-
-> **v1.3.1。** MainFilter 进一步减少长 k-mer 与 GM2/text 编码的临时分配；分散 locus 输出在达到全局内存预算时只刷新最大缓冲区。长 k-mer 合成压力测试约快 9%；完整性能说明见[开发文档](docs/development/mainfilter-performance.md)。
-
-> **v1.3.2。** consensus 阶段的 SAM 回贴、CIGAR 解析、IUPAC 序列与可选变异密度图已迁移至 Rust；主流程不再依赖 matplotlib 或 SciPy。
-
-> **v1.4。** MainFilter 输出改为常驻文件句柄、FASTQ/FASTA 解析改为字节级读取，并在运行时探测 zlib-ng（有则用其 SIMD 加速解压，无则回退系统 zlib）；相同输入与参数下筛选输出保持逐字节一致。`mito` 增加联合救援轮次：首轮 UCE 式组装保留的 contigs 作为样本特异性 seed 与 GenBank bait 合并成救援参考，再招募原始双端 reads 联合重组装；自适应停止判据改为精确的、忽略切点与链方向的环形序列比较。
-
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
 ## 功能
@@ -189,3 +181,7 @@ cli/geneminer2 population -f samples.tsv -r references -o output -p 8 \
 Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. [https://doi.org/10.1111/1755-0998.70111](https://doi.org/10.1111/1755-0998.70111)
 
 相关工具包括 [Easy353](https://doi.org/10.1093/molbev/msac261) 和 [GeneMiner](https://doi.org/10.1111/1755-0998.13924)。使用 `--alignment-filter alifilter` 时，请同时引用 [AliFilter](https://doi.org/10.1093/molbev/msag097)。联系维护者：[xf@g.ecc.u-tokyo.ac.jp](mailto:xf@g.ecc.u-tokyo.ac.jp)。
+
+## 版权与引用
+
+除非文件另有说明，本仓库当前及后续版本的原创 Rust 实现、文档、测试与工作流扩展版权归夏非（Fei Xia）所有，并以 [GPL-3.0-or-later](LICENSE) 发布。此前以 MIT 发布的版本仍按其原许可证授权。项目保留第三方或直接移植代码的原始版权与许可声明；来源边界见 [NOTICE](NOTICE)。使用本软件及其结果发表研究时，请同时引用本项目及相关方法和软件的原始论文。
