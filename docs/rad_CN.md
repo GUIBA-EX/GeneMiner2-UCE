@@ -23,26 +23,27 @@ cli/geneminer2 rad-validate --rad-probe rad_probe/rad_reference \
 
 ## 输入与 probe 构建
 
-`rad-probe` 支持以下输入路径：
+优先使用 `--ipyrad-loci FILE` 读取已完成的 `.loci`。也可用 `--ipyrad-params FILE` 调用 ipyrad（默认步骤 `1--7`），或用 `--rad-denovo` 从已拆样本的 paired RAD reads 建立候选 probe。
 
-- `--ipyrad-loci FILE`：已完成的 `.loci`，推荐；
-- `--ipyrad-params FILE`：调用 ipyrad，默认执行 `1--7`，再读取 `project_dir/<assembly>_outfiles/<assembly>.loci`；可用 `--ipyrad-executable` 和 `--ipyrad-steps` 调整。若 ipyrad 输出被移动，可同时用 `--ipyrad-loci` 指定其路径；
-- `--rad-denovo -f paired_rad_samples.tsv`：已经 demultiplex 的 paired RAD reads。
-
-`rad-probe` 不重写 demultiplex、酶切识别、去接头或复杂样本内/样本间 clustering；这些应由 ipyrad 参数明确控制。de novo 模式是保守的候选 probe builder，不等价于 ipyrad 的严格 RAD 矩阵。
+`rad-probe` 不负责拆样本、识别酶切位点或去接头。原生 de novo 模式只建立保守 probe，不替代 ipyrad 的完整聚类和矩阵构建。
 
 ```text
 paired_rad_samples.tsv
 sample_id<TAB>R1.fastq.gz<TAB>R2.fastq.gz
 ```
 
-原生 de novo 模式按样本计数 canonical k-mer、保留 solid k-mer，并按成对 arm 的 minimizer 建立候选 stack。它只输出满足最小 reads 深度、最短长度和跨样本支持的 paired arm。每个样本—stack 最多保留 128 对确定性抽样 reads 建 consensus，同时记录总支持 pair 数。默认 `k=31`、solid 深度 `3`、跨样本支持 `2`、最短 arm `60 bp`。`--rad-overhang` 只检查 R1；仅当 R2 从已知第二酶切端开始时才传 `--rad-overhang-r2`。
+de novo 模式用 paired-arm 多 seed 找候选，再以 R1、R2 全长距离确认 locus；代表 bait 始终选择真实观测 read。默认要求 `k=31`、深度 `3`、至少 `2` 个样本、arm 长度 `60 bp`、每条 arm 最大编辑距离 `3`。仅在已知 R2 从第二酶切端开始时使用 `--rad-overhang-r2`。
 
 ## 恢复与验证
 
-两种 probe 都复用 MainFilter、refilter 和 `original-rust` 组装。`rad` 仅接受新的 WGS sample：若 sample 已在 RAD 参考中，R1/R2 sample 集合不一致，或出现重复归一化名称与损坏 FASTA，流程会停止而不会静默合并 header。
+`rad` 只接受 probe 中不存在的新 WGS 样本。样本重复、R1/R2 不配对或 arm FASTA 损坏时会直接停止。
 
-`--rad-min-arm-breadth` 默认 `0.80`。`rad` 生成的是 recovery matrix；应随后运行 `rad-validate`。验证将每个 candidate arm 与其 locus 的多等位 bait 比较，并与所有其他 locus 的同 arm bait 竞争。默认要求 query 与参考覆盖均至少 `0.80`、identity 至少 `0.90`、本 locus 得分相对最佳外源 locus 高至少 `5%`。只有 R1、R2 都通过的 WGS sample 才进入 strict 矩阵。可用 `--rad-validate-min-breadth`、`--rad-validate-min-identity`、`--rad-validate-min-delta` 调整门槛。
+默认流程只使用 k31 招募，速度最快。先按默认参数运行；恢复不足时再依次尝试：
+
+1. `--rad-linked-recruitment`：把一个 arm 命中的 paired fragment 限量提供给同 locus 的另一 arm；默认上限为 256，可用 `--rad-link-max-fragments` 调整。
+2. `--rad-fallback-kmers 25`：仅对 k31 未命中的 fragment 使用短 k-mer。它更慢，也更容易招募非特异 reads。
+
+`rad-validate` 默认要求目标覆盖度至少 `0.80`、identity 至少 `0.90`，且本 locus 得分比最佳外源 locus 高至少 `5%`。只有 R1、R2 都通过的样本才进入 strict matrix。完整 contig 保留在 `rad_recovery/`，矩阵中只写目标区间。
 
 ## 输出与解释
 

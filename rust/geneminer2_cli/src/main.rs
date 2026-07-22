@@ -34,6 +34,7 @@ const COMMANDS: &[&str] = &[
     "rad-validate",
 ];
 const FLAG_OPTIONS: &[&str] = &[
+    "--rad-linked-recruitment",
     "--uce-alignment-shadow",
     "--uce-rescue-reads",
     "--stats-count-input-reads",
@@ -209,6 +210,9 @@ const VALUE_OPTIONS: &[&str] = &[
     "--rad-min-count",
     "--rad-min-samples",
     "--rad-min-length",
+    "--rad-max-arm-distance",
+    "--rad-fallback-kmers",
+    "--rad-link-max-fragments",
     "--rad-recovery",
     "--rad-validate-min-identity",
     "--rad-validate-min-breadth",
@@ -1353,6 +1357,36 @@ fn execute_gene(
             "-lkd".into(),
             dictionary.display().to_string(),
         ]);
+        let rad_linked = opt
+            .raw
+            .iter()
+            .any(|argument| argument == "--rad-internal-linked-recruitment");
+        if rad_linked {
+            args.extend([
+                "--link-rad-arms".into(),
+                "--link-rad-max-fragments".into(),
+                value(&opt.raw, &["--rad-link-max-fragments"], "256")?,
+            ]);
+        }
+        if let Some(fallback) = optional_value(&opt.raw, &["--rad-fallback-kmers"])? {
+            let primary = opt
+                .kf
+                .parse::<usize>()
+                .map_err(|_| "-kf must be an integer")?;
+            let mut previous = primary;
+            for item in fallback.split(",").filter(|item| !item.is_empty()) {
+                let k = item
+                    .parse::<usize>()
+                    .map_err(|_| "--rad-fallback-kmers must be comma-separated integers")?;
+                if k < 16 || k >= previous {
+                    return Err(
+                        "--rad-fallback-kmers must be >=16 and strictly decrease from -kf".into(),
+                    );
+                }
+                args.extend(["--fallback-kmer".into(), k.to_string()]);
+                previous = k;
+            }
+        }
         run_profiled(
             profile,
             sample,
@@ -1388,6 +1422,13 @@ fn execute_gene(
         ];
         if sample.read2.is_some() {
             args.push("--use-gm2-format".into());
+            if opt
+                .raw
+                .iter()
+                .any(|argument| argument == "--rad-internal-linked-recruitment")
+            {
+                args.push("--keep-linked-mates".into());
+            }
         }
         run_profiled(
             profile,
@@ -2628,6 +2669,7 @@ fn execute_rad_probe(opt: &Options, bins: &Path) -> Result<(), String> {
             ("--rad-min-count", "--min-count"),
             ("--rad-min-samples", "--min-samples"),
             ("--rad-min-length", "--min-length"),
+            ("--rad-max-arm-distance", "--max-arm-distance"),
         ];
         for (source, target) in options {
             if let Some(value) = optional_value(&opt.raw, &[source])? {
@@ -2732,6 +2774,13 @@ fn execute_rad(opt: &Options, bins: &Path) -> Result<(), String> {
     fs::create_dir_all(&recovery).map_err(|e| e.to_string())?;
     let samples = read_samples(&opt.samples, &recovery)?;
     let mut stage = opt.clone();
+    if stage
+        .raw
+        .iter()
+        .any(|argument| argument == "--rad-linked-recruitment")
+    {
+        stage.raw.push("--rad-internal-linked-recruitment".into());
+    }
     stage.reference = reference.join("arms").display().to_string();
     stage.output = recovery.display().to_string();
     stage.assembly_mode = "original".into();

@@ -23,7 +23,7 @@ struct ArmRecord {
 }
 
 fn usage() -> ! {
-    eprintln!("Usage:\n  rad_workflow reference --loci FILE --out DIR\n  rad_workflow denovo --out DIR --sample NAME --read1 FILE --read2 FILE [--sample NAME --read1 FILE --read2 FILE ...] [--overhang DNA] [--overhang-r2 DNA] [--kmer N] [--min-count N] [--min-samples N] [--min-length N]\n  rad_workflow validate --reference DIR --recovery DIR --out DIR [--sample NAME ...] [--min-identity FLOAT] [--min-breadth FLOAT] [--min-delta FLOAT]\n  rad_workflow finalize --reference DIR --recovery DIR --out DIR --sample NAME [--sample NAME ...] [--min-arm-breadth FLOAT]");
+    eprintln!("Usage:\n  rad_workflow reference --loci FILE --out DIR\n  rad_workflow denovo --out DIR --sample NAME --read1 FILE --read2 FILE [--sample NAME --read1 FILE --read2 FILE ...] [--overhang DNA] [--overhang-r2 DNA] [--kmer N] [--min-count N] [--min-samples N] [--min-length N] [--max-arm-distance N]\n  rad_workflow validate --reference DIR --recovery DIR --out DIR [--sample NAME ...] [--min-identity FLOAT] [--min-breadth FLOAT] [--min-delta FLOAT]\n  rad_workflow finalize --reference DIR --recovery DIR --out DIR --sample NAME [--sample NAME ...] [--min-arm-breadth FLOAT]");
     std::process::exit(2);
 }
 
@@ -360,27 +360,6 @@ fn validate_reference_loci(loci: &BTreeMap<String, ArmReferences>) -> io::Result
     Ok(samples)
 }
 
-fn longest_common_substring(left: &str, right: &str) -> usize {
-    let (short, long) = if left.len() <= right.len() {
-        (left.as_bytes(), right.as_bytes())
-    } else {
-        (right.as_bytes(), left.as_bytes())
-    };
-    let mut previous = vec![0usize; short.len() + 1];
-    let mut best = 0;
-    for &base in long {
-        let mut current = vec![0usize; short.len() + 1];
-        for (index, &other) in short.iter().enumerate() {
-            if base == other {
-                current[index + 1] = previous[index] + 1;
-                best = best.max(current[index + 1]);
-            }
-        }
-        previous = current;
-    }
-    best
-}
-
 fn recovered(
     path: &Path,
     references: &[(String, String)],
@@ -397,28 +376,27 @@ fn recovered(
     if reference_length == 0 {
         return Ok(None);
     }
-    let required = 15usize.max((reference_length as f64 * 0.30).ceil() as usize);
-    let mut best = None;
+    let mut best: Option<(BestAlignment, String)> = None;
     for (_, sequence) in read_fasta(path)? {
-        if sequence.len() as f64 / (reference_length as f64) < breadth {
+        let Some(alignment) = best_alignment(&sequence, references) else {
+            continue;
+        };
+        let reference_breadth =
+            alignment.alignment.reference_bases as f64 / alignment.reference_length as f64;
+        if reference_breadth < breadth {
             continue;
         }
-        let shared = references
-            .iter()
-            .map(|(_, reference)| longest_common_substring(&sequence, reference))
-            .max()
-            .unwrap_or(0);
-        if shared >= required
-            && best
-                .as_ref()
-                .is_none_or(|(best_shared, best_sequence): &(usize, String)| {
-                    shared > *best_shared || (shared == *best_shared && sequence > *best_sequence)
-                })
-        {
-            best = Some((shared, sequence));
+        if best.as_ref().is_none_or(|(current, current_sequence)| {
+            alignment.alignment.score > current.alignment.score
+                || (alignment.alignment.score == current.alignment.score
+                    && (alignment.alignment.matches > current.alignment.matches
+                        || (alignment.alignment.matches == current.alignment.matches
+                            && sequence > *current_sequence)))
+        }) {
+            best = Some((alignment, sequence));
         }
     }
-    Ok(best.map(|(_, sequence)| sequence))
+    Ok(best.map(|(alignment, sequence)| alignment.project_query(&sequence)))
 }
 
 fn finalize(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
@@ -562,6 +540,8 @@ struct LocalAlignment {
     columns: usize,
     query_bases: usize,
     reference_bases: usize,
+    query_start: usize,
+    query_end: usize,
 }
 
 #[derive(Clone)]
@@ -569,6 +549,12 @@ struct BestAlignment {
     alignment: LocalAlignment,
     reference_id: String,
     reference_length: usize,
+}
+
+impl BestAlignment {
+    fn project_query(&self, query: &str) -> String {
+        query[self.alignment.query_start..self.alignment.query_end].to_owned()
+    }
 }
 
 fn local_alignment(query: &str, reference: &str) -> LocalAlignment {
@@ -612,6 +598,7 @@ fn local_alignment(query: &str, reference: &str) -> LocalAlignment {
     let (mut i, mut j) = (best_i, best_j);
     let mut result = LocalAlignment {
         score: best,
+        query_end: best_i,
         ..LocalAlignment::default()
     };
     while i > 0 && j > 0 {
@@ -640,7 +627,58 @@ fn local_alignment(query: &str, reference: &str) -> LocalAlignment {
             _ => unreachable!(),
         }
     }
+    result.query_start = i;
     result
+}
+
+#[derive(Default)]
+struct AlignmentScoreScratch {
+    previous: Vec<i32>,
+    current: Vec<i32>,
+}
+
+fn local_alignment_score(query: &str, reference: &str, scratch: &mut AlignmentScoreScratch) -> i32 {
+    let reference = reference.as_bytes();
+    let width = reference.len() + 1;
+    scratch.previous.resize(width, 0);
+    scratch.previous.fill(0);
+    scratch.current.resize(width, 0);
+    scratch.current.fill(0);
+    let mut best = 0i32;
+    for &query_base in query.as_bytes() {
+        scratch.current[0] = 0;
+        for (index, &reference_base) in reference.iter().enumerate() {
+            let j = index + 1;
+            let diagonal =
+                scratch.previous[j - 1] + if query_base == reference_base { 2 } else { -3 };
+            let up = scratch.previous[j] - 4;
+            let left = scratch.current[j - 1] - 4;
+            let value = 0.max(diagonal).max(up).max(left);
+            scratch.current[j] = value;
+            best = best.max(value);
+        }
+        std::mem::swap(&mut scratch.previous, &mut scratch.current);
+    }
+    best
+}
+
+fn validation_status(
+    reference_breadth: f64,
+    identity: f64,
+    delta: f64,
+    min_breadth: f64,
+    min_identity: f64,
+    min_delta: f64,
+) -> &'static str {
+    if reference_breadth < min_breadth {
+        "insufficient_coverage"
+    } else if identity < min_identity {
+        "low_identity"
+    } else if delta < min_delta {
+        "ambiguous_paralog"
+    } else {
+        "validated"
+    }
 }
 
 fn best_alignment(query: &str, references: &[(String, String)]) -> Option<BestAlignment> {
@@ -820,19 +858,29 @@ fn validate(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
                     delta,
                     sequence,
                 ) = if let Some((candidate_id, candidate, best)) = choice {
-                    let foreign = loci
-                        .iter()
-                        .filter(|(other, _)| *other != locus)
-                        .flat_map(|(_, refs)| {
-                            if arm == "R1" {
-                                refs.0.iter()
-                            } else {
-                                refs.1.iter()
-                            }
-                        })
-                        .map(|(_, reference)| local_alignment(&candidate, reference).score)
-                        .max()
-                        .unwrap_or(0);
+                    let mut foreign = 0;
+                    let mut score_scratch = AlignmentScoreScratch::default();
+                    for (_, reference) in
+                        loci.iter()
+                            .filter(|(other, _)| *other != locus)
+                            .flat_map(|(_, refs)| {
+                                if arm == "R1" {
+                                    refs.0.iter()
+                                } else {
+                                    refs.1.iter()
+                                }
+                            })
+                    {
+                        let upper_bound = 2 * candidate.len().min(reference.len()) as i32;
+                        if upper_bound <= foreign {
+                            continue;
+                        }
+                        foreign = foreign.max(local_alignment_score(
+                            &candidate,
+                            reference,
+                            &mut score_scratch,
+                        ));
+                    }
                     let identity = if best.alignment.columns == 0 {
                         0.0
                     } else {
@@ -853,15 +901,15 @@ fn validate(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
                     } else {
                         (best.alignment.score - foreign).max(0) as f64 / best.alignment.score as f64
                     };
-                    let status = if query_breadth < min_breadth || reference_breadth < min_breadth {
-                        "insufficient_coverage"
-                    } else if identity < min_identity {
-                        "low_identity"
-                    } else if delta < min_delta {
-                        "ambiguous_paralog"
-                    } else {
-                        "validated"
-                    };
+                    let status = validation_status(
+                        reference_breadth,
+                        identity,
+                        delta,
+                        min_breadth,
+                        min_identity,
+                        min_delta,
+                    );
+                    let projected = best.project_query(&candidate);
                     (
                         status,
                         candidate_id,
@@ -872,7 +920,7 @@ fn validate(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
                         best.alignment.score,
                         foreign,
                         delta,
-                        candidate,
+                        projected,
                     )
                 } else {
                     (
@@ -961,6 +1009,151 @@ struct SampleConsensus {
     read_pairs: usize,
 }
 
+const CATALOG_SKETCH_SIZE: usize = 16;
+const CATALOG_MIN_SHARED_SEEDS: usize = 2;
+const CATALOG_MAX_SEED_OCCURRENCES: usize = 1024;
+
+fn minhash_sketch(sequence: &str, k: usize) -> Vec<u64> {
+    let mut kmers = canonical_kmers(sequence.as_bytes(), k);
+    kmers.sort_unstable();
+    kmers.dedup();
+    kmers.truncate(CATALOG_SKETCH_SIZE);
+    kmers
+}
+
+fn bounded_edit_distance(left: &str, right: &str, maximum: usize) -> Option<usize> {
+    if left.len().abs_diff(right.len()) > maximum {
+        return None;
+    }
+    let right = right.as_bytes();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0usize; right.len() + 1];
+    for (left_index, &left_base) in left.as_bytes().iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, &right_base) in right.iter().enumerate() {
+            let column = right_index + 1;
+            current[column] = (previous[column] + 1)
+                .min(current[column - 1] + 1)
+                .min(previous[column - 1] + usize::from(left_base != right_base));
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    (previous[right.len()] <= maximum).then_some(previous[right.len()])
+}
+
+struct CandidateCatalog {
+    seeds: (u64, u64),
+    representative_r1: String,
+    representative_r2: String,
+    samples: BTreeMap<String, SampleConsensus>,
+}
+
+fn cluster_sample_consensuses(
+    loci: HashMap<(u64, u64), BTreeMap<String, SampleConsensus>>,
+    k: usize,
+    max_arm_distance: usize,
+) -> Vec<((u64, u64), BTreeMap<String, SampleConsensus>)> {
+    let mut nodes = loci
+        .into_iter()
+        .flat_map(|(seeds, samples)| {
+            samples
+                .into_iter()
+                .map(move |(sample, consensus)| (seeds, sample, consensus))
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.r1.cmp(&right.2.r1))
+            .then_with(|| left.2.r2.cmp(&right.2.r2))
+    });
+
+    let mut catalogs = Vec::<CandidateCatalog>::new();
+    let mut r1_index = HashMap::<u64, Vec<usize>>::new();
+    let mut r2_index = HashMap::<u64, Vec<usize>>::new();
+    for (seeds, sample, consensus) in nodes {
+        let r1_sketch = minhash_sketch(&consensus.r1, k);
+        let r2_sketch = minhash_sketch(&consensus.r2, k);
+        let mut r1_hits = HashMap::<usize, usize>::new();
+        let mut r2_hits = HashMap::<usize, usize>::new();
+        for seed in &r1_sketch {
+            if let Some(postings) = r1_index.get(seed) {
+                if postings.len() <= CATALOG_MAX_SEED_OCCURRENCES {
+                    for &catalog in postings {
+                        *r1_hits.entry(catalog).or_default() += 1;
+                    }
+                }
+            }
+        }
+        for seed in &r2_sketch {
+            if let Some(postings) = r2_index.get(seed) {
+                if postings.len() <= CATALOG_MAX_SEED_OCCURRENCES {
+                    for &catalog in postings {
+                        *r2_hits.entry(catalog).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let mut verified = r1_hits
+            .into_iter()
+            .filter(|(_, hits)| *hits >= CATALOG_MIN_SHARED_SEEDS)
+            .filter_map(|(catalog, r1_count)| {
+                (r2_hits.get(&catalog).copied().unwrap_or(0) >= CATALOG_MIN_SHARED_SEEDS)
+                    .then_some((catalog, r1_count))
+            })
+            .filter_map(|(catalog_id, _)| {
+                let catalog = &catalogs[catalog_id];
+                if catalog.samples.contains_key(&sample) {
+                    return None;
+                }
+                let r1_distance = bounded_edit_distance(
+                    &consensus.r1,
+                    &catalog.representative_r1,
+                    max_arm_distance,
+                )?;
+                let r2_distance = bounded_edit_distance(
+                    &consensus.r2,
+                    &catalog.representative_r2,
+                    max_arm_distance,
+                )?;
+                Some((r1_distance + r2_distance, catalog_id))
+            })
+            .collect::<Vec<_>>();
+        verified.sort_unstable();
+        let unique_best = verified
+            .first()
+            .copied()
+            .filter(|best| verified.get(1).is_none_or(|second| second.0 > best.0));
+        if let Some((_, catalog_id)) = unique_best {
+            catalogs[catalog_id].samples.insert(sample, consensus);
+            continue;
+        }
+
+        let catalog_id = catalogs.len();
+        for seed in r1_sketch {
+            r1_index.entry(seed).or_default().push(catalog_id);
+        }
+        for seed in r2_sketch {
+            r2_index.entry(seed).or_default().push(catalog_id);
+        }
+        let representative_r1 = consensus.r1.clone();
+        let representative_r2 = consensus.r2.clone();
+        let mut samples = BTreeMap::new();
+        samples.insert(sample, consensus);
+        catalogs.push(CandidateCatalog {
+            seeds,
+            representative_r1,
+            representative_r2,
+            samples,
+        });
+    }
+    catalogs
+        .into_iter()
+        .map(|catalog| (catalog.seeds, catalog.samples))
+        .collect()
+}
+
 fn positive(
     values: &HashMap<String, Vec<String>>,
     flag: &str,
@@ -985,6 +1178,26 @@ fn positive(
         ));
     }
     Ok(parsed)
+}
+
+fn nonnegative(
+    values: &HashMap<String, Vec<String>>,
+    flag: &str,
+    default: usize,
+) -> io::Result<usize> {
+    values
+        .get(flag)
+        .and_then(|items| items.first())
+        .map(|item| {
+            item.parse::<usize>().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{flag} must be a non-negative integer"),
+                )
+            })
+        })
+        .transpose()
+        .map(|parsed| parsed.unwrap_or(default))
 }
 
 fn canonical_kmers(sequence: &[u8], k: usize) -> Vec<u64> {
@@ -1077,7 +1290,7 @@ fn consensus(records: &[String], min_length: usize) -> Option<String> {
     if length < min_length {
         return None;
     }
-    let mut result = Vec::with_capacity(length);
+    let mut plurality = Vec::with_capacity(length);
     for index in 0..length {
         let mut count = [0usize; 4];
         for record in records {
@@ -1090,13 +1303,29 @@ fn consensus(records: &[String], min_length: usize) -> Option<String> {
             }
         }
         let (base, support) = count.iter().enumerate().max_by_key(|(_, value)| **value)?;
-        // Retain ordinary heterozygosity, but reject stacks whose dominant path is not clear.
+        // Permit an ordinary biallelic split, but reject stacks without even a
+        // half-depth plurality at a column.
         if support * 2 < records.len() {
             return None;
         }
-        result.push(*b"ACGT".get(base)?);
+        plurality.push(*b"ACGT".get(base)?);
     }
-    String::from_utf8(result).ok()
+    // A column-wise consensus can combine alleles into a haplotype that no read
+    // supports. Use the observed read nearest to the plurality sequence as the
+    // deterministic representative bait instead.
+    records
+        .iter()
+        .map(|record| {
+            let prefix = &record.as_bytes()[..length];
+            let distance = prefix
+                .iter()
+                .zip(&plurality)
+                .filter(|(left, right)| left != right)
+                .count();
+            (distance, prefix)
+        })
+        .min_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)))
+        .and_then(|(_, sequence)| String::from_utf8(sequence.to_vec()).ok())
 }
 
 fn pair_id(header: &[u8]) -> &[u8] {
@@ -1137,6 +1366,7 @@ fn denovo(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
     })?;
     let min_samples = positive(values, "--min-samples", 2)?;
     let min_length = positive(values, "--min-length", 60)?;
+    let max_arm_distance = nonnegative(values, "--max-arm-distance", 3)?;
     let parse_overhang = |flag: &str| -> io::Result<Vec<u8>> {
         let overhang = values
             .get(flag)
@@ -1258,7 +1488,7 @@ fn denovo(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
         "locus\tsample\tr1_reads\tr2_reads\tr1_status\tr2_status"
     )?;
     let mut ordinal = 0usize;
-    let mut grouped = loci.into_iter().collect::<Vec<_>>();
+    let mut grouped = cluster_sample_consensuses(loci, k, max_arm_distance);
     grouped.sort_by_key(|(seeds, _)| *seeds);
     for ((seed1, seed2), sample_stacks) in grouped {
         let usable = sample_stacks
@@ -1314,5 +1544,141 @@ fn main() {
     if let Err(error) = result {
         eprintln!("rad_workflow: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_consensus(r1: &str, r2: &str) -> SampleConsensus {
+        SampleConsensus {
+            r1: r1.into(),
+            r2: r2.into(),
+            read_pairs: 3,
+        }
+    }
+
+    #[test]
+    fn projection_removes_flanking_assembly_sequence() {
+        let query = "TTTACGTACGTGGG";
+        let reference = "ACGTACGT";
+        let best = best_alignment(query, &[("reference".into(), reference.into())]).unwrap();
+        assert_eq!(best.project_query(query), reference);
+        assert_eq!(best.alignment.reference_bases, reference.len());
+        assert!(best.alignment.query_bases as f64 / (query.len() as f64) < 0.8);
+        assert_eq!(
+            validation_status(1.0, 1.0, 1.0, 0.8, 0.9, 0.05),
+            "validated"
+        );
+    }
+
+    #[test]
+    fn score_only_alignment_matches_traceback_alignment() {
+        let cases = [
+            ("ACGTACGT", "ACGTACGT"),
+            ("TTTACGTACGTGGG", "ACGTACGT"),
+            ("ACGTTACGT", "ACGTACGT"),
+            ("AAAAACCCCC", "AAAATCCCCC"),
+            ("GGGG", "TTTT"),
+        ];
+        let mut scratch = AlignmentScoreScratch::default();
+        for (query, reference) in cases {
+            assert_eq!(
+                local_alignment_score(query, reference, &mut scratch),
+                local_alignment(query, reference).score,
+                "{query} versus {reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_status_keeps_scientific_gates_separate() {
+        assert_eq!(
+            validation_status(0.79, 1.0, 1.0, 0.8, 0.9, 0.05),
+            "insufficient_coverage"
+        );
+        assert_eq!(
+            validation_status(1.0, 0.89, 1.0, 0.8, 0.9, 0.05),
+            "low_identity"
+        );
+        assert_eq!(
+            validation_status(1.0, 1.0, 0.049, 0.8, 0.9, 0.05),
+            "ambiguous_paralog"
+        );
+    }
+
+    #[test]
+    fn catalog_merges_changed_primary_minimizers_after_full_arm_verification() {
+        let r1 = "ACGTTGCAACGTTGCAACGTTGCAACGTTGCA";
+        let r2 = "TGCAGATCTGCAGATCTGCAGATCTGCAGATC";
+        let mut changed_r1 = r1.to_owned();
+        changed_r1.replace_range(20..21, "A");
+        let mut changed_r2 = r2.to_owned();
+        changed_r2.replace_range(18..19, "A");
+        let mut loci = HashMap::new();
+        loci.insert(
+            (1, 2),
+            BTreeMap::from([("sample_a".into(), sample_consensus(r1, r2))]),
+        );
+        loci.insert(
+            (3, 4),
+            BTreeMap::from([(
+                "sample_b".into(),
+                sample_consensus(&changed_r1, &changed_r2),
+            )]),
+        );
+        let clustered = cluster_sample_consensuses(loci, 7, 2);
+        assert_eq!(clustered.len(), 1);
+        assert_eq!(clustered[0].1.len(), 2);
+    }
+
+    #[test]
+    fn catalog_splits_unrelated_arms_even_with_the_same_primary_minimizer() {
+        let mut loci = HashMap::new();
+        loci.insert(
+            (1, 2),
+            BTreeMap::from([
+                (
+                    "sample_a".into(),
+                    sample_consensus(
+                        "ACGTTGCAACGTTGCAACGTTGCAACGTTGCA",
+                        "TGCAGATCTGCAGATCTGCAGATCTGCAGATC",
+                    ),
+                ),
+                (
+                    "sample_b".into(),
+                    sample_consensus(
+                        "GATCCGTAGATCCGTAGATCCGTAGATCCGTA",
+                        "CTAGGCAACTAGGCAACTAGGCAACTAGGCAA",
+                    ),
+                ),
+            ]),
+        );
+        let clustered = cluster_sample_consensuses(loci, 7, 2);
+        assert_eq!(clustered.len(), 2);
+        assert!(clustered.iter().all(|(_, samples)| samples.len() == 1));
+    }
+
+    #[test]
+    fn bounded_edit_distance_respects_substitutions_and_indels() {
+        assert_eq!(bounded_edit_distance("ACGT", "ACGT", 0), Some(0));
+        assert_eq!(bounded_edit_distance("ACGT", "AGGT", 1), Some(1));
+        assert_eq!(bounded_edit_distance("ACGT", "ACGGT", 1), Some(1));
+        assert_eq!(bounded_edit_distance("ACGT", "AGGA", 1), None);
+    }
+
+    #[test]
+    fn zero_arm_distance_is_a_valid_exact_matching_mode() {
+        let values = HashMap::from([("--max-arm-distance".into(), vec!["0".into()])]);
+        assert_eq!(nonnegative(&values, "--max-arm-distance", 3).unwrap(), 0);
+    }
+
+    #[test]
+    fn consensus_is_an_observed_haplotype_when_columns_are_tied() {
+        let records = vec!["AACCGG".into(), "CCAAGG".into()];
+        let selected = consensus(&records, 6).unwrap();
+        assert!(records.contains(&selected));
+        assert_eq!(selected, "AACCGG");
     }
 }

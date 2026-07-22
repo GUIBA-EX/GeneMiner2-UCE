@@ -23,26 +23,27 @@ cli/geneminer2 rad-validate --rad-probe rad_probe/rad_reference \
 
 ## Inputs and probe construction
 
-`rad-probe` supports these input routes:
+Prefer `--ipyrad-loci FILE` with a completed `.loci`. Alternatively, use `--ipyrad-params FILE` to run ipyrad (steps `1--7` by default), or `--rad-denovo` with demultiplexed paired RAD reads.
 
-- `--ipyrad-loci FILE`: a completed `.loci` file; this is the recommended route.
-- `--ipyrad-params FILE`: run ipyrad first. The default is steps `1--7`, then `<project_dir>/<assembly>_outfiles/<assembly>.loci`; use `--ipyrad-executable` or `--ipyrad-steps` when needed. `--ipyrad-loci` may additionally name a relocated ipyrad output.
-- `--rad-denovo -f paired_rad_samples.tsv`: already-demultiplexed paired RAD reads.
-
-`rad-probe` does not replace demultiplexing, restriction-enzyme recognition, adapter handling, or full within/between-sample clustering. Those belong in the ipyrad setup. The native de novo mode is a conservative candidate-probe builder, not an ipyrad-equivalent RAD matrix.
+`rad-probe` does not demultiplex reads, identify restriction sites, or trim adapters. Native de novo mode builds a conservative probe; it does not replace full ipyrad clustering and matrix construction.
 
 ```text
 paired_rad_samples.tsv
 sample_id<TAB>R1.fastq.gz<TAB>R2.fastq.gz
 ```
 
-The native de novo builder counts per-sample canonical k-mers, retains solid k-mers, groups paired arms by minimizer, and emits only supported paired arms. It retains at most 128 deterministically sampled read pairs per sample-stack for consensus while recording total supporting pairs. Defaults are `k=31`, minimum solid depth `3`, support from `2` samples, and arm length `60 bp`. `--rad-overhang` checks R1 only; pass `--rad-overhang-r2` only when R2 starts at a known second restriction end.
+De novo mode finds candidates with paired-arm multi-seed sketches, then confirms each locus with full-length R1 and R2 distances. Its representative bait is always an observed read. Defaults are `k=31`, depth `3`, support from `2` samples, arm length `60 bp`, and maximum edit distance `3` per arm. Use `--rad-overhang-r2` only when R2 starts at a known second restriction end.
 
 ## Recovery and validation
 
-Both probe types use MainFilter, refilter, and `original-rust` assembly. `rad` accepts new WGS sample IDs only: a sample already present in the RAD reference, mismatched R1/R2 sample sets, duplicate normalized names, or malformed arm FASTA are rejected rather than silently merged.
+`rad` accepts only new WGS samples absent from the probe. It stops on duplicate samples, mismatched R1/R2 inputs, or malformed arm FASTA.
 
-`--rad-min-arm-breadth` defaults to `0.80`. `rad` creates a recovery matrix; run `rad-validate` afterwards. It compares each candidate arm against its own locus's multi-allelic bait and against every other locus's bait on the same arm. Defaults require query and reference breadth of at least `0.80`, identity of at least `0.90`, and an own-locus score at least 5% above the best foreign locus. A WGS sample enters the strict matrix only when both R1 and R2 pass. Tune the checks with `--rad-validate-min-breadth`, `--rad-validate-min-identity`, and `--rad-validate-min-delta`.
+The default k31 recruitment is the fastest path. Run it first. If recovery is insufficient, try in order:
+
+1. `--rad-linked-recruitment`: offer paired fragments hitting one arm to its sibling arm, capped at 256 fragments by default. Adjust with `--rad-link-max-fragments`.
+2. `--rad-fallback-kmers 25`: use a shorter k-mer only for fragments missed by k31. This is slower and less specific.
+
+`rad-validate` requires target breadth `0.80`, identity `0.90`, and an own-locus score at least 5% above the best foreign locus by default. Only samples whose R1 and R2 both pass enter the strict matrix. Complete contigs remain in `rad_recovery/`; matrices contain only the target interval.
 
 ## Outputs and interpretation
 

@@ -41,6 +41,9 @@ struct Args {
     get_reverse: bool,
     use_composition_pattern: bool,
     mode: u8,
+    fallback_kmers: Vec<usize>,
+    link_rad_arms: bool,
+    link_rad_max_fragments: u64,
 }
 
 impl Default for Args {
@@ -58,6 +61,9 @@ impl Default for Args {
             get_reverse: false,
             use_composition_pattern: false,
             mode: 0,
+            fallback_kmers: Vec::new(),
+            link_rad_arms: false,
+            link_rad_max_fragments: 256,
         }
     }
 }
@@ -79,6 +85,9 @@ fn print_help() {
          -gr           Index reverse-complement reference k-mers\n\
          -lb           Accept the legacy composition-pattern option\n\
          -m INT        Mode 0..5 (default: 0)\n\
+         --fallback-kmer INT  Query this shorter k only when earlier tiers have no hit; repeatable\n\
+         --link-rad-arms      Route a hit to its sibling __R1/__R2 arm\n\
+         --link-rad-max-fragments INT  Stop sibling propagation after this many direct fragments (default: 256)\n\
          --version     Print version"
     );
 }
@@ -129,6 +138,17 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
                     .parse::<u8>()
                     .map_err(|_| "-m requires an integer from 0 to 5".to_string())?;
             }
+            "--fallback-kmer" => parsed.fallback_kmers.push(parse_usize(
+                take_value(&argv, &mut i, "--fallback-kmer")?,
+                "--fallback-kmer",
+            )?),
+            "--link-rad-arms" => parsed.link_rad_arms = true,
+            "--link-rad-max-fragments" => {
+                parsed.link_rad_max_fragments = parse_usize(
+                    take_value(&argv, &mut i, "--link-rad-max-fragments")?,
+                    "--link-rad-max-fragments",
+                )? as u64;
+            }
             "-gr" => parsed.get_reverse = true,
             "-lb" => parsed.use_composition_pattern = true,
             "-q1" | "-q2" => {
@@ -170,6 +190,13 @@ fn parse_args(argv: Vec<String>) -> AppResult<Args> {
     }
     if parsed.mode > 5 {
         return Err("mode must be between 0 and 5".to_string());
+    }
+    let mut previous = parsed.kmer;
+    for &fallback in &parsed.fallback_kmers {
+        if fallback < 16 || fallback >= previous {
+            return Err("fallback k-mers must be at least 16 and strictly decreasing".to_string());
+        }
+        previous = fallback;
     }
     if !parsed.q2.is_empty() && parsed.q1.len() != parsed.q2.len() {
         return Err("-q1 and -q2 must contain the same number of files".to_string());
@@ -1014,6 +1041,67 @@ impl HitCollector {
             self.hits.push(reference as u32);
         }
     }
+
+    fn link_siblings(&mut self, siblings: &[Option<u32>], direct_counts: &mut [u64], maximum: u64) {
+        let direct_hits = self.hits.len();
+        for index in 0..direct_hits {
+            let reference = self.hits[index] as usize;
+            direct_counts[reference] = direct_counts[reference].saturating_add(1);
+            if direct_counts[reference] <= maximum {
+                if let Some(sibling) = siblings[reference] {
+                    self.mark(sibling as usize);
+                }
+            }
+        }
+    }
+}
+
+fn rad_arm_siblings(names: &[String]) -> AppResult<Vec<Option<u32>>> {
+    let mut arms = AHashMap::<&str, [Option<usize>; 2]>::new();
+    for (index, name) in names.iter().enumerate() {
+        let (locus, arm) = if let Some(locus) = name.strip_suffix("__R1") {
+            (locus, 0)
+        } else if let Some(locus) = name.strip_suffix("__R2") {
+            (locus, 1)
+        } else {
+            continue;
+        };
+        let slot = &mut arms.entry(locus).or_default()[arm];
+        if slot.replace(index).is_some() {
+            return Err(format!("duplicate RAD arm reference: {name}"));
+        }
+    }
+    let mut siblings = vec![None; names.len()];
+    for pair in arms.values() {
+        if let [Some(left), Some(right)] = *pair {
+            siblings[left] = Some(right as u32);
+            siblings[right] = Some(left as u32);
+        }
+    }
+    Ok(siblings)
+}
+
+fn collect_fragment_hits(
+    primary: &KmerIndex,
+    fallbacks: &[KmerIndex],
+    first: &[u8],
+    second: Option<&[u8]>,
+    step: usize,
+    collector: &mut HitCollector,
+) {
+    primary.collect_hits(first, step, collector);
+    if let Some(second) = second {
+        primary.collect_hits(second, step, collector);
+    }
+    for index in fallbacks {
+        if !collector.hits.is_empty() {
+            break;
+        }
+        index.collect_hits(first, step, collector);
+        if let Some(second) = second {
+            index.collect_hits(second, step, collector);
+        }
+    }
 }
 
 // 文件名就是 locus 名，去掉 .gz 和序列后缀，别把扩展名带进结果。
@@ -1740,12 +1828,15 @@ impl Drop for Logger {
 fn scan_mode3_single(
     args: &Args,
     index: &KmerIndex,
+    fallbacks: &[KmerIndex],
+    siblings: &[Option<u32>],
     kind: FileKind,
     logger: &mut Logger,
 ) -> AppResult<Vec<u64>> {
     let reference_count = index.reference_names.len();
     let mut counts = vec![0_u64; reference_count];
     let mut collector = HitCollector::new(reference_count);
+    let mut direct_counts = vec![0_u64; reference_count];
     let max_reads = args.max_read_blocks.saturating_mul(MEBIBYTE_READS);
     for file_number in 0..args.q1.len() {
         let mut reader1 = SequenceReader::open(&args.q1[file_number], kind, false)?;
@@ -1771,9 +1862,16 @@ fn scan_mode3_single(
                 None => false,
             };
             collector.begin();
-            index.collect_hits(&record1.sequence, args.step, &mut collector);
-            if paired && collector.hits.len() < reference_count {
-                index.collect_hits(&record2.sequence, args.step, &mut collector);
+            collect_fragment_hits(
+                index,
+                fallbacks,
+                &record1.sequence,
+                paired.then_some(record2.sequence.as_slice()),
+                args.step,
+                &mut collector,
+            );
+            if args.link_rad_arms {
+                collector.link_siblings(siblings, &mut direct_counts, args.link_rad_max_fragments);
             }
             let increment = if paired { 2 } else { 1 };
             for &reference in &collector.hits {
@@ -1864,6 +1962,20 @@ fn run(args: Args) -> AppResult<()> {
             index
         }
     };
+    let mut fallback_indices = Vec::with_capacity(args.fallback_kmers.len());
+    for &fallback_k in &args.fallback_kmers {
+        let (fallback, _) = build_index(&args.reference, fallback_k, false)?;
+        logger.log(&format!(
+            "Built fallback {fallback_k}-mer dictionary with {} entries.",
+            fallback.len()
+        ));
+        fallback_indices.push(fallback);
+    }
+    let siblings = if args.link_rad_arms {
+        rad_arm_siblings(&index.reference_names)?
+    } else {
+        vec![None; index.reference_names.len()]
+    };
     logger.log(&format!(
         "Dictionary stage took {:.3} seconds.",
         started.elapsed().as_secs_f64()
@@ -1892,7 +2004,14 @@ fn run(args: Args) -> AppResult<()> {
     }
     if args.mode == 3 {
         let filter_started = Instant::now();
-        let counts = scan_mode3_single(&args, &index, kind, &mut logger)?;
+        let counts = scan_mode3_single(
+            &args,
+            &index,
+            &fallback_indices,
+            &siblings,
+            kind,
+            &mut logger,
+        )?;
         write_read_counts(&args.output, &index.reference_names, &counts)?;
         logger.log(&format!(
             "Filtering took {:.3} seconds.",
@@ -1910,6 +2029,7 @@ fn run(args: Args) -> AppResult<()> {
         args.mode,
     )?;
     let mut counts = vec![0_u64; index.reference_names.len()];
+    let mut direct_counts = vec![0_u64; index.reference_names.len()];
     let mut collector = HitCollector::new(index.reference_names.len());
     let mut encoded1 = Vec::with_capacity(4096);
     let mut encoded2 = Vec::with_capacity(4096);
@@ -1947,9 +2067,16 @@ fn run(args: Args) -> AppResult<()> {
                 None => false,
             };
             collector.begin();
-            index.collect_hits(&record1.sequence, args.step, &mut collector);
-            if has_record2 {
-                index.collect_hits(&record2.sequence, args.step, &mut collector);
+            collect_fragment_hits(
+                &index,
+                &fallback_indices,
+                &record1.sequence,
+                has_record2.then_some(record2.sequence.as_slice()),
+                args.step,
+                &mut collector,
+            );
+            if args.link_rad_arms {
+                collector.link_siblings(&siblings, &mut direct_counts, args.link_rad_max_fragments);
             }
             if !collector.hits.is_empty() {
                 if args.mode == 1 {
@@ -2173,6 +2300,79 @@ mod tests {
         assert_eq!(encoded.len(), payload + 6);
         assert_eq!(sequence, 300);
         assert_ne!(encoded[3] & 0x80, 0);
+    }
+
+    #[test]
+    fn rad_arm_links_are_bidirectional_and_locus_scoped() {
+        let names = vec![
+            "locus_a__R1".into(),
+            "locus_b__R1".into(),
+            "locus_a__R2".into(),
+            "unpaired".into(),
+        ];
+        let siblings = rad_arm_siblings(&names).unwrap();
+        assert_eq!(siblings, vec![Some(2), None, Some(0), None]);
+        let mut hits = HitCollector::new(names.len());
+        hits.begin();
+        hits.mark(0);
+        hits.link_siblings(&siblings, &mut vec![0; names.len()], 10_000);
+        assert_eq!(hits.hits, vec![0, 2]);
+    }
+
+    #[test]
+    fn rad_arm_linking_stops_at_fragment_cap() {
+        let siblings = vec![Some(1), Some(0)];
+        let mut direct_counts = vec![0; 2];
+        let mut hits = HitCollector::new(2);
+
+        hits.begin();
+        hits.mark(0);
+        hits.link_siblings(&siblings, &mut direct_counts, 1);
+        assert_eq!(hits.hits, vec![0, 1]);
+
+        hits.begin();
+        hits.mark(0);
+        hits.link_siblings(&siblings, &mut direct_counts, 1);
+        assert_eq!(hits.hits, vec![0]);
+    }
+
+    #[test]
+    fn fallback_index_is_queried_only_after_primary_misses() {
+        let names = vec!["a".into(), "b".into()];
+        let sequences = [
+            b"ACGTCAGTGCATGACTCAGTACGA".as_slice(),
+            b"TTGCAAGCTTAGGCTAACCGTTAA".as_slice(),
+        ];
+        let mut primary = KmerIndex::new(16, names.clone());
+        let mut fallback = KmerIndex::new(8, names);
+        for (reference, sequence) in sequences.iter().enumerate() {
+            primary.add_reference_sequence(sequence, reference as u32);
+            fallback.add_reference_sequence(sequence, reference as u32);
+        }
+        primary.finalize_hits().unwrap();
+        fallback.finalize_hits().unwrap();
+        let mut hits = HitCollector::new(2);
+        hits.begin();
+        collect_fragment_hits(
+            &primary,
+            std::slice::from_ref(&fallback),
+            sequences[0],
+            None,
+            1,
+            &mut hits,
+        );
+        assert_eq!(hits.hits, vec![0]);
+
+        hits.begin();
+        collect_fragment_hits(
+            &primary,
+            &[fallback],
+            b"TTGCAAGCAAAAAAAAAAAAAAAA",
+            None,
+            1,
+            &mut hits,
+        );
+        assert_eq!(hits.hits, vec![1]);
     }
 
     #[test]
