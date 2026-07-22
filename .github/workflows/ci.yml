@@ -29,7 +29,7 @@ jobs:
       - name: Install Python test dependencies
         run: python3 -m pip install --upgrade pip -r requirements-dev.txt
       - name: Build internal workflow executables
-        run: make cli/bin/uce_filter cli/bin/main_assembler-rust
+        run: make cli/bin/MainFilterNew cli/bin/uce_filter cli/bin/main_assembler-rust cli/bin/main_assembler-original-rust
       - name: Run workflow regression suite
         run: python3 -m unittest discover -s tests -p 'test_*.py'
 
