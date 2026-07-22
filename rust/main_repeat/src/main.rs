@@ -40,6 +40,9 @@ struct A {
     assemble_min_kmer_count: u32,
     assemble_branch_ratio: f64,
     assemble_max_fragments: usize,
+    quantify_pairs: usize,
+    bootstrap_replicates: usize,
+    estimate_genome_fraction: bool,
 }
 fn val(v: &[String], i: &mut usize, n: &str) -> R<String> {
     *i += 1;
@@ -64,11 +67,13 @@ fn args() -> R<A> {
         assemble_min_kmer_count: 3,
         assemble_branch_ratio: 1.5,
         assemble_max_fragments: 3,
+        quantify_pairs: 0,
+        bootstrap_replicates: 200,
         ..A::default()
     };
     let mut i = 0;
     while i < v.len() {
-        match v[i].as_str(){"--samples"=>a.samples=val(&v,&mut i,"--samples")?.into(),"--output"=>a.out=val(&v,&mut i,"--output")?.into(),"--stage"=>a.stage=val(&v,&mut i,"--stage")?,"--kmer"=>a.k=val(&v,&mut i,"--kmer")?.parse().map_err(|_|"bad --kmer")?,"--min-kmer-count"=>a.min=val(&v,&mut i,"--min-kmer-count")?.parse().map_err(|_|"bad --min-kmer-count")?,"--catalog-pairs"=>a.cap=val(&v,&mut i,"--catalog-pairs")?.parse().map_err(|_|"bad --catalog-pairs")?,"--threads"=>a.threads=val(&v,&mut i,"--threads")?.parse().map_err(|_|"bad --threads")?,"--read-ledger"=>a.ledger=Some(val(&v,&mut i,"--read-ledger")?.into()),"--te-library"=>a.library=Some(val(&v,&mut i,"--te-library")?.into()),"--mainfilter"=>a.mainfilter=val(&v,&mut i,"--mainfilter")?,"--annotation-min-fragment"=>a.annotation_min_fragment=val(&v,&mut i,"--annotation-min-fragment")?.parse().map_err(|_|"bad --annotation-min-fragment")?,"--annotation-max-fragment"=>a.annotation_max_fragment=val(&v,&mut i,"--annotation-max-fragment")?.parse().map_err(|_|"bad --annotation-max-fragment")?,"--annotation-min-support"=>a.annotation_min_support=val(&v,&mut i,"--annotation-min-support")?.parse().map_err(|_|"bad --annotation-min-support")?,"--annotation-min-identity"=>a.annotation_min_identity=val(&v,&mut i,"--annotation-min-identity")?.parse().map_err(|_|"bad --annotation-min-identity")?,"--annotation-min-coverage"=>a.annotation_min_coverage=val(&v,&mut i,"--annotation-min-coverage")?.parse().map_err(|_|"bad --annotation-min-coverage")?,"--annotation-min-delta"=>a.annotation_min_delta=val(&v,&mut i,"--annotation-min-delta")?.parse().map_err(|_|"bad --annotation-min-delta")?,"--assemble-min-kmer-count"=>a.assemble_min_kmer_count=val(&v,&mut i,"--assemble-min-kmer-count")?.parse().map_err(|_|"bad --assemble-min-kmer-count")?,"--assemble-branch-ratio"=>a.assemble_branch_ratio=val(&v,&mut i,"--assemble-branch-ratio")?.parse().map_err(|_|"bad --assemble-branch-ratio")?,"--assemble-max-fragments"=>a.assemble_max_fragments=val(&v,&mut i,"--assemble-max-fragments")?.parse().map_err(|_|"bad --assemble-max-fragments")?,"-h"|"--help"=>return Err("Usage: main_repeat --samples taxa.tsv --output DIR --mainfilter PATH [--stage all|discover|curate|annotate|quantify]".into()),x=>return Err(format!("unknown option {x}"))};
+        match v[i].as_str(){"--samples"=>a.samples=val(&v,&mut i,"--samples")?.into(),"--output"=>a.out=val(&v,&mut i,"--output")?.into(),"--stage"=>a.stage=val(&v,&mut i,"--stage")?,"--kmer"=>a.k=val(&v,&mut i,"--kmer")?.parse().map_err(|_|"bad --kmer")?,"--min-kmer-count"=>a.min=val(&v,&mut i,"--min-kmer-count")?.parse().map_err(|_|"bad --min-kmer-count")?,"--catalog-pairs"=>a.cap=val(&v,&mut i,"--catalog-pairs")?.parse().map_err(|_|"bad --catalog-pairs")?,"--threads"=>a.threads=val(&v,&mut i,"--threads")?.parse().map_err(|_|"bad --threads")?,"--read-ledger"=>a.ledger=Some(val(&v,&mut i,"--read-ledger")?.into()),"--te-library"=>a.library=Some(val(&v,&mut i,"--te-library")?.into()),"--mainfilter"=>a.mainfilter=val(&v,&mut i,"--mainfilter")?,"--annotation-min-fragment"=>a.annotation_min_fragment=val(&v,&mut i,"--annotation-min-fragment")?.parse().map_err(|_|"bad --annotation-min-fragment")?,"--annotation-max-fragment"=>a.annotation_max_fragment=val(&v,&mut i,"--annotation-max-fragment")?.parse().map_err(|_|"bad --annotation-max-fragment")?,"--annotation-min-support"=>a.annotation_min_support=val(&v,&mut i,"--annotation-min-support")?.parse().map_err(|_|"bad --annotation-min-support")?,"--annotation-min-identity"=>a.annotation_min_identity=val(&v,&mut i,"--annotation-min-identity")?.parse().map_err(|_|"bad --annotation-min-identity")?,"--annotation-min-coverage"=>a.annotation_min_coverage=val(&v,&mut i,"--annotation-min-coverage")?.parse().map_err(|_|"bad --annotation-min-coverage")?,"--annotation-min-delta"=>a.annotation_min_delta=val(&v,&mut i,"--annotation-min-delta")?.parse().map_err(|_|"bad --annotation-min-delta")?,"--assemble-min-kmer-count"=>a.assemble_min_kmer_count=val(&v,&mut i,"--assemble-min-kmer-count")?.parse().map_err(|_|"bad --assemble-min-kmer-count")?,"--assemble-branch-ratio"=>a.assemble_branch_ratio=val(&v,&mut i,"--assemble-branch-ratio")?.parse().map_err(|_|"bad --assemble-branch-ratio")?,"--assemble-max-fragments"=>a.assemble_max_fragments=val(&v,&mut i,"--assemble-max-fragments")?.parse().map_err(|_|"bad --assemble-max-fragments")?,"--quantify-pairs"=>a.quantify_pairs=val(&v,&mut i,"--quantify-pairs")?.parse().map_err(|_|"bad --quantify-pairs")?,"--bootstrap-replicates"=>a.bootstrap_replicates=val(&v,&mut i,"--bootstrap-replicates")?.parse().map_err(|_|"bad --bootstrap-replicates")?,"--estimate-genome-fraction"=>a.estimate_genome_fraction=true,"-h"|"--help"=>return Err("Usage: main_repeat --samples taxa.tsv --output DIR --mainfilter PATH [--stage all|discover|curate|annotate|quantify]".into()),x=>return Err(format!("unknown option {x}"))};
         i += 1
     }
     if a.samples.as_os_str().is_empty() || a.out.as_os_str().is_empty() {
@@ -79,9 +84,12 @@ fn args() -> R<A> {
     }
     if !matches!(
         a.stage.as_str(),
-        "all" | "discover" | "curate" | "annotate" | "quantify"
+        "all" | "discover" | "curate" | "annotate" | "interspersed" | "quantify" | "compare"
     ) {
-        return Err("--stage must be all, discover, curate, annotate, or quantify".into());
+        return Err(
+            "--stage must be all, discover, curate, annotate, interspersed, quantify, or compare"
+                .into(),
+        );
     }
     if a.threads == 0
         || a.cap == 0
@@ -94,6 +102,7 @@ fn args() -> R<A> {
         || a.annotation_min_delta < 0.0
         || a.assemble_min_kmer_count == 0
         || a.assemble_branch_ratio < 1.0
+        || a.bootstrap_replicates == 0
         || a.assemble_max_fragments == 0
         || a.assemble_max_fragments > 8
     {
@@ -789,7 +798,16 @@ struct Audit {
     covered_kmers: Vec<AHashSet<u64>>,
     identity_sum: Vec<f64>,
     identity_n: Vec<u64>,
+    // Percent-divergence bins 0..=20, derived only from anchored reads.
+    identity_bins: Vec<[u64; 21]>,
     links: BTreeMap<(usize, usize), (u64, u64)>,
+}
+fn inverted_repeat_identity(sequence: &[u8]) -> f64 {
+    if sequence.len() < 200 {
+        return 0.0;
+    }
+    let reversed = rc(&String::from_utf8_lossy(sequence));
+    diagonal_similarity(sequence, reversed.as_bytes(), 0).0
 }
 fn groups_for(seq: &[u8], k: usize, index: &AHashMap<u64, Vec<usize>>) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
@@ -841,6 +859,7 @@ fn audit(
         covered_kmers: (0..count).map(|_| AHashSet::new()).collect(),
         identity_sum: vec![0.0; count],
         identity_n: vec![0; count],
+        identity_bins: vec![[0; 21]; count],
         ..Audit::default()
     };
     if !path1.exists() {
@@ -1005,6 +1024,58 @@ fn anchored_alignment(
         (None, None) => None,
     }
 }
+fn selected_pair_hashes(
+    sample: &S,
+    deny: &AHashSet<u64>,
+    limit: usize,
+) -> R<Option<AHashSet<u64>>> {
+    if limit == 0 {
+        return Ok(None);
+    }
+    let mut selected = BinaryHeap::new();
+    let mut reader = PairReader::new(&sample.r1, sample.r2.as_deref())?;
+    while let Some((one, _)) = reader.next_pair()? {
+        let hash = pair_hash(&one.id);
+        if deny.contains(&hash) {
+            continue;
+        }
+        if selected.len() < limit {
+            selected.push(hash);
+        } else if selected.peek().is_some_and(|largest| hash < *largest) {
+            selected.pop();
+            selected.push(hash);
+        }
+    }
+    Ok(Some(selected.into_iter().collect()))
+}
+
+fn next_random(state: &mut u64) -> f64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    (*state >> 11) as f64 / ((1_u64 << 53) as f64)
+}
+
+fn bootstrap_rpm_ci(specific: u64, effective: u64, replicates: usize, seed: u64) -> (f64, f64) {
+    if effective == 0 {
+        return (0.0, 0.0);
+    }
+    let p = specific as f64 / effective as f64;
+    let sigma = (p * (1.0 - p) / effective as f64).sqrt();
+    let mut state = seed.max(1);
+    let mut values = Vec::with_capacity(replicates);
+    for _ in 0..replicates {
+        let u1 = next_random(&mut state).max(f64::MIN_POSITIVE);
+        let u2 = next_random(&mut state);
+        let z = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
+        values.push((p + sigma * z).clamp(0.0, 1.0) * 1e6);
+    }
+    values.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    let low = values[((replicates - 1) * 25) / 1000];
+    let high = values[((replicates - 1) * 975) / 1000];
+    (low, high)
+}
+
 fn audit_sample(
     sample: &S,
     deny: &AHashSet<u64>,
@@ -1012,6 +1083,7 @@ fn audit_sample(
     index: &AHashMap<u64, Vec<usize>>,
     fragments: &FragmentMapIndex,
     count: usize,
+    selected: Option<&AHashSet<u64>>,
 ) -> R<(Audit, u64)> {
     let mut out = Audit {
         specific: vec![0; count],
@@ -1020,12 +1092,14 @@ fn audit_sample(
         covered_kmers: (0..count).map(|_| AHashSet::new()).collect(),
         identity_sum: vec![0.0; count],
         identity_n: vec![0; count],
+        identity_bins: vec![[0; 21]; count],
         ..Audit::default()
     };
     let mut reader = PairReader::new(&sample.r1, sample.r2.as_deref())?;
     let mut effective = 0_u64;
     while let Some((one, two)) = reader.next_pair()? {
-        if deny.contains(&pair_hash(&one.id)) {
+        let hash = pair_hash(&one.id);
+        if deny.contains(&hash) || selected.is_some_and(|ids| !ids.contains(&hash)) {
             continue;
         }
         effective += 1;
@@ -1062,6 +1136,8 @@ fn audit_sample(
                     out.mapped_bases[group] += aligned as u64;
                     out.identity_sum[group] += identity;
                     out.identity_n[group] += 1;
+                    let bin = ((1.0 - identity).max(0.0) * 100.0).round() as usize;
+                    out.identity_bins[group][bin.min(20)] += 1;
                     kmers(read, k, |x| {
                         if index
                             .get(&x)
@@ -1790,12 +1866,201 @@ fn best_library_hit(
         .unwrap_or(0.0);
     Some((best.0, best.1, best.2, best.3, best.4, second))
 }
+const FAMILY_SCHEMA_VERSION: u32 = 2;
+const FAMILY_K: usize = 15;
+const FAMILY_WINDOW: usize = 10;
+const FAMILY_MIN_JACCARD: f64 = 0.18;
+const FAMILY_MIN_IDENTITY: f64 = 0.80;
+const FAMILY_MIN_COVERAGE: f64 = 0.55;
+
+fn minimizer_sketch(sequence: &[u8]) -> Vec<u64> {
+    if sequence.len() < FAMILY_K {
+        return Vec::new();
+    }
+    let mut keys = Vec::with_capacity(sequence.len() - FAMILY_K + 1);
+    kmers(sequence, FAMILY_K, |key| keys.push(key));
+    let width = FAMILY_WINDOW.min(keys.len());
+    let mut sketch = AHashSet::new();
+    for window in keys.windows(width) {
+        if let Some(&key) = window.iter().min() {
+            sketch.insert(key);
+        }
+    }
+    let mut sketch: Vec<_> = sketch.into_iter().collect();
+    sketch.sort_unstable();
+    sketch
+}
+
+fn sketch_jaccard(left: &[u64], right: &[u64]) -> f64 {
+    let (mut i, mut j, mut common) = (0, 0, 0);
+    while i < left.len() && j < right.len() {
+        match left[i].cmp(&right[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                common += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    let union = left.len() + right.len() - common;
+    if union == 0 {
+        0.0
+    } else {
+        common as f64 / union as f64
+    }
+}
+
+fn local_family_alignment(left: &[u8], right: &[u8]) -> (f64, f64) {
+    // Smith-Waterman is only run after minimizer candidate screening.
+    let mut previous = vec![(0_i32, 0_u16, 0_u16); right.len() + 1];
+    let mut best = (0_i32, 0_u16, 0_u16);
+    for &a in left {
+        let mut current = vec![(0_i32, 0_u16, 0_u16); right.len() + 1];
+        for (j, &b) in right.iter().enumerate() {
+            let diagonal = previous[j];
+            let same = a == b;
+            let mut choice = (
+                diagonal.0 + if same { 2 } else { -2 },
+                diagonal.1 + u16::from(same),
+                diagonal.2 + 1,
+            );
+            for candidate in [
+                (
+                    previous[j + 1].0 - 3,
+                    previous[j + 1].1,
+                    previous[j + 1].2 + 1,
+                ),
+                (current[j].0 - 3, current[j].1, current[j].2 + 1),
+                (0, 0, 0),
+            ] {
+                if candidate.0 > choice.0 || (candidate.0 == choice.0 && candidate.1 > choice.1) {
+                    choice = candidate;
+                }
+            }
+            current[j + 1] = choice;
+            if choice.0 > best.0 || (choice.0 == best.0 && choice.1 > best.1) {
+                best = choice;
+            }
+        }
+        previous = current;
+    }
+    if best.2 == 0 {
+        (0.0, 0.0)
+    } else {
+        (
+            best.1 as f64 / best.2 as f64,
+            best.2 as f64 / left.len().min(right.len()).max(1) as f64,
+        )
+    }
+}
+
+fn write_repeat_families(fragment_dir: &Path, groups: &[String], minimum_length: usize) -> R<()> {
+    let mut sequences = Vec::with_capacity(groups.len());
+    for group in groups {
+        let path = fragment_dir.join(format!("{group}.fasta"));
+        let mut candidates = if path.is_file() {
+            fasta_records(&path)?
+        } else {
+            Vec::new()
+        };
+        candidates.sort_by(|left, right| right.1.len().cmp(&left.1.len()));
+        sequences.push(
+            candidates
+                .into_iter()
+                .next()
+                .map(|x| x.1)
+                .filter(|sequence| sequence.len() >= minimum_length)
+                .unwrap_or_default(),
+        );
+    }
+    let sketches: Vec<_> = sequences
+        .iter()
+        .map(|sequence| minimizer_sketch(sequence))
+        .collect();
+    let mut inverted: AHashMap<u64, Vec<usize>> = AHashMap::new();
+    for (index, sketch) in sketches.iter().enumerate() {
+        for &key in sketch {
+            inverted.entry(key).or_default().push(index);
+        }
+    }
+    let mut candidates: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for indexes in inverted.values() {
+        if indexes.len() > 128 {
+            continue;
+        }
+        for (offset, &left) in indexes.iter().enumerate() {
+            for &right in &indexes[offset + 1..] {
+                candidates.insert((left.min(right), left.max(right)));
+            }
+        }
+    }
+    let mut dsu = Dsu::new(groups.len());
+    let mut edges = Vec::new();
+    for (left, right) in candidates {
+        let jaccard = sketch_jaccard(&sketches[left], &sketches[right]);
+        if jaccard < FAMILY_MIN_JACCARD {
+            continue;
+        }
+        let (identity, coverage) = local_family_alignment(&sequences[left], &sequences[right]);
+        if identity >= FAMILY_MIN_IDENTITY && coverage >= FAMILY_MIN_COVERAGE {
+            dsu.join(left, right);
+            edges.push((left, right));
+        }
+    }
+    let mut members: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for index in 0..groups.len() {
+        let root = dsu.find(index);
+        members.entry(root).or_default().push(index);
+    }
+    let mut ordered: Vec<_> = members.into_values().collect();
+    ordered.sort_by_key(|members| members.iter().map(|&index| groups[index].clone()).min());
+    let mut family_for = vec![String::new(); groups.len()];
+    let mut size_for = vec![1_usize; groups.len()];
+    for (family_index, members) in ordered.iter().enumerate() {
+        let id = format!("FAM{:05}", family_index + 1);
+        for &member in members {
+            family_for[member] = id.clone();
+            size_for[member] = members.len();
+        }
+    }
+    let root = fragment_dir
+        .parent()
+        .ok_or("fragment directory has no parent")?;
+    let mut output =
+        BufWriter::new(File::create(root.join("repeat_families.tsv")).map_err(|e| e.to_string())?);
+    writeln!(
+        output,
+        "family_id	equivalence_id	family_size	representative_length	accepted_family_edges"
+    )
+    .unwrap();
+    let mut edge_count: AHashMap<usize, usize> = AHashMap::new();
+    for (left, right) in edges {
+        *edge_count.entry(left).or_insert(0) += 1;
+        *edge_count.entry(right).or_insert(0) += 1;
+    }
+    for (index, group) in groups.iter().enumerate() {
+        writeln!(
+            output,
+            "{}	{group}	{}	{}	{}",
+            family_for[index],
+            size_for[index],
+            sequences[index].len(),
+            edge_count.get(&index).copied().unwrap_or(0)
+        )
+        .unwrap();
+    }
+    Ok(())
+}
+
 fn annotation_artifact_hash(root: &Path) -> R<u64> {
     let mut state = 0xcbf29ce484222325_u64;
     for name in [
         "annotated_catalog.tsv",
         "annotation_evidence.tsv",
         "fragment_metrics.tsv",
+        "repeat_families.tsv",
     ] {
         state = mix_hash(state, name.as_bytes());
         state = mix_hash(state, &file_hash(&root.join(name))?.to_le_bytes());
@@ -1872,7 +2137,7 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
         "equivalence_id\tclass\tannotation_confidence\tdecision"
     )
     .unwrap();
-    writeln!(evidence, "equivalence_id\trepresentative_fragment_id\tfragment_length\tunique_pairs\tperiod_bp\tbest_library_id\tbest_library_class\talignment_identity\talignment_coverage\tscore_delta\tfinal_class\tannotation_confidence\tdecision\treason").unwrap();
+    writeln!(evidence, "equivalence_id\trepresentative_fragment_id\tfragment_length\tunique_pairs\tperiod_bp\tinverted_repeat_identity\tbest_library_id\tbest_library_class\talignment_identity\talignment_coverage\tscore_delta\tfinal_class\tannotation_confidence\tdecision\treason").unwrap();
     for (i, group) in groups.iter().enumerate() {
         let seed_path = curate.join("library").join(format!("{group}.fasta"));
         let seed = fasta_records(&seed_path)?
@@ -1905,6 +2170,7 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
             .filter_map(|(n, x)| period(&String::from_utf8_lossy(x)).map(|p| (n + 1, p)))
             .next();
         let period_bp = periodic.map(|x| x.1);
+        let inverted_identity = inverted_repeat_identity(&fragment);
         let hit = fragments
             .iter()
             .enumerate()
@@ -1954,6 +2220,18 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
                 ".".into(),
                 0.0,
                 0.0,
+                0.0,
+            )
+        } else if inverted_identity >= 0.85 && pairs[i] as usize >= a.annotation_min_support {
+            (
+                "foldback_like_DNA".into(),
+                "provisional".into(),
+                "retained".into(),
+                "long_inverted_repeat_no_long_orf".into(),
+                ".".into(),
+                ".".into(),
+                inverted_identity,
+                1.0,
                 0.0,
             )
         } else if let Some((_, (id, class, identity, coverage, score, second_score))) = hit {
@@ -2044,18 +2322,19 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
             .unwrap();
         }
         writeln!(catalog, "{group}\t{class}\t{confidence}\t{decision}").unwrap();
-        writeln!(evidence, "{group}\t{evidence_fragment_id}\t{}\t{}\t{}\t{hit_id}\t{hit_class}\t{identity:.6}\t{coverage:.6}\t{score_delta:.6}\t{class}\t{confidence}\t{decision}\t{reason}", evidence_fragment_len, pairs[i], period_bp.map(|x| x.to_string()).unwrap_or_else(|| ".".into())).unwrap();
+        writeln!(evidence, "{group}\t{evidence_fragment_id}\t{}\t{}\t{}\t{inverted_identity:.6}\t{hit_id}\t{hit_class}\t{identity:.6}\t{coverage:.6}\t{score_delta:.6}\t{class}\t{confidence}\t{decision}\t{reason}", evidence_fragment_len, pairs[i], period_bp.map(|x| x.to_string()).unwrap_or_else(|| ".".into())).unwrap();
     }
     drop(catalog);
     drop(evidence);
     drop(metrics);
+    write_repeat_families(&temp.join("fragments"), &groups, a.annotation_min_fragment)?;
     let artifact_hash = annotation_artifact_hash(&temp)?;
     let mut manifest =
         BufWriter::new(File::create(temp.join("manifest.tsv")).map_err(|e| e.to_string())?);
-    writeln!(manifest, "schema_version\tstage\tcurate_manifest_hash\tte_library_hash\tmin_fragment\tmax_fragment\tmin_support\tmin_identity\tmin_coverage\tmin_delta\tassemble_min_kmer_count\tassemble_branch_ratio\tassemble_max_fragments\tartifact_hash").unwrap();
+    writeln!(manifest, "schema_version\tstage\tcurate_manifest_hash\tte_library_hash\tmin_fragment\tmax_fragment\tmin_support\tmin_identity\tmin_coverage\tmin_delta\tassemble_min_kmer_count\tassemble_branch_ratio\tassemble_max_fragments\tfamily_schema_version\tartifact_hash").unwrap();
     writeln!(
         manifest,
-        "1\tannotate\t{:016x}\t{:016x}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{:.6}\t{}\t{artifact_hash:016x}",
+        "2\tannotate\t{:016x}\t{:016x}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{:.6}\t{}\t{}\t{artifact_hash:016x}",
         file_hash(&curate.join("manifest.tsv"))?,
         a.library
             .as_deref()
@@ -2070,7 +2349,8 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
         a.annotation_min_delta,
         a.assemble_min_kmer_count,
         a.assemble_branch_ratio,
-        a.assemble_max_fragments
+        a.assemble_max_fragments,
+        FAMILY_SCHEMA_VERSION
     )
     .unwrap();
     commit(&temp, &final_d, "annotate")
@@ -2081,7 +2361,7 @@ fn validate_annotate(a: &A) -> R<()> {
     let fields = manifest_fields(&root.join("manifest.tsv")).map_err(|_| {
         "missing or malformed annotation output; rerun --stage annotate".to_string()
     })?;
-    if manifest_value(&fields, "schema_version")? != "1"
+    if manifest_value(&fields, "schema_version")? != "2"
         || manifest_value(&fields, "stage")? != "annotate"
         || manifest_hash(&fields, "curate_manifest_hash")?
             != file_hash(&a.out.join("02_curate/manifest.tsv"))?
@@ -2101,6 +2381,7 @@ fn validate_annotate(a: &A) -> R<()> {
         || manifest_value(&fields, "assemble_branch_ratio")?
             != format!("{:.6}", a.assemble_branch_ratio)
         || manifest_number::<usize>(&fields, "assemble_max_fragments")? != a.assemble_max_fragments
+        || manifest_number::<u32>(&fields, "family_schema_version")? != FAMILY_SCHEMA_VERSION
         || manifest_hash(&fields, "artifact_hash")? != annotation_artifact_hash(&root)?
     {
         return Err(
@@ -2125,6 +2406,21 @@ fn annotation_status(a: &A) -> R<AHashMap<String, (String, String, String)>> {
     }
     Ok(out)
 }
+fn family_status(a: &A) -> R<AHashMap<String, String>> {
+    let text = fs::read_to_string(a.out.join("03_annotate/repeat_families.tsv"))
+        .map_err(|e| e.to_string())?;
+    let mut out = AHashMap::new();
+    for (line_number, line) in text.lines().enumerate() {
+        if line_number == 0 {
+            continue;
+        }
+        let fields: Vec<_> = line.split('\t').collect();
+        if fields.len() >= 2 {
+            out.insert(fields[1].into(), fields[0].into());
+        }
+    }
+    Ok(out)
+}
 fn quantify(a: &A, ss: &[S]) -> R<()> {
     validate_annotate(a)?;
     let annotate = a.out.join("03_annotate");
@@ -2137,6 +2433,7 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
     let fragment_map = fragment_map_index(&annotate.join("fragments"), &groups, a.k)?;
     let status = curation_status(a)?;
     let annotation = annotation_status(a)?;
+    let families = family_status(a)?;
     let denied = ledger(a.ledger.as_deref())?;
     let final_d = a.out.join("04_quantify");
     let temp = a.out.join(format!(".quantify.tmp.{}", std::process::id()));
@@ -2146,15 +2443,29 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
     fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
     let mut out =
         BufWriter::new(File::create(temp.join("repeat_signal.tsv")).map_err(|e| e.to_string())?);
-    writeln!(out, "sample_id\ttaxon_id\tequivalence_id\teffective_pairs\tspecific_pairs\tambiguous_pairs\tsignal_rpm\tmapped_bases\tmean_depth\tkmer_breadth\tanchor_identity\tstate\tconfidence\tdecision\tclass\tannotation_confidence\tannotation_decision").unwrap();
+    writeln!(out, "sample_id\ttaxon_id\tequivalence_id\tfamily_id\teffective_pairs\tspecific_pairs\tambiguous_pairs\tsignal_rpm\tsignal_rpm_ci_low\tsignal_rpm_ci_high\tquantification_mode\testimated_genome_fraction\tmapped_bases\tmean_depth\tkmer_breadth\tanchor_identity\tstate\tconfidence\tdecision\tclass\tannotation_confidence\tannotation_decision").unwrap();
     let mut coverage = BufWriter::new(
         File::create(temp.join("fragment_coverage.tsv")).map_err(|e| e.to_string())?,
     );
-    writeln!(coverage, "sample_id\tequivalence_id\teq_representative_length\teq_mapped_bases\teq_mean_depth\teq_kmer_breadth\tanchor_identity\tspecific_pairs\tambiguous_pairs").unwrap();
+    writeln!(coverage, "sample_id\tequivalence_id\tfamily_id\teq_representative_length\teq_mapped_bases\teq_mean_depth\teq_kmer_breadth\tanchor_identity\tspecific_pairs\tambiguous_pairs").unwrap();
+    let mut landscape =
+        BufWriter::new(File::create(temp.join("repeat_landscape.tsv")).map_err(|e| e.to_string())?);
+    writeln!(landscape, "sample_id\ttaxon_id\tequivalence_id\tfamily_id\tdivergence_percent_bin\tanchored_reads\tmetric").unwrap();
     let mut matrix: BTreeMap<(String, usize), Vec<(f64, String)>> = BTreeMap::new();
-    let audits: Vec<(Audit, u64)> = ss
+    let selected: Vec<_> = ss
         .par_iter()
         .map(|sample| {
+            selected_pair_hashes(
+                sample,
+                denied.get(&sample.id).unwrap_or(&AHashSet::new()),
+                a.quantify_pairs,
+            )
+        })
+        .collect::<R<Vec<_>>>()?;
+    let audits: Vec<(Audit, u64)> = ss
+        .par_iter()
+        .zip(selected.par_iter())
+        .map(|(sample, chosen)| {
             audit_sample(
                 sample,
                 denied.get(&sample.id).unwrap_or(&AHashSet::new()),
@@ -2162,6 +2473,7 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
                 &index,
                 &fragment_map,
                 groups.len(),
+                chosen.as_ref(),
             )
         })
         .collect::<R<Vec<_>>>()?;
@@ -2201,10 +2513,30 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
                         "missing_annotation".into(),
                     )
                 });
-            writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{rpm:.6}\t{}\t{depth:.6}\t{breadth:.6}\t{anchor_identity}\t{call}\t{confidence}\t{decision}\t{class}\t{annotation_confidence}\t{annotation_decision}", sample.id, sample.taxon, group, effective, result.specific[i], result.ambiguous[i], result.mapped_bases[i]).unwrap();
+            let family = families
+                .get(group)
+                .map(String::as_str)
+                .unwrap_or("UNASSIGNED");
+            let (rpm_low, rpm_high) = bootstrap_rpm_ci(
+                result.specific[i],
+                effective,
+                a.bootstrap_replicates,
+                mix_hash(pair_hash(&sample.id), group.as_bytes()),
+            );
+            let mode = if a.quantify_pairs == 0 {
+                "all_reads"
+            } else {
+                "deterministic_subsample"
+            };
+            let fraction = if a.estimate_genome_fraction && effective > 0 {
+                format!("{:.8}", result.specific[i] as f64 / effective as f64)
+            } else {
+                "NA".into()
+            };
+            writeln!(out, "{}\t{}\t{}\t{family}\t{}\t{}\t{}\t{rpm:.6}\t{rpm_low:.6}\t{rpm_high:.6}\t{mode}\t{fraction}\t{}\t{depth:.6}\t{breadth:.6}\t{anchor_identity}\t{call}\t{confidence}\t{decision}\t{class}\t{annotation_confidence}\t{annotation_decision}", sample.id, sample.taxon, group, effective, result.specific[i], result.ambiguous[i], result.mapped_bases[i]).unwrap();
             writeln!(
                 coverage,
-                "{}\t{}\t{}\t{}\t{depth:.6}\t{breadth:.6}\t{anchor_identity}\t{}\t{}",
+                "{}\t{}\t{family}\t{}\t{}\t{depth:.6}\t{breadth:.6}\t{anchor_identity}\t{}\t{}",
                 sample.id,
                 group,
                 length,
@@ -2213,6 +2545,16 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
                 result.ambiguous[i]
             )
             .unwrap();
+            for (bin, count) in result.identity_bins[i].iter().enumerate() {
+                if *count > 0 {
+                    writeln!(
+                        landscape,
+                        "{}\t{}\t{}\t{family}\t{bin}\t{count}\tcopy_divergence_proxy",
+                        sample.id, sample.taxon, group
+                    )
+                    .unwrap();
+                }
+            }
             matrix
                 .entry((sample.taxon.clone(), i))
                 .or_default()
@@ -2222,7 +2564,11 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
     let mut summary = BufWriter::new(
         File::create(temp.join("taxon_repeat_matrix.tsv")).map_err(|e| e.to_string())?,
     );
-    writeln!(summary, "taxon_id\tequivalence_id\tmedian_rpm\tstate").unwrap();
+    writeln!(
+        summary,
+        "taxon_id\tequivalence_id\tfamily_id\tmedian_rpm\tstate"
+    )
+    .unwrap();
     for ((taxon, i), mut values) in matrix {
         values.retain(|x| x.1 != "NA");
         values.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -2240,9 +2586,233 @@ fn quantify(a: &A, ss: &[S]) -> R<()> {
         } else {
             "ABSENT"
         };
-        writeln!(summary, "{taxon}\t{}\t{rpm:.6}\t{call}", groups[i]).unwrap();
+        let family = families
+            .get(&groups[i])
+            .map(String::as_str)
+            .unwrap_or("UNASSIGNED");
+        writeln!(
+            summary,
+            "{taxon}\t{}\t{family}\t{rpm:.6}\t{call}",
+            groups[i]
+        )
+        .unwrap();
     }
     commit(&temp, &final_d, "quantify")
+}
+struct ClusterRead {
+    seq: Vec<u8>,
+    mate: Option<Vec<u8>>,
+}
+fn interspersed(a: &A, ss: &[S]) -> R<()> {
+    validate_curate(a)?;
+    const LIMIT: usize = 50_000;
+    const MIN_READS: usize = 20;
+    let mut heap: BinaryHeap<Ranked> = BinaryHeap::new();
+    for sample in ss {
+        let root = a
+            .out
+            .join("02_curate/candidate_recruit")
+            .join(&sample.id)
+            .join("filtered");
+        let one = root.join("all_1.fq");
+        if !one.exists() {
+            continue;
+        }
+        let mut reader = PairReader::new(
+            &one,
+            sample.r2.as_ref().map(|_| root.join("all_2.fq")).as_deref(),
+        )?;
+        while let Some((left, right)) = reader.next_pair()? {
+            let rank = pair_hash(&left.id);
+            let item = Ranked {
+                rank,
+                r1: left.seq,
+                r2: right.map(|x| x.seq),
+            };
+            if heap.len() < LIMIT {
+                heap.push(item);
+            } else if rank < heap.peek().unwrap().rank {
+                heap.pop();
+                heap.push(item);
+            }
+        }
+    }
+    let reads: Vec<ClusterRead> = heap
+        .into_iter()
+        .map(|x| ClusterRead {
+            seq: x.r1,
+            mate: x.r2,
+        })
+        .collect();
+    let sketches: Vec<Vec<u64>> = reads.iter().map(|r| minimizer_sketch(&r.seq)).collect();
+    let mut inverted: AHashMap<u64, Vec<usize>> = AHashMap::new();
+    for (i, sketch) in sketches.iter().enumerate() {
+        for &key in sketch {
+            let v = inverted.entry(key).or_default();
+            if v.len() < 64 {
+                v.push(i);
+            }
+        }
+    }
+    let mut dsu = Dsu::new(reads.len());
+    for members in inverted.values() {
+        for (offset, &left) in members.iter().enumerate() {
+            for &right in members[offset + 1..].iter().take(16) {
+                if sketch_jaccard(&sketches[left], &sketches[right]) >= 0.18 {
+                    dsu.join(left, right);
+                }
+            }
+        }
+    }
+    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..reads.len() {
+        let root = dsu.find(i);
+        components.entry(root).or_default().push(i);
+    }
+    let mut components: Vec<_> = components
+        .into_values()
+        .filter(|v| v.len() >= MIN_READS)
+        .collect();
+    components.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+    components.truncate(256);
+    let final_d = a.out.join("03_interspersed");
+    let temp = a
+        .out
+        .join(format!(".interspersed.tmp.{}", std::process::id()));
+    if temp.exists() {
+        fs::remove_dir_all(&temp).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
+    let mut table =
+        BufWriter::new(File::create(temp.join("clusters.tsv")).map_err(|e| e.to_string())?);
+    let mut fasta =
+        BufWriter::new(File::create(temp.join("consensus.fasta")).map_err(|e| e.to_string())?);
+    writeln!(
+        table,
+        "cluster_id\tread_pairs\tconsensus_length\tstructure\tinverted_repeat_identity\tperiod_bp"
+    )
+    .unwrap();
+    for (n, members) in components.iter().enumerate() {
+        let mut seqs = Vec::new();
+        for &i in members {
+            seqs.push(reads[i].seq.clone());
+            if let Some(mate) = &reads[i].mate {
+                seqs.push(mate.clone());
+            }
+        }
+        let seed = seqs
+            .iter()
+            .max_by_key(|x| x.len())
+            .cloned()
+            .unwrap_or_default();
+        let paths = extend_fragments(
+            &seed,
+            &seqs,
+            a.k,
+            a.annotation_max_fragment,
+            a.assemble_min_kmer_count,
+            a.assemble_branch_ratio,
+            a.assemble_max_fragments,
+        );
+        let consensus = paths.into_iter().max_by_key(|x| x.len()).unwrap_or(seed);
+        let inv = inverted_repeat_identity(&consensus);
+        let per = period(&String::from_utf8_lossy(&consensus));
+        let structure = if per.is_some() {
+            "tandem_repeat_candidate"
+        } else if inv >= 0.80 {
+            "foldback_like_DNA_candidate"
+        } else {
+            "interspersed_repeat_candidate"
+        };
+        let id = format!("IC{:05}", n + 1);
+        writeln!(
+            fasta,
+            ">{id} reads={} structure={structure}\n{}",
+            members.len(),
+            String::from_utf8_lossy(&consensus)
+        )
+        .unwrap();
+        writeln!(
+            table,
+            "{id}\t{}\t{}\t{structure}\t{inv:.6}\t{}",
+            members.len(),
+            consensus.len(),
+            per.map(|x| x.to_string()).unwrap_or_else(|| ".".into())
+        )
+        .unwrap();
+    }
+    commit(&temp, &final_d, "interspersed")
+}
+
+type ComparisonRow = (
+    BTreeSet<String>,
+    BTreeSet<String>,
+    BTreeSet<String>,
+    BTreeSet<String>,
+);
+fn compare(a: &A) -> R<()> {
+    let text = fs::read_to_string(a.out.join("04_quantify/repeat_signal.tsv"))
+        .map_err(|_| "quantification output is required for compare".to_string())?;
+    let mut lines = text.lines();
+    let header = lines.next().ok_or("empty repeat_signal.tsv")?;
+    let columns: BTreeMap<_, _> = header
+        .split("\t")
+        .enumerate()
+        .map(|(i, name)| (name, i))
+        .collect();
+    let required = |name| {
+        columns
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("repeat_signal.tsv lacks {name}"))
+    };
+    let sample = required("sample_id")?;
+    let taxon = required("taxon_id")?;
+    let eq = required("equivalence_id")?;
+    let family = required("family_id")?;
+    let state_col = required("state")?;
+    let class = required("class")?;
+    let mut rows: BTreeMap<String, ComparisonRow> = BTreeMap::new();
+    for line in lines {
+        let f: Vec<_> = line.split("\t").collect();
+        if f.len() <= state_col || f[state_col] != "PRESENT" {
+            continue;
+        }
+        let entry = rows.entry(f[family].into()).or_default();
+        entry.0.insert(f[sample].into());
+        entry.1.insert(f[taxon].into());
+        entry.2.insert(f[eq].into());
+        entry.3.insert(f[class].into());
+    }
+    let final_d = a.out.join("05_compare");
+    let temp = a.out.join(format!(".compare.tmp.{}", std::process::id()));
+    if temp.exists() {
+        fs::remove_dir_all(&temp).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
+    let mut out = BufWriter::new(
+        File::create(temp.join("repeat_superfamilies.tsv")).map_err(|e| e.to_string())?,
+    );
+    writeln!(out, "superfamily_id\tsample_count\ttaxon_count\tshared_state\tequivalence_members\tclasses\tevidence") .unwrap();
+    for (id, (samples, taxa, eqs, classes)) in rows {
+        let state = if taxa.len() > 1 {
+            "shared"
+        } else if samples.len() > 1 {
+            "taxon_shared"
+        } else {
+            "sample_specific"
+        };
+        writeln!(
+            out,
+            "{id}\t{}\t{}\t{state}\t{}\t{}\tfamily_consensus_and_read_support",
+            samples.len(),
+            taxa.len(),
+            eqs.into_iter().collect::<Vec<_>>().join(","),
+            classes.into_iter().collect::<Vec<_>>().join(",")
+        )
+        .unwrap();
+    }
+    commit(&temp, &final_d, "compare")
 }
 fn main() -> std::process::ExitCode {
     let a = match args() {
@@ -2287,8 +2857,20 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(1);
         }
     }
+    if a.stage == "all" || a.stage == "interspersed" {
+        if let Err(e) = interspersed(&a, &ss) {
+            eprintln!("{e}");
+            return std::process::ExitCode::from(1);
+        }
+    }
     if a.stage == "all" || a.stage == "quantify" {
         if let Err(e) = quantify(&a, &ss) {
+            eprintln!("{e}");
+            return std::process::ExitCode::from(1);
+        }
+    }
+    if a.stage == "compare" {
+        if let Err(e) = compare(&a) {
             eprintln!("{e}");
             return std::process::ExitCode::from(1);
         }
@@ -2305,6 +2887,12 @@ mod tests {
     fn canonical_motif_merges_reverse_complements_and_rotations() {
         assert_eq!(canonical_motif("AAG"), canonical_motif("CTT"));
         assert_eq!(canonical_motif("AAG"), canonical_motif("AGA"));
+    }
+
+    #[test]
+    fn foldback_identity_detects_a_long_palindrome() {
+        let sequence = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+        assert!(inverted_repeat_identity(sequence) >= 0.99);
     }
 
     #[test]
@@ -2366,6 +2954,107 @@ mod tests {
         let paths = extend_fragments(b"AACCGGTT", &reads, 5, 12, 2, 1.5, 3);
         assert!(paths.len() >= 2);
         assert!(paths.iter().all(|x| x.len() <= 12));
+    }
+
+    #[test]
+    fn family_screen_requires_shared_minimizers_and_local_identity() {
+        let left = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let right = b"ACGTACGTACGTACGTACGTACGTACGTTCGT";
+        let unrelated = b"TTTTTTTTTTTTTTTTGGGGGGGGGGGGGGGG";
+        assert!(
+            sketch_jaccard(&minimizer_sketch(left), &minimizer_sketch(right)) >= FAMILY_MIN_JACCARD
+        );
+        let (identity, coverage) = local_family_alignment(left, right);
+        assert!(identity >= FAMILY_MIN_IDENTITY && coverage >= FAMILY_MIN_COVERAGE);
+        assert!(
+            sketch_jaccard(&minimizer_sketch(left), &minimizer_sketch(unrelated))
+                < FAMILY_MIN_JACCARD
+        );
+    }
+
+    #[test]
+    fn family_output_keeps_eqs_but_groups_similar_fragments() {
+        let root =
+            std::env::temp_dir().join(format!("main_repeat_families_{}", std::process::id()));
+        let fragments = root.join("fragments");
+        fs::create_dir_all(&fragments).unwrap();
+        fs::write(
+            fragments.join("EQ00001.fasta"),
+            ">a\nACGTACGTACGTACGTACGTACGTACGTACGT\n",
+        )
+        .unwrap();
+        fs::write(
+            fragments.join("EQ00002.fasta"),
+            ">b\nACGTACGTACGTACGTACGTACGTACGTTCGT\n",
+        )
+        .unwrap();
+        write_repeat_families(&fragments, &["EQ00001".into(), "EQ00002".into()], 16).unwrap();
+        let rows = fs::read_to_string(root.join("repeat_families.tsv")).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let mut fields = rows
+            .lines()
+            .skip(1)
+            .map(|row| row.split('\t').next().unwrap())
+            .collect::<Vec<_>>();
+        fields.sort_unstable();
+        assert_eq!(fields, vec!["FAM00001", "FAM00001"]);
+
+        let root =
+            std::env::temp_dir().join(format!("main_repeat_short_families_{}", std::process::id()));
+        let fragments = root.join("fragments");
+        fs::create_dir_all(&fragments).unwrap();
+        fs::write(
+            fragments.join("EQ00001.fasta"),
+            ">a\nACGTACGTACGTACGTACGTACGTACGTACGT\n",
+        )
+        .unwrap();
+        fs::write(
+            fragments.join("EQ00002.fasta"),
+            ">b\nACGTACGTACGTACGTACGTACGTACGTTCGT\n",
+        )
+        .unwrap();
+        write_repeat_families(&fragments, &["EQ00001".into(), "EQ00002".into()], 80).unwrap();
+        let rows = fs::read_to_string(root.join("repeat_families.tsv")).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let mut fields = rows
+            .lines()
+            .skip(1)
+            .map(|row| row.split('\t').next().unwrap())
+            .collect::<Vec<_>>();
+        fields.sort_unstable();
+        assert_eq!(fields, vec!["FAM00001", "FAM00002"]);
+    }
+
+    #[test]
+    fn deterministic_subsample_uses_stable_pair_hashes() {
+        let root =
+            std::env::temp_dir().join(format!("main_repeat_subsample_{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let reads = root.join("reads.fq");
+        fs::write(&reads, "\x40r3\nACGTACGTACGTACGT\n+\nFFFFFFFFFFFFFFFF\n\x40r1\nACGTACGTACGTACGT\n+\nFFFFFFFFFFFFFFFF\n\x40r2\nACGTACGTACGTACGT\n+\nFFFFFFFFFFFFFFFF\n").unwrap();
+        let sample = S {
+            taxon: "t".into(),
+            id: "s".into(),
+            r1: reads,
+            r2: None,
+        };
+        let first = selected_pair_hashes(&sample, &AHashSet::new(), 2)
+            .unwrap()
+            .unwrap();
+        let second = selected_pair_hashes(&sample, &AHashSet::new(), 2)
+            .unwrap()
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+    }
+
+    #[test]
+    fn bootstrap_interval_is_deterministic_and_bounded() {
+        let first = bootstrap_rpm_ci(12, 100, 200, 9);
+        let second = bootstrap_rpm_ci(12, 100, 200, 9);
+        assert_eq!(first, second);
+        assert!(first.0 <= 120_000.0 && first.1 >= 120_000.0);
     }
 
     #[test]

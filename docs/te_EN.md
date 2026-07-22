@@ -1,71 +1,62 @@
-# TE / repeatome mode
+# TE / repeatome
 
-`geneminer2 te` is a reference-free repeatome workflow for genome-skimming or WGS short reads. It produces conservative repeat units, annotation evidence, and sample abundance; it is **not** complete-TE annotation, insertion-site calling, or a TE-phylogeny workflow.
+`geneminer2 te` is a short-read repeatome workflow for genome-skimming and WGS data. It reports reproducible repeat evidence and abundance. It does not claim complete TE annotation, insertion sites, or genome-wide copy number from capture data.
 
-| Start with | Get | Main boundary |
-| --- | --- | --- |
-| Genome-skimming or WGS short reads | EQ units, conservative annotation, and sample RPM | Does not report complete TEs or insertion sites |
-
-## Quick start
+## Start here
 
 ```bash
-cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
+cli/geneminer2 te -f te_samples.tsv -o te_out -p 16
 ```
-
-TE uses its own sample manifest and does not require `-r`:
 
 ```text
 taxon_id  sample_id  read1  read2
-Taxon_A   A01        /data/A01_R1.fq.gz  /data/A01_R2.fq.gz
-Taxon_B   B01        /data/B01.fq.gz
+Taxon_A   A01        A01_R1.fq.gz  A01_R2.fq.gz
+Taxon_B   B01        B01.fq.gz
 ```
 
-The fourth field, `read2`, is optional. `--te-read-ledger FILE` is optional and accepts `sample_id read_id` rows to exclude reads already assigned with high confidence to target sequences.
+`read2` is optional. Use `--te-library library.fa` only when a classified, preferably close-relative, library is available. Headers follow `name#Class/Subclass`.
 
-## Workflow
+## One workflow, two kinds of repeat
 
 ```text
-discover → curate → annotate → quantify
+reads → discover → curate → annotate → quantify
+                 └→ interspersed (optional recovery lane)
 ```
 
-- **discover** taxon-balances sampling and finds atomic seed groups.
-- **curate** runs MainFilter once, retains candidate reads and paired-end linkage evidence, and builds an exact-equivalence (EQ) library.
-- **annotate** builds up to three bounded, read-supported local fragments per EQ. Ambiguous local bubbles are retained as alternatives rather than merged; it then detects tandem/satellite features and performs conservative library-homology annotation.
-- **quantify** maps every eligible input read pair back to the annotated fragment set (not only MainFilter recruits), reports RPM, mapped bases, and fragment mean depth; it never reruns MainFilter.
+The main lane identifies exact repeat units (EQs), preserves paired-read evidence, assembles short supported fragments, and quantifies them against all eligible reads. It is deliberately conservative.
 
-The default `--te-stage all` runs all four stages. `--te-stage discover|curate|annotate|quantify` reruns one stage. Downstream stages validate upstream manifests, so changed inputs or parameters require rerunning the appropriate upstream stage.
-
-## Optional library annotation
+The `interspersed` lane uses shared candidate reads rather than unique EQ assignment: it builds sparse minimizer-overlap components and jointly assembles each component. Run it when the goal is recovery of non-tandem repeat consensuses:
 
 ```bash
-cli/geneminer2 te -f te_samples.tsv -o te_out -p 32 \
-  --te-library curated_te.fa
+cli/geneminer2 te -f te_samples.tsv -o te_out -p 16 --te-stage interspersed
 ```
 
-`--te-library` is an optional classified TE FASTA. Headers use `name#Class/Subclass`, for example `RTE1#DNA/TcMar`. A high-confidence class requires enough fragment length and read-pair support, identity, coverage, and a score margin over the second class. Tune these conditions with `--te-annotate-min-*`.
+## Read the classes as evidence
 
-Annotation never merges or removes an EQ. PE bridges and read transitions remain `linked_not_merged` evidence only; short, weak, or conflicting fragments remain `unknown_repeat` or `unknown_interspersed_repeat`. The built-in comparison is a conservative rolling-k-mer/diagonal screen, not a substitute for assembly-dependent EDTA or RepeatModeler.
+| Output class | Meaning |
+| --- | --- |
+| `simple_repeat` | short periodic motif |
+| `tandem_repeat_candidate` / `satellite_candidate` | repeated array; short reads do not establish chromosomal location |
+| `foldback_like_DNA` | long, read-supported inverted-repeat candidate; not proof of mobility |
+| `interspersed_repeat_candidate` | non-periodic component needing structural or homology evidence |
+| `unknown_repeat` | insufficient evidence; retain, do not over-classify |
 
-## Outputs and interpretation
+No Dfam or library hit does **not** mean that a candidate is not a repeat. For non-model cnidarians it usually means that a family-level label is not yet justified.
+
+## Outputs worth reading
 
 ```text
-te_out/
-├── 01_discover/                 atomic catalog, seeds, manifest
-├── 02_curate/                   EQ library, candidate reads, linkage, manifest
-├── 03_annotate/
-│   ├── fragments/EQ00001.fasta  read-supported fragment (when available)
-│   ├── annotation_evidence.tsv  fragment and homology evidence
-│   ├── fragment_metrics.tsv    local-fragment support and state
-│   ├── annotated_catalog.tsv    final class, confidence, and decision
-│   └── manifest.tsv
-└── 04_quantify/
-    ├── repeat_signal.tsv        per-sample × EQ RPM, coverage, and annotation
-    ├── fragment_coverage.tsv    EQ-level coverage summary from all eligible reads
-    └── taxon_repeat_matrix.tsv  taxon median RPM and call
+03_annotate/annotation_evidence.tsv    class, support, period, inverted-repeat score
+03_annotate/repeat_families.tsv        conservative similarity groups; EQs stay intact
+03_interspersed/clusters.tsv           overlap components and joint consensus structure
+03_interspersed/consensus.fasta        consensus candidates for external annotation
+04_quantify/repeat_signal.tsv          per-sample EQ abundance and coverage
+04_quantify/repeat_landscape.tsv       read-to-consensus divergence proxy
+05_compare/repeat_superfamilies.tsv    shared, taxon-shared, or sample-specific families
 ```
 
-`signal_rpm = 1,000,000 × specific_pairs / effective_pairs`. `PRESENT` requires at least 100 effective pairs, 3 specific pairs, and at least 70% specific support. For UCE capture data, interpret results only as off-target repeat signal, not unbiased genome-wide TE content.
+`signal_rpm` is a relative read signal. `estimated_genome_fraction` is only a read-fraction proxy, and only interpretable as genome fraction for comparable random WGS libraries. Never make that interpretation for UCE off-target reads.
 
-## Local assembly and mapping
+## Practical interpretation
 
-The default local assembler retains at most three non-redundant fragment hypotheses per EQ. It stops at unsupported sequence and does not join different EQs from PE links. `--te-assemble-min-kmer-count`, `--te-assemble-branch-ratio`, and `--te-assemble-max-fragments` tune this bounded walk. Quantification scans all reads remaining after the optional ledger exclusion. `mean_depth` is mapped bases divided by retained fragment length and `kmer_breadth` is the fraction of unique fragment k-mers observed in specific reads; `anchor_identity` is the mean identity of accepted k-mer-anchored ungapped local alignments, not a gapped alignment identity or genome-wide copy-number estimate.
+Use tandem and foldback calls as structural observations. Use `consensus.fasta` for Dfam, HMM/domain, or curated coral-library annotation. Reserve names such as LINE, LTR, or DNA transposon for candidates with matching structural or protein-domain evidence. A stable unknown category is a valid result.
