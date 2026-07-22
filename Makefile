@@ -32,15 +32,13 @@ RUST_CLI_MANIFEST := rust/geneminer2_cli/Cargo.toml
 RUST_CLI_SOURCES := $(RUST_CLI_MANIFEST) $(wildcard rust/geneminer2_cli/src/*.rs)
 REPEAT_RUST_MANIFEST := rust/main_repeat/Cargo.toml
 REPEAT_RUST_SOURCES := $(REPEAT_RUST_MANIFEST) $(wildcard rust/main_repeat/src/*.rs)
-FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
-.PHONY: build clean distclean haxe-filter rust-assembler
+.PHONY: build clean distclean rust-assembler
 
 build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(RAD_WORKFLOW_BIN) $(REPEAT_BIN) $(RUST_CLI_BIN)
 	cd cli && ln -sfn -r bin/geneminer2-rust geneminer2
 
 clean:
-	rm -f -r scripts/filter/bin
 	rm -f -r rust/main_assembler_original/target
 	rm -f -r rust/main_filter_new/target
 	rm -f -r rust/build_consensus/target
@@ -63,20 +61,10 @@ $(CONSENSUS_BIN): $(CONSENSUS_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(CONSENSUS_RUST_MANIFEST)
 	install rust/build_consensus/target/release/build_consensus $(CONSENSUS_BIN)
 
-cli/bin/MainFilterNew: $(FILTER_RUST_SOURCES) $(FILTER_HAXE_SOURCES) | cli/bin
-	if command -v cargo >/dev/null 2>&1; then \
-		cargo build --release --manifest-path $(FILTER_RUST_MANIFEST); \
-		install rust/main_filter_new/target/release/MainFilterNew cli/bin/MainFilterNew; \
-	else \
-		(cd scripts/filter && haxe -cpp bin -dce full -D analyzer-optimize -D HXCPP_GC_BIG_BLOCKS -D HXCPP_GC_MOVING -D HXCPP_M64 -D HXCPP_OPTIMIZE_LINK -D HXCPP_SINGLE_THREADED_APP -D HXCPP_VISIT_ALLOCS -main MainFilterNew.hx); \
-		install scripts/filter/bin/MainFilterNew cli/bin/MainFilterNew; \
-	fi
+cli/bin/MainFilterNew: $(FILTER_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(FILTER_RUST_MANIFEST)
+	install rust/main_filter_new/target/release/MainFilterNew cli/bin/MainFilterNew
 
-haxe-filter: cli/bin/MainFilterNew-haxe
-
-cli/bin/MainFilterNew-haxe: $(FILTER_HAXE_SOURCES) | cli/bin
-	cd scripts/filter && haxe -cpp bin -dce full -D analyzer-optimize -D HXCPP_GC_BIG_BLOCKS -D HXCPP_GC_MOVING -D HXCPP_M64 -D HXCPP_OPTIMIZE_LINK -D HXCPP_SINGLE_THREADED_APP -D HXCPP_VISIT_ALLOCS -main MainFilterNew.hx
-	install scripts/filter/bin/MainFilterNew cli/bin/MainFilterNew-haxe
 $(ORIGINAL_RUST_ASSEMBLER_BIN): $(ORIGINAL_RUST_ASSEMBLER_SOURCES) | cli/bin
 	command -v cargo >/dev/null 2>&1 || { echo "Cargo is required for the Rust assembler" >&2; exit 1; }
 	cargo build --release --manifest-path $(ORIGINAL_RUST_ASSEMBLER_MANIFEST)

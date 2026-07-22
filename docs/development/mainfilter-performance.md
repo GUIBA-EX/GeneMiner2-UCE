@@ -1,10 +1,10 @@
 # MainFilter 性能优化与兼容性说明
 
-本文记录当前 Rust `MainFilterNew` 与历史 Haxe/C++ `scripts/filter/MainFilterNew.hx` 的真实 UCE 对比、性能设计与兼容性边界。它只讨论 reads 招募的工程性能；不将运行时间等同于 UCE recovery、组装准确性或群体遗传推断质量。
+本文记录当前 Rust `MainFilterNew` 与上游历史 Haxe/C++ 基线的真实 UCE 对比、性能设计与兼容性边界。它只讨论 reads 招募的工程性能；不将运行时间等同于 UCE recovery、组装准确性或群体遗传推断质量。
 
 ## 结论：真实 Haxe/C++ 对比
 
-历史 MainFilter 的源码为 Haxe，编译到 C++/hxcpp；它不是 Python 实现。本次以该源码重新编译历史二进制，并与当前 Rust 二进制在完全相同的真实 UCE 数据、参考、参数和输出模式下比较。
+历史 MainFilter 基线为 Haxe 编译的 C++/hxcpp 实现，源码仅在上游仓库保留。本次以该上游源码重新编译历史二进制，并与当前 Rust 二进制在完全相同的真实 UCE 数据、参考、参数和输出模式下比较。
 
 | 情形 | 历史 Haxe/C++ | 当前 Rust | 改善 |
 | --- | ---: | ---: | ---: |
@@ -19,7 +19,7 @@
 
 ### 实现
 
-- 历史基线：上游 `sculab/GeneMiner2` 的 `scripts/filter/MainFilterNew.hx`，使用 Haxe 4.3.3、hxcpp 4.3.2、`g++ -O2` 和项目 README 指定的编译选项重新构建。
+- 历史基线：上游 `sculab/GeneMiner2` 的 MainFilter 源码，使用 Haxe 4.3.3、hxcpp 4.3.2、`g++ -O2` 和项目 README 指定的编译选项重新构建。
 - 候选实现：本仓库 `rust/main_filter_new` 的 release `MainFilterNew`。
 - 两版各自创建并加载自己的 dictionary cache；两种 cache 格式不同，不能交叉复用。
 

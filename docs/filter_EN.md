@@ -52,7 +52,7 @@ Zero recruited reads do not by themselves demonstrate biological absence. Check 
 
 ## Rust MainFilter versus the historical implementation
 
-The historical MainFilter source is Haxe/C++, not a runnable Python script in this project. The Rust implementation preserves command-line semantics, canonical bidirectional recruitment, and output format. Its purpose is to reduce CPU, allocation, and I/O overhead per read—not to obtain speed by increasing `-s`.
+The historical MainFilter baseline is maintained upstream and is not bundled in this Rust-only repository. The Rust implementation preserves command-line semantics, canonical bidirectional recruitment, and output format. Its purpose is to reduce CPU, allocation, and I/O overhead per read—not to obtain speed by increasing `-s`.
 
 | Area | Typical historical cost | Rust MainFilter approach |
 | --- | --- | --- |

@@ -52,7 +52,7 @@ MainFilter 将一个 k-mer 与其反向互补统一为 canonical key，因此一
 
 ## Rust MainFilter 相比历史实现
 
-历史 MainFilter 源码为 Haxe/C++，并非项目内可运行的 Python 脚本。Rust 版保持命令行语义、canonical 双链招募规则和输出格式不变；优化目标是减少每个 read 的 CPU、分配和 I/O 开销，而不是以更大 `-s` 换取速度。
+历史 MainFilter 基线由上游维护，本 Rust-only 仓库不再包含其源码。Rust 版保持命令行语义、canonical 双链招募规则和输出格式不变；优化目标是减少每个 read 的 CPU、分配和 I/O 开销，而不是以更大 `-s` 换取速度。
 
 | 部分 | 历史路径的主要成本 | Rust MainFilter 的做法 |
 | --- | --- | --- |
