@@ -169,7 +169,8 @@ Use --profile to print read/decode, recruitment, evidence and candidate-store ti
 fn main() {
     let result = parse(env::args().skip(1).collect()).and_then(|config| {
         let profile = config.profile;
-        run(&config).map(|summary| (summary, profile))
+        let summary = run(&config)?;
+        Ok((summary, profile))
     });
     match result {
         Ok((summary, profile)) => {

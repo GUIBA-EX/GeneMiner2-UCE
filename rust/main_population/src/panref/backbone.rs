@@ -10,11 +10,16 @@ pub(crate) struct PathEvidence<'a> {
     pub(crate) pe_support: &'a [u64],
     pub(crate) depth_stability: &'a [u64],
     pub(crate) edge_support: &'a HashMap<(usize, usize), u64>,
+    pub(crate) edges: &'a [(usize, usize)],
+    pub(crate) k: usize,
 }
 
 pub(crate) struct ResolvedBackbone {
     pub(crate) sequence: Vec<u8>,
+    /// Nodes are stored in the graph-forward orientation. `reversed` states
+    /// whether `sequence` is their reverse complement.
     pub(crate) nodes: Vec<usize>,
+    pub(crate) reversed: bool,
 }
 
 pub(crate) fn assemble_backbone(
@@ -59,24 +64,132 @@ pub(crate) fn assemble_backbone_from_unitigs(
     baits: &[Vec<u8>],
     evidence: PathEvidence<'_>,
 ) -> Option<ResolvedBackbone> {
-    let edges = unitig_edges(unitigs, 31);
-    let best_id = unitigs
-        .iter()
-        .enumerate()
-        .max_by_key(|(id, unitig)| path_score(*id, unitig, baits, &evidence))?
-        .0;
-    if anchor_score(&unitigs[best_id].sequence, baits).0 == 0 {
+    let (sequence, nodes) = if let Some(path) = resolve_global_path(unitigs, baits, &evidence) {
+        path
+    } else {
+        let best_id = unitigs
+            .iter()
+            .enumerate()
+            .max_by_key(|(id, unitig)| path_score(*id, unitig, baits, &evidence))
+            .map(|(id, _)| id)?;
+        extend_backbone_with_evidence(
+            best_id,
+            unitigs,
+            evidence.edges,
+            baits,
+            &evidence,
+            evidence.k,
+        )
+    };
+    if anchor_score(&sequence, baits).0 == 0 {
         return None;
     }
-    let (sequence, nodes) =
-        extend_backbone_with_evidence(best_id, unitigs, &edges, baits, &evidence, 31);
     let reverse = reverse_complement(&sequence);
-    let sequence = if anchor_score(&reverse, baits) > anchor_score(&sequence, baits) {
-        reverse
+    let (sequence, reversed) = if anchor_score(&reverse, baits) > anchor_score(&sequence, baits) {
+        (reverse, true)
     } else {
-        sequence
+        (sequence, false)
     };
-    Some(ResolvedBackbone { sequence, nodes })
+    Some(ResolvedBackbone {
+        sequence,
+        nodes,
+        reversed,
+    })
+}
+
+type GlobalScore = (u64, u64, u32, u64, u64, u64);
+
+fn extend_score(left: GlobalScore, right: GlobalScore, edge_support: u64) -> GlobalScore {
+    (
+        left.0 + right.0,
+        left.1 + right.1,
+        left.2.min(right.2),
+        left.3 + right.3 + edge_support,
+        left.4.min(right.4),
+        left.5 + right.5,
+    )
+}
+
+fn resolve_global_path(
+    unitigs: &[Unitig],
+    baits: &[Vec<u8>],
+    evidence: &PathEvidence<'_>,
+) -> Option<(Vec<u8>, Vec<usize>)> {
+    if unitigs.is_empty() {
+        return None;
+    }
+    let mut outgoing = vec![Vec::new(); unitigs.len()];
+    let mut indegree = vec![0_usize; unitigs.len()];
+    for &(from, to) in evidence.edges {
+        if from < unitigs.len() && to < unitigs.len() {
+            outgoing[from].push(to);
+            indegree[to] += 1;
+        }
+    }
+    let mut queue = std::collections::VecDeque::new();
+    for (id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            queue.push_back(id);
+        }
+    }
+    let mut order = Vec::with_capacity(unitigs.len());
+    while let Some(node) = queue.pop_front() {
+        order.push(node);
+        for &next in &outgoing[node] {
+            indegree[next] -= 1;
+            if indegree[next] == 0 {
+                queue.push_back(next);
+            }
+        }
+    }
+    if order.len() != unitigs.len() {
+        return None;
+    }
+    let anchors = unitigs
+        .iter()
+        .map(|unitig| anchor_score(&unitig.sequence, baits))
+        .collect::<Vec<_>>();
+    let node_score = |id: usize| -> GlobalScore {
+        (
+            anchors[id].0 as u64,
+            anchors[id].1 as u64,
+            evidence.sample_support[id],
+            evidence.pe_support[id],
+            evidence.depth_stability[id],
+            unitigs[id].sequence.len() as u64,
+        )
+    };
+    let mut best = (0..unitigs.len())
+        .map(|id| (node_score(id), vec![id]))
+        .collect::<Vec<_>>();
+    for from in order {
+        let current = best[from].clone();
+        for &to in &outgoing[from] {
+            let edge = evidence
+                .edge_support
+                .get(&(from, to))
+                .copied()
+                .unwrap_or_default();
+            if edge == 0 {
+                continue;
+            }
+            let candidate = extend_score(current.0, node_score(to), edge);
+            if candidate > best[to].0 {
+                let mut nodes = current.1.clone();
+                nodes.push(to);
+                best[to] = (candidate, nodes);
+            }
+        }
+    }
+    let (_, nodes) = best
+        .into_iter()
+        .filter(|(score, _)| score.0 > 0)
+        .max_by_key(|entry| entry.0)?;
+    let mut sequence = unitigs[*nodes.first()?].sequence.clone();
+    for &id in nodes.iter().skip(1) {
+        sequence.extend_from_slice(&unitigs[id].sequence[evidence.k - 1..]);
+    }
+    Some((sequence, nodes))
 }
 
 fn path_score(
@@ -332,7 +445,7 @@ fn reverse_complement(sequence: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{assemble_backbone, pair_support, path_score, PathEvidence};
+    use super::{assemble_backbone, pair_support, path_score, resolve_global_path, PathEvidence};
     use crate::panref::dbg::Unitig;
     use std::collections::HashMap;
     #[test]
@@ -378,6 +491,89 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
     #[test]
+    fn preserves_reverse_orientation_for_graph_path_writers() {
+        let sequence = b"AAAAAAAAAAAAAAAAAAAACCCCCCCCCCCCCCCCCCCCC".to_vec();
+        let reverse = super::reverse_complement(&sequence);
+        let mut bait = sequence[..21].to_vec();
+        bait.extend_from_slice(&reverse);
+        let unitigs = [Unitig {
+            sequence,
+            kmer_count: 1,
+        }];
+        let evidence = PathEvidence {
+            sample_support: &[1],
+            pe_support: &[0],
+            depth_stability: &[0],
+            edge_support: &HashMap::new(),
+            edges: &[],
+            k: 31,
+        };
+        let resolved = super::assemble_backbone_from_unitigs(&unitigs, &[bait], evidence).unwrap();
+        assert!(resolved.reversed);
+        assert_eq!(resolved.nodes, vec![0]);
+        assert_eq!(resolved.sequence, reverse);
+    }
+
+    #[test]
+    fn global_path_does_not_cross_an_unsupported_graph_edge() {
+        let unitigs = [
+            Unitig {
+                sequence: vec![b'A'; 31],
+                kmer_count: 1,
+            },
+            Unitig {
+                sequence: vec![b'C'; 31],
+                kmer_count: 1,
+            },
+        ];
+        let edges = [(0, 1)];
+        let evidence = PathEvidence {
+            sample_support: &[2, 2],
+            pe_support: &[0, 0],
+            depth_stability: &[10, 10],
+            edge_support: &HashMap::new(),
+            edges: &edges,
+            k: 31,
+        };
+        let (_, nodes) = resolve_global_path(&unitigs, &[vec![b'A'; 31]], &evidence).unwrap();
+        assert_eq!(nodes, vec![0]);
+    }
+
+    #[test]
+    fn global_path_uses_sample_bottleneck_instead_of_node_count() {
+        let unitigs = [
+            Unitig {
+                sequence: vec![b'A'; 31],
+                kmer_count: 1,
+            },
+            Unitig {
+                sequence: vec![b'C'; 31],
+                kmer_count: 1,
+            },
+            Unitig {
+                sequence: vec![b'G'; 31],
+                kmer_count: 1,
+            },
+            Unitig {
+                sequence: vec![b'T'; 31],
+                kmer_count: 1,
+            },
+        ];
+        let edges = [(0, 1), (0, 2), (2, 3)];
+        let edge_support = HashMap::from([((0, 1), 1), ((0, 2), 1), ((2, 3), 1)]);
+        let evidence = PathEvidence {
+            sample_support: &[10, 10, 6, 6],
+            pe_support: &[0; 4],
+            depth_stability: &[10; 4],
+            edge_support: &edge_support,
+            edges: &edges,
+            k: 31,
+        };
+        let (_, nodes) = resolve_global_path(&unitigs, &[vec![b'A'; 31]], &evidence).unwrap();
+        assert_eq!(nodes, vec![0, 1]);
+    }
+
+    #[test]
     fn sample_breadth_outranks_pe_depth_and_length() {
         let unitigs = [
             Unitig {
@@ -394,6 +590,8 @@ mod tests {
             pe_support: &[100, 1],
             depth_stability: &[10_000, 1],
             edge_support: &HashMap::new(),
+            edges: &[],
+            k: 31,
         };
         let baits: Vec<Vec<u8>> = Vec::new();
         assert!(

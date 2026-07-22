@@ -38,7 +38,6 @@ const FLAG_OPTIONS: &[&str] = &[
     "--rad-linked-recruitment",
     "--uce-alignment-shadow",
     "--uce-rescue-reads",
-    "--uce-artifact-pipeline",
     "--stats-count-input-reads",
     "--stats-no-heatmap",
     "--population-panrefv2-include-low-confidence",
@@ -264,7 +263,6 @@ struct Options {
     shadow_band: String,
     shadow_terminal_window: String,
     rescue: bool,
-    artifact_pipeline: bool,
     stats_count_input_reads: bool,
     stats_no_heatmap: bool,
     cleanup_intermediates: bool,
@@ -419,7 +417,6 @@ fn parse(args: &[String]) -> Result<Options, String> {
         shadow_band: value(args, &["--uce-shadow-band"], "32")?,
         shadow_terminal_window: value(args, &["--uce-shadow-terminal-window"], "150")?,
         rescue: flag(args, "--uce-rescue-reads")?,
-        artifact_pipeline: flag(args, "--uce-artifact-pipeline")?,
         stats_count_input_reads: flag(args, "--stats-count-input-reads")?,
         stats_no_heatmap: flag(args, "--stats-no-heatmap")?,
         cleanup_intermediates: flag(args, "--cleanup-intermediates")?,
@@ -617,16 +614,6 @@ fn uce_filter_args_for_recruit(
             opt.shadow_band.clone(),
             "--terminal-window".into(),
             opt.shadow_terminal_window.clone(),
-        ]);
-    }
-    if opt.rescue && opt.artifact_pipeline && !opt.alignment_shadow {
-        let artifacts = sample_dir.join(".gm2_read_artifacts");
-        args.extend([
-            "--read-catalog".into(),
-            artifacts.join("read_catalog.arrow").display().to_string(),
-            "--seed-index".into(),
-            artifacts.join("seed_index.arrow").display().to_string(),
-            "--build-read-artifacts".into(),
         ]);
     }
     args
@@ -939,7 +926,15 @@ fn execute_uce_rescue(
         if candidate.as_ref().is_some_and(|loci| loci.is_empty()) {
             break;
         }
-        let root = sample_dir.join(format!("uce_rescue_round_{round}"));
+        // Keep rescue-only inputs outside the sample directory. The sample
+        // directory can then be renamed to its rollback backup instead of
+        // copied byte-for-byte before this round rebuilds filtered reads and
+        // assembly graphs. The stage is moved back under the sample only
+        // after the round has settled, preserving the historical layout.
+        let root = Path::new(&opt.output)
+            .join(".uce_rescue_stage")
+            .join(&sample.name)
+            .join(format!("round_{round}"));
         let reference = root.join("assembly_refs");
         let added = build_uce_rescue_reference(
             Path::new(&opt.reference),
@@ -968,7 +963,7 @@ fn execute_uce_rescue(
         if backup.exists() {
             fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
         }
-        copy_tree(sample_dir, &backup)?;
+        move_tree(sample_dir, &backup)?;
         let before = current.clone();
         let result: Result<UceSummary, String> = (|| {
             let filtered = sample_dir.join("filtered");
@@ -1027,7 +1022,7 @@ fn execute_uce_rescue(
                 if sample_dir.exists() {
                     fs::remove_dir_all(sample_dir).map_err(|e| e.to_string())?;
                 }
-                copy_tree(&backup, sample_dir)?;
+                move_tree(&backup, sample_dir)?;
                 eprintln!(
                     "Warning: UCE rescue round {round} rolled back for {}: {error}",
                     sample.name
@@ -1037,6 +1032,13 @@ fn execute_uce_rescue(
         }
         if backup.exists() {
             fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
+        }
+        let settled_root = sample_dir.join(format!("uce_rescue_round_{round}"));
+        if settled_root.exists() {
+            fs::remove_dir_all(&settled_root).map_err(|e| e.to_string())?;
+        }
+        if root.exists() {
+            move_tree(&root, &settled_root)?;
         }
     }
     // Pair each before/after state for compact reports.
@@ -4343,10 +4345,6 @@ fn cleanup_native_intermediates(opt: &Options, samples: &[Sample]) -> Result<(),
         for (name, reason) in [
             ("filtered", "reproducible filtered reads"),
             ("filtered_pe", "reproducible filter candidates"),
-            (
-                ".gm2_read_artifacts",
-                "reproducible UCE read catalog and candidate index",
-            ),
         ] {
             let path = sample_dir.join(name);
             if path.is_dir() && !path.is_symlink() {
@@ -4531,14 +4529,6 @@ fn execute_native(opt: Options) -> Result<(), String> {
         .map(|sample| sample.name.clone())
         .collect::<Vec<_>>();
     let is_uce = opt.assembly_mode == "uce";
-    if opt.artifact_pipeline && (!is_uce || !opt.rescue) {
-        return Err(
-            "--uce-artifact-pipeline requires --assembly-mode uce and --uce-rescue-reads".into(),
-        );
-    }
-    if opt.artifact_pipeline && opt.alignment_shadow {
-        return Err("--uce-artifact-pipeline does not yet support --uce-alignment-shadow".into());
-    }
     if is_uce {
         let implementation = value(&opt.raw, &["--assembler-implementation"], "auto")?;
         if !matches!(implementation.as_str(), "auto" | "uce-rust") {
@@ -4916,38 +4906,6 @@ mod tests {
             parsed.commands,
             ["filter", "refilter", "assemble", "combine", "tree"]
         );
-    }
-
-    #[test]
-    fn artifact_pipeline_is_explicit_opt_in() {
-        let plain = parse(&[
-            "--assembly-mode".into(),
-            "uce".into(),
-            "-f".into(),
-            "a".into(),
-            "-r".into(),
-            "r".into(),
-            "-o".into(),
-            "o".into(),
-        ])
-        .unwrap();
-        assert!(!plain.artifact_pipeline);
-
-        let enabled = parse(&[
-            "--assembly-mode".into(),
-            "uce".into(),
-            "--uce-rescue-reads".into(),
-            "--uce-artifact-pipeline".into(),
-            "-f".into(),
-            "a".into(),
-            "-r".into(),
-            "r".into(),
-            "-o".into(),
-            "o".into(),
-        ])
-        .unwrap();
-        assert!(enabled.rescue);
-        assert!(enabled.artifact_pipeline);
     }
     #[test]
     fn sample_names_match_legacy_rule() {

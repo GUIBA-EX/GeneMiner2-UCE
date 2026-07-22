@@ -41,9 +41,9 @@ impl PairAssignment {
 }
 
 #[derive(Clone, Debug)]
-struct FastqRecord {
-    sequence: Vec<u8>,
-    quality: Vec<u8>,
+pub(crate) struct FastqRecord {
+    pub(crate) sequence: Vec<u8>,
+    pub(crate) quality: Vec<u8>,
 }
 
 struct FastqInput {
@@ -195,7 +195,7 @@ pub(crate) fn stream_recruited_pairs(
     read2: &Path,
     threads: usize,
     include_rescued: bool,
-    mut consume: impl FnMut(u32, bool, &[u8], Option<&[u8]>),
+    mut consume: impl FnMut(u32, bool, &FastqRecord, Option<&FastqRecord>),
 ) -> Result<RecruitStats, String> {
     let mut first = open_fastq(read1, threads)?;
     let mut second = if read1 == read2 {
@@ -249,12 +249,7 @@ pub(crate) fn stream_recruited_pairs(
             if let Some(locus) = pair.locus {
                 if pair.strong || (include_rescued && pair.rescued) {
                     counts[locus as usize] += 1;
-                    consume(
-                        locus,
-                        pair.strong,
-                        &pair.first.sequence,
-                        pair.second.as_ref().map(|x| x.sequence.as_slice()),
-                    );
+                    consume(locus, pair.strong, &pair.first, pair.second.as_ref());
                 }
             }
         }

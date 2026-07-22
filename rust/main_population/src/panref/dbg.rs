@@ -91,15 +91,12 @@ fn build_from_counts(counts: HashMap<u64, u32>, k: usize, min_count: u32) -> Vec
         .filter(|node| indegree[node] != 1)
         .copied()
         .collect::<Vec<_>>();
-    let mut known = starts.iter().copied().collect::<HashSet<_>>();
-    for node in &nodes {
-        if known.insert(*node) {
-            starts.push(*node);
-        }
-    }
+    starts.sort_unstable();
     let mut visited = HashSet::new();
     let mut unitigs = Vec::new();
-    for start in starts {
+    let mut remaining = nodes.iter().copied().collect::<Vec<_>>();
+    remaining.sort_unstable();
+    for start in starts.into_iter().chain(remaining) {
         if !visited.insert(start) {
             continue;
         }
@@ -175,17 +172,23 @@ pub(crate) fn unitig_edges(unitigs: &[Unitig], k: usize) -> Vec<(usize, usize)> 
         return Vec::new();
     }
     let overlap = k - 1;
+    let mut prefixes: HashMap<&[u8], Vec<usize>> = HashMap::new();
+    for (to, unitig) in unitigs.iter().enumerate() {
+        if unitig.sequence.len() >= overlap {
+            prefixes
+                .entry(&unitig.sequence[..overlap])
+                .or_default()
+                .push(to);
+        }
+    }
     let mut edges = Vec::new();
     for (from, left) in unitigs.iter().enumerate() {
         if left.sequence.len() < overlap {
             continue;
         }
         let suffix = &left.sequence[left.sequence.len() - overlap..];
-        for (to, right) in unitigs.iter().enumerate() {
-            if from != to && right.sequence.len() >= overlap && right.sequence[..overlap] == *suffix
-            {
-                edges.push((from, to));
-            }
+        if let Some(targets) = prefixes.get(suffix) {
+            edges.extend(targets.iter().map(|&to| (from, to)));
         }
     }
     edges.sort_unstable();
@@ -194,7 +197,7 @@ pub(crate) fn unitig_edges(unitigs: &[Unitig], k: usize) -> Vec<(usize, usize)> 
 
 #[cfg(test)]
 mod tests {
-    use super::build_unitigs;
+    use super::{build_unitigs, unitig_edges};
     #[test]
     fn compacts_a_supported_linear_path() {
         let reads = vec![
@@ -207,6 +210,32 @@ mod tests {
             .iter()
             .any(|unitig| unitig.sequence == b"AACCGGTTA"));
     }
+    #[test]
+    fn canonicalizes_cycle_unitig_start_across_rebuilds() {
+        let reads = vec![b"ACGACG".to_vec(), b"ACGACG".to_vec()];
+        let expected = build_unitigs(&reads, 3, 2);
+        assert_eq!(expected.len(), 1);
+        assert_eq!(expected[0].sequence, b"ACGAC");
+        for _ in 0..32 {
+            assert_eq!(build_unitigs(&reads, 3, 2), expected);
+        }
+    }
+
+    #[test]
+    fn keeps_a_linear_path_maximal_when_an_internal_kmer_sorts_first() {
+        let reads = vec![b"CAACC".to_vec(), b"CAACC".to_vec()];
+        let unitigs = build_unitigs(&reads, 3, 2);
+        assert_eq!(unitigs.len(), 1);
+        assert_eq!(unitigs[0].sequence, b"CAACC");
+    }
+
+    #[test]
+    fn preserves_a_compacted_cycle_as_a_self_edge() {
+        let reads = vec![b"ACGACG".to_vec(), b"ACGACG".to_vec()];
+        let unitigs = build_unitigs(&reads, 3, 2);
+        assert_eq!(unitig_edges(&unitigs, 3), vec![(0, 0)]);
+    }
+
     #[test]
     fn removes_singleton_error_kmers() {
         let reads = vec![

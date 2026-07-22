@@ -1,4 +1,10 @@
 # Changelog
+## v1.5.7 — UCE rescue I/O and PanRefV2.2 graph evidence
+
+- Avoided byte-for-byte sample-directory copies during UCE rescue. Rescue now stages work outside the sample directory and atomically moves the settled round back, preserving rollback and output layout while reducing slow-disk I/O.
+- Extended PanRefV2 with quality-masked bounded read ledgers and sequential candidate spools, sparse per-sample unitig evidence, conservative complete sample-backbone paths, stable backbone IDs/coordinates, and explicit bubble QC.
+- Resolved acyclic PanRefV2 graphs globally using only observed accepted-read transitions, preserved GFA path orientation, added an adaptive k=25 retry for supported unresolved graphs, and made unitig-edge construction near-linear.
+
 ## v1.5.4 — UCEFilter FM-index performance pipeline
 
 - Replaced positional-anchor verification with per-locus FM indexes that report maximal exact matches, retaining repeat-aware orientation handling while substantially reducing UCEFilter index memory.

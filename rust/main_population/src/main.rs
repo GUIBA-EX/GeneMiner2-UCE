@@ -2,6 +2,7 @@ mod panref {
     pub(crate) mod backbone;
     pub(crate) mod bait;
     pub(crate) mod bait_index;
+    pub(crate) mod bubble;
     pub(crate) mod dbg;
     pub(crate) mod recruit;
     pub(crate) mod v2;
