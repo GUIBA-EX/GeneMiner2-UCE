@@ -1,8 +1,6 @@
-PY_SRC := unix_command
 CONSENSUS_BIN := cli/bin/build_consensus
 CONSENSUS_RUST_MANIFEST := rust/build_consensus/Cargo.toml
 CONSENSUS_RUST_SOURCES := $(CONSENSUS_RUST_MANIFEST) $(wildcard rust/build_consensus/src/*.rs)
-PY_BIN := $(patsubst %,cli/bin/%,$(PY_SRC))
 RUST_ASSEMBLER_BIN := cli/bin/main_assembler-rust
 ORIGINAL_ASSEMBLER_BIN := cli/bin/main_assembler-original
 ORIGINAL_RUST_ASSEMBLER_BIN := cli/bin/main_assembler-original-rust
@@ -39,10 +37,8 @@ FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp script
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(RUST_CLI_BIN) $(PY_BIN)
-	rm -f -r cli/bin/_internal
-	cp -L -r scripts/dist/unix_command/_internal cli/bin/
-	cd cli && ln -f -r -s bin/unix_command geneminer2
+build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(RUST_CLI_BIN)
+	cd cli && ln -sfn -r bin/geneminer2-rust geneminer2
 
 clean:
 	rm -f -r scripts/__pycache__
@@ -164,7 +160,3 @@ $(REPEAT_BIN): $(REPEAT_RUST_SOURCES) | cli/bin
 $(RUST_CLI_BIN): $(RUST_CLI_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(RUST_CLI_MANIFEST)
 	install rust/geneminer2_cli/target/release/geneminer2_cli $(RUST_CLI_BIN)
-
-$(PY_BIN): cli/bin/%: scripts/%.py | cli/bin
-	cd scripts && pyinstaller -D -y --optimize 2 $(notdir $<)
-	install -D -t cli/bin scripts/dist/$(notdir $@)/$(notdir $@)

@@ -34,6 +34,7 @@ make build
 ```
 
 入口程序为 `cli/geneminer2`。更新源码后请再次运行 `make build`。
+该入口是原生 Rust 调度器；Python 实现仅保留为开发期的兼容性对照，不作为运行时回退。
 
 ## 快速开始：UCE
 
@@ -104,7 +105,11 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 | 线粒体 | [Mito](docs/mitochondria_CN.md) |
 | 性能设计与边界 | [MainFilter 性能说明](docs/development/mainfilter-performance.md) |
 
-加 `--workflow-profile` 可在输出根目录写入 `workflow_profile.tsv`；支持的 Rust assembler 还会写入样本级 `assembly_profile.tsv`。两者只记录耗时与 I/O，不改变结果。
+加 `--workflow-profile` 可在输出根目录写入原子更新的 `workflow_profile.tsv`：其中包括参考索引、逐样本 filter/refilter/assemble/rescue，以及 cohort 与后续汇总阶段；失败阶段也会保留 `failed` 状态。支持的 Rust assembler 还会写入样本级 `assembly_profile.tsv`。两者只记录耗时与 I/O，不改变结果。
+
+`combine` 中，`-p` 是并发 locus 数，`--msa-threads` 是每个 MSA 进程的线程数（不得大于 `-p`），`--filter-processes` 独立限制同时运行的 trimAl/AliFilter 数量。三个值均须至少为 1。
+
+`--cleanup-intermediates` 是显式的完成后清理选项：仅在同一次调用完成 filter 与 assemble，且所有后续步骤成功后，删除可再生的 filtered reads 与 rescue 临时参考；最终 contig、汇总、原始 reads 和参考均保留。删除记录写入 `cleanup_manifest.tsv`。
 
 ## 引用与支持
 

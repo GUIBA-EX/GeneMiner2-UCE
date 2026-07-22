@@ -11,3 +11,4 @@ strip = true
 panic = "abort"
 
 [dependencies]
+sha2 = "0.10"
