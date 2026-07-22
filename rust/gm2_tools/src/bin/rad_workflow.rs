@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use gm2_tools::fastx::{FastxFormat, FastxReader};
 
 type ArmReferences = (Vec<(String, String)>, Vec<(String, String)>);
+type CandidateCache = HashMap<(String, String, &'static str), Vec<(String, String)>>;
 
 #[derive(Clone)]
 struct ArmRecord {
@@ -801,6 +802,10 @@ fn validate(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
             format!("recovery sample already exists in the RAD reference: {sample}"),
         ));
     }
+    // Parsed once here to fail fast (before any output is written) on a
+    // malformed candidate file, and cached for reuse below so the same
+    // locus x sample x arm files are never parsed a second time.
+    let mut candidate_cache: CandidateCache = HashMap::new();
     for locus in loci.keys() {
         for sample in &samples {
             for arm in ["R1", "R2"] {
@@ -809,7 +814,8 @@ fn validate(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
                     .join("results")
                     .join(format!("{locus}__{arm}.fasta"));
                 if candidate.is_file() {
-                    read_fasta(&candidate)?;
+                    let records = read_fasta(&candidate)?;
+                    candidate_cache.insert((locus.clone(), sample.clone(), arm), records);
                 }
             }
         }
@@ -826,15 +832,9 @@ fn validate(values: &HashMap<String, Vec<String>>) -> io::Result<()> {
             for (arm_index, (arm, own_refs)) in
                 [("R1", r1_refs), ("R2", r2_refs)].into_iter().enumerate()
             {
-                let candidate_path = recovery
-                    .join(sample)
-                    .join("results")
-                    .join(format!("{locus}__{arm}.fasta"));
-                let candidates = if candidate_path.is_file() {
-                    read_fasta(&candidate_path)?
-                } else {
-                    Vec::new()
-                };
+                let candidates = candidate_cache
+                    .remove(&(locus.clone(), sample.clone(), arm))
+                    .unwrap_or_default();
                 let mut choice: Option<(String, String, BestAlignment)> = None;
                 for (candidate_id, candidate) in candidates {
                     let Some(best) = best_alignment(&candidate, own_refs) else {
