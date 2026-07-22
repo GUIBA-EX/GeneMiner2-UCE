@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
-from unittest import mock
+mock = unittest.mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
