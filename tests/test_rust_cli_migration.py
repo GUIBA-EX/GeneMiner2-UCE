@@ -51,7 +51,9 @@ class RustCliMigrationTests(unittest.TestCase):
             proc = subprocess.run(
                 ['cargo', 'run', '--quiet', '--manifest-path', str(MANIFEST), '--',
                  'te', '-f', 'taxa.tsv', '-o', str(tmp / 'out'), '-p', '3',
-                 '--te-stage', 'discover', '--te-library', 'library.fasta'],
+                 '--te-stage', 'discover', '--te-library', 'library.fasta',
+                 '--te-quantify-pairs', '100', '--te-bootstrap-replicates', '50',
+                 '--te-estimate-genome-fraction'],
                 cwd=ROOT, text=True,
                 env={**os.environ, 'GENEMINER2_ENGINE': 'rust',
                      'GM2_COMPONENT_DIR': str(components), 'GM2_CAPTURE': str(capture)},
@@ -63,6 +65,9 @@ class RustCliMigrationTests(unittest.TestCase):
             self.assertIn(str(components / 'MainFilterNew'), received)
             self.assertEqual(received[received.index('--threads') + 1], '3')
             self.assertEqual(received[received.index('--te-library') + 1], 'library.fasta')
+            self.assertEqual(received[received.index('--quantify-pairs') + 1], '100')
+            self.assertEqual(received[received.index('--bootstrap-replicates') + 1], '50')
+            self.assertIn('--estimate-genome-fraction', received)
 
     def test_native_population_forwards_panref_options_to_rust_backend(self):
         with tempfile.TemporaryDirectory() as tmp:

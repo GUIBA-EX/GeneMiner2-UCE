@@ -34,6 +34,7 @@ const COMMANDS: &[&str] = &[
     "rad-validate",
 ];
 const FLAG_OPTIONS: &[&str] = &[
+    "--te-estimate-genome-fraction",
     "--rad-linked-recruitment",
     "--uce-alignment-shadow",
     "--uce-rescue-reads",
@@ -93,6 +94,8 @@ const VALUE_OPTIONS: &[&str] = &[
     "--te-catalog-pairs",
     "--te-read-ledger",
     "--te-library",
+    "--te-quantify-pairs",
+    "--te-bootstrap-replicates",
     "--te-annotate-min-fragment",
     "--te-annotate-max-fragment",
     "--te-annotate-min-support",
@@ -4071,6 +4074,17 @@ fn execute_te(opt: &Options, bins: &Path) -> Result<(), String> {
     }
     if let Some(path) = optional_value(raw, &["--te-library"])? {
         args.extend(["--te-library".into(), path]);
+    }
+    for (public, internal) in [
+        ("--te-quantify-pairs", "--quantify-pairs"),
+        ("--te-bootstrap-replicates", "--bootstrap-replicates"),
+    ] {
+        if let Some(setting) = optional_value(raw, &[public])? {
+            args.extend([internal.into(), setting]);
+        }
+    }
+    if flag(raw, "--te-estimate-genome-fraction")? {
+        args.push("--estimate-genome-fraction".into());
     }
     run(bins, "main_repeat", &args)
 }
