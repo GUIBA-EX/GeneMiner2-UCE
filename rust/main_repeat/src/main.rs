@@ -1342,45 +1342,58 @@ fn curate(a: &A, ss: &[S], led: &AHashMap<String, AHashSet<u64>>) -> R<()> {
     writeln!(samples_out, "sample_id\ttaxon_id\teffective_pairs\tpaired").unwrap();
     let mut all_links: BTreeMap<(usize, usize), (u64, u64)> = BTreeMap::new();
     let mut support = vec![(0_u64, 0_u64, 0_u64); atomic.len()];
-    for s in ss {
-        let (q1, q2, effective) = eligible(
-            s,
-            led.get(&s.id).unwrap_or(&AHashSet::new()),
-            &temp.join("eligible"),
-        )?;
-        let rdir = temp.join("candidate_recruit").join(&s.id);
-        fs::create_dir_all(&rdir).map_err(|e| e.to_string())?;
-        let mut command = Command::new(&a.mainfilter);
-        command.args([
-            "-r",
-            discover.join("seeds").to_str().unwrap(),
-            "-q1",
-            q1.to_str().unwrap(),
-            "-o",
-            rdir.to_str().unwrap(),
-            "-kf",
-            &a.k.to_string(),
-            "-s",
-            "1",
-            "-gr",
-            "-m",
-            "1",
-        ]);
-        if let Some(q) = &q2 {
-            command.args(["-q2", q.to_str().unwrap()]);
-        }
-        if !command.status().map_err(|e| e.to_string())?.success() {
-            return Err(format!("MainFilter failed for {}", s.id));
-        }
-        let result = audit(
-            &rdir.join("filtered/all_1.fq"),
-            q2.as_ref()
-                .map(|_| rdir.join("filtered/all_2.fq"))
-                .as_deref(),
-            a.k,
-            &index,
-            atomic.len(),
-        )?;
+    // MainFilter recruitment is the expensive step per sample and each sample's
+    // work is independent (own eligible-reads file, own recruit directory), so
+    // it runs across the shared rayon pool exactly like `discover` above.
+    // Aggregation into the shared `signal`/`samples_out` writers, `support`,
+    // and `all_links` stays a single serial pass afterward, in the original
+    // `ss` order, so output is byte-identical to the prior serial version.
+    let recruited: Vec<R<(u64, bool, Audit)>> = ss
+        .par_iter()
+        .map(|s| {
+            let (q1, q2, effective) = eligible(
+                s,
+                led.get(&s.id).unwrap_or(&AHashSet::new()),
+                &temp.join("eligible"),
+            )?;
+            let rdir = temp.join("candidate_recruit").join(&s.id);
+            fs::create_dir_all(&rdir).map_err(|e| e.to_string())?;
+            let mut command = Command::new(&a.mainfilter);
+            command.args([
+                "-r",
+                discover.join("seeds").to_str().unwrap(),
+                "-q1",
+                q1.to_str().unwrap(),
+                "-o",
+                rdir.to_str().unwrap(),
+                "-kf",
+                &a.k.to_string(),
+                "-s",
+                "1",
+                "-gr",
+                "-m",
+                "1",
+            ]);
+            if let Some(q) = &q2 {
+                command.args(["-q2", q.to_str().unwrap()]);
+            }
+            if !command.status().map_err(|e| e.to_string())?.success() {
+                return Err(format!("MainFilter failed for {}", s.id));
+            }
+            let result = audit(
+                &rdir.join("filtered/all_1.fq"),
+                q2.as_ref()
+                    .map(|_| rdir.join("filtered/all_2.fq"))
+                    .as_deref(),
+                a.k,
+                &index,
+                atomic.len(),
+            )?;
+            Ok((effective, q2.is_some(), result))
+        })
+        .collect();
+    for (s, recruited) in ss.iter().zip(recruited) {
+        let (effective, has_pair, result) = recruited?;
         for i in 0..atomic.len() {
             support[i].0 += result.specific[i];
             support[i].1 += result.ambiguous[i];
@@ -1416,7 +1429,7 @@ fn curate(a: &A, ss: &[S], led: &AHashMap<String, AHashSet<u64>>) -> R<()> {
             s.id,
             s.taxon,
             effective,
-            if q2.is_some() { 1 } else { 0 }
+            if has_pair { 1 } else { 0 }
         )
         .unwrap();
     }
@@ -2075,40 +2088,79 @@ fn annotate(a: &A, ss: &[S]) -> R<()> {
     if groups.is_empty() {
         return Err("curated library has no equivalence groups".into());
     }
+    // Each sample's FASTQ parsing and k-mer group lookup is independent, so it
+    // runs across the shared rayon pool; only the final per-group merge (which
+    // must apply the 4096-read retention cap in original sample order to stay
+    // byte-identical to the prior serial version) stays serial.
+    struct SampleContribution {
+        reads: Vec<Vec<Vec<u8>>>,
+        pairs: Vec<u64>,
+        paired: bool,
+    }
+    let contributions: Vec<R<SampleContribution>> = ss
+        .par_iter()
+        .map(|sample| -> R<SampleContribution> {
+            let mut local_reads: Vec<Vec<Vec<u8>>> = vec![Vec::new(); groups.len()];
+            let mut local_pairs = vec![0_u64; groups.len()];
+            let filtered = curate
+                .join("candidate_recruit")
+                .join(&sample.id)
+                .join("filtered");
+            let one = filtered.join("all_1.fq");
+            if !one.exists() {
+                return Ok(SampleContribution {
+                    reads: local_reads,
+                    pairs: local_pairs,
+                    paired: sample.r2.is_some(),
+                });
+            }
+            let mut reader = PairReader::new(
+                &one,
+                sample
+                    .r2
+                    .as_ref()
+                    .map(|_| filtered.join("all_2.fq"))
+                    .as_deref(),
+            )?;
+            while let Some((left, right)) = reader.next_pair()? {
+                let mut assigned = groups_for(&left.seq, a.k, &index);
+                if let Some(right) = right.as_ref() {
+                    assigned.extend(groups_for(&right.seq, a.k, &index));
+                }
+                if assigned.len() != 1 {
+                    continue;
+                }
+                let group = *assigned.iter().next().unwrap();
+                local_pairs[group] += 1;
+                if local_reads[group].len() < 4096 {
+                    local_reads[group].push(left.seq);
+                    if let Some(right) = right {
+                        local_reads[group].push(right.seq);
+                    }
+                }
+            }
+            Ok(SampleContribution {
+                reads: local_reads,
+                pairs: local_pairs,
+                paired: sample.r2.is_some(),
+            })
+        })
+        .collect();
     let mut reads: Vec<Vec<Vec<u8>>> = vec![Vec::new(); groups.len()];
     let mut pairs = vec![0_u64; groups.len()];
-    for sample in ss {
-        let filtered = curate
-            .join("candidate_recruit")
-            .join(&sample.id)
-            .join("filtered");
-        let one = filtered.join("all_1.fq");
-        if !one.exists() {
-            continue;
-        }
-        let mut reader = PairReader::new(
-            &one,
-            sample
-                .r2
-                .as_ref()
-                .map(|_| filtered.join("all_2.fq"))
-                .as_deref(),
-        )?;
-        while let Some((left, right)) = reader.next_pair()? {
-            let mut assigned = groups_for(&left.seq, a.k, &index);
-            if let Some(right) = right.as_ref() {
-                assigned.extend(groups_for(&right.seq, a.k, &index));
-            }
-            if assigned.len() != 1 {
-                continue;
-            }
-            let group = *assigned.iter().next().unwrap();
-            pairs[group] += 1;
-            if reads[group].len() < 4096 {
-                reads[group].push(left.seq);
-                if let Some(right) = right {
-                    reads[group].push(right.seq);
+    for contribution in contributions {
+        let contribution = contribution?;
+        let stride = if contribution.paired { 2 } else { 1 };
+        for group in 0..groups.len() {
+            pairs[group] += contribution.pairs[group];
+            let local = &contribution.reads[group];
+            let mut i = 0;
+            while i < local.len() && reads[group].len() < 4096 {
+                reads[group].push(local[i].clone());
+                if stride == 2 && i + 1 < local.len() {
+                    reads[group].push(local[i + 1].clone());
                 }
+                i += stride;
             }
         }
     }

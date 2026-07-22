@@ -1151,7 +1151,7 @@ fn run_pipe(
     Ok(())
 }
 
-fn minibwa_map_args(args: &Args, sample: &Sample, reference: &Path) -> Vec<String> {
+fn minibwa_map_args(threads: usize, sample: &Sample, reference: &Path) -> Vec<String> {
     let rg = format!(
         "@RG\\tID:{}\\tSM:{}\\tPL:ILLUMINA",
         sample.vcf_id, sample.vcf_id
@@ -1159,7 +1159,7 @@ fn minibwa_map_args(args: &Args, sample: &Sample, reference: &Path) -> Vec<Strin
     let mut mapper_args = vec![
         "map".into(),
         "-t".into(),
-        args.threads.to_string(),
+        threads.to_string(),
         "-R".into(),
         rg,
         reference.display().to_string(),
@@ -1247,129 +1247,50 @@ fn map_samples(args: &Args, samples: &[Sample], reference: &Path) -> AppResult<V
         &args.samtools,
         &["faidx".into(), reference.display().to_string()],
     )?;
-    let mut bams = Vec::new();
+
+    // Alignment and sort/markdup show diminishing returns well before the
+    // full core count on typical UCE-sized references, so several samples
+    // are mapped concurrently at a reduced per-sample thread count instead
+    // of giving every thread to one sample at a time. The reduce below
+    // writes `qc`/`bams` in the original sample order afterward, so output
+    // is byte-identical to the prior strictly serial version.
+    let worker_count = args.threads.max(1).min(samples.len()).max(1);
+    let per_sample_threads = (args.threads / worker_count).max(1);
+    let queue: Mutex<VecDeque<(usize, &Sample)>> = Mutex::new(samples.iter().enumerate().collect());
+    let (sender, receiver) = mpsc::channel();
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = &queue;
+            let sender = sender.clone();
+            let mapping_dir = &mapping_dir;
+            scope.spawn(move || loop {
+                let next = queue.lock().expect("mapping queue poisoned").pop_front();
+                let Some((index, sample)) = next else {
+                    break;
+                };
+                let outcome =
+                    map_one_sample(args, sample, reference, mapping_dir, per_sample_threads);
+                if sender.send((index, outcome)).is_err() {
+                    break;
+                }
+            });
+        }
+    });
+    drop(sender);
+    let mut ordered: Vec<Option<AppResult<(PathBuf, String)>>> =
+        (0..samples.len()).map(|_| None).collect();
+    for (index, outcome) in receiver {
+        ordered[index] = Some(outcome);
+    }
+
+    let mut bams = Vec::with_capacity(samples.len());
     let mut qc = BufWriter::new(
         File::create(mapping_dir.join("mapping_qc.tsv")).map_err(|e| e.to_string())?,
     );
     writeln!(qc, "sample\tstatus\ttotal_reads\tmapped_reads\tmapping_rate\tproperly_paired_reads\tproperly_paired_rate\treference_bases\tcovered_bases\tcoverage_breadth\tmean_depth\tbam").map_err(|e| e.to_string())?;
-    for sample in samples {
-        let bam = mapping_dir.join(format!("{}.bam", sample.vcf_id));
-        let mapper_args = minibwa_map_args(args, sample, reference);
-        if args.mark_duplicates {
-            let name_bam = mapping_dir.join(format!("{}.name.bam", sample.vcf_id));
-            let fixmate_bam = mapping_dir.join(format!("{}.fixmate.bam", sample.vcf_id));
-            let position_bam = mapping_dir.join(format!("{}.positions.bam", sample.vcf_id));
-            run_pipe(
-                &args.minibwa,
-                &mapper_args,
-                &args.samtools,
-                &[
-                    "sort".into(),
-                    "-n".into(),
-                    "-@".into(),
-                    args.threads.to_string(),
-                    "-o".into(),
-                    name_bam.display().to_string(),
-                    "-".into(),
-                ],
-            )?;
-            run_command(
-                &args.samtools,
-                &[
-                    "fixmate".into(),
-                    "-m".into(),
-                    name_bam.display().to_string(),
-                    fixmate_bam.display().to_string(),
-                ],
-            )?;
-            run_command(
-                &args.samtools,
-                &[
-                    "sort".into(),
-                    "-@".into(),
-                    args.threads.to_string(),
-                    "-o".into(),
-                    position_bam.display().to_string(),
-                    fixmate_bam.display().to_string(),
-                ],
-            )?;
-            run_command(
-                &args.samtools,
-                &[
-                    "markdup".into(),
-                    position_bam.display().to_string(),
-                    bam.display().to_string(),
-                ],
-            )?;
-            for temporary in [&name_bam, &fixmate_bam, &position_bam] {
-                let _ = fs::remove_file(temporary);
-            }
-        } else {
-            run_pipe(
-                &args.minibwa,
-                &mapper_args,
-                &args.samtools,
-                &[
-                    "sort".into(),
-                    "-@".into(),
-                    args.threads.to_string(),
-                    "-o".into(),
-                    bam.display().to_string(),
-                    "-".into(),
-                ],
-            )?;
-        }
-        run_command(
-            &args.samtools,
-            &["quickcheck".into(), bam.display().to_string()],
-        )?;
-        run_command(
-            &args.samtools,
-            &[
-                "index".into(),
-                "-@".into(),
-                args.threads.to_string(),
-                bam.display().to_string(),
-            ],
-        )?;
-        let flagstat_path = mapping_dir.join(format!("{}.flagstat.txt", sample.vcf_id));
-        let output = Command::new(&args.samtools)
-            .args(["flagstat", &bam.display().to_string()])
-            .output()
-            .map_err(|e| format!("unable to run samtools flagstat: {e}"))?;
-        if !output.status.success() {
-            return Err(format!("samtools flagstat failed for {}", sample.vcf_id));
-        }
-        fs::write(&flagstat_path, &output.stdout).map_err(|e| e.to_string())?;
-        let coverage_output = Command::new(&args.samtools)
-            .args(["coverage", &bam.display().to_string()])
-            .output()
-            .map_err(|e| format!("unable to run samtools coverage: {e}"))?;
-        if !coverage_output.status.success() {
-            return Err(format!("samtools coverage failed for {}", sample.vcf_id));
-        }
-        let mut metrics = MappingMetrics::default();
-        parse_flagstat(&String::from_utf8_lossy(&output.stdout), &mut metrics);
-        parse_coverage(
-            &String::from_utf8_lossy(&coverage_output.stdout),
-            &mut metrics,
-        );
-        writeln!(
-            qc,
-            "{}\tok\t{}\t{}\t{:.6}\t{}\t{:.6}\t{}\t{}\t{:.6}\t{:.4}\t{}",
-            sample.vcf_id,
-            metrics.total_reads,
-            metrics.mapped_reads,
-            rate(metrics.mapped_reads, metrics.total_reads),
-            metrics.properly_paired_reads,
-            rate(metrics.properly_paired_reads, metrics.total_reads),
-            metrics.reference_bases,
-            metrics.covered_bases,
-            rate(metrics.covered_bases, metrics.reference_bases),
-            metrics.mean_depth,
-            bam.display()
-        )
-        .map_err(|e| e.to_string())?;
+    for slot in ordered {
+        let (bam, qc_line) = slot.expect("every queued sample reports exactly once")?;
+        writeln!(qc, "{qc_line}").map_err(|e| e.to_string())?;
         bams.push(bam);
     }
     let mut list =
@@ -1378,6 +1299,131 @@ fn map_samples(args: &Args, samples: &[Sample], reference: &Path) -> AppResult<V
         writeln!(list, "{}", bam.display()).map_err(|e| e.to_string())?;
     }
     Ok(bams)
+}
+
+fn map_one_sample(
+    args: &Args,
+    sample: &Sample,
+    reference: &Path,
+    mapping_dir: &Path,
+    threads: usize,
+) -> AppResult<(PathBuf, String)> {
+    let bam = mapping_dir.join(format!("{}.bam", sample.vcf_id));
+    let mapper_args = minibwa_map_args(threads, sample, reference);
+    if args.mark_duplicates {
+        let name_bam = mapping_dir.join(format!("{}.name.bam", sample.vcf_id));
+        let fixmate_bam = mapping_dir.join(format!("{}.fixmate.bam", sample.vcf_id));
+        let position_bam = mapping_dir.join(format!("{}.positions.bam", sample.vcf_id));
+        run_pipe(
+            &args.minibwa,
+            &mapper_args,
+            &args.samtools,
+            &[
+                "sort".into(),
+                "-n".into(),
+                "-@".into(),
+                threads.to_string(),
+                "-o".into(),
+                name_bam.display().to_string(),
+                "-".into(),
+            ],
+        )?;
+        run_command(
+            &args.samtools,
+            &[
+                "fixmate".into(),
+                "-m".into(),
+                name_bam.display().to_string(),
+                fixmate_bam.display().to_string(),
+            ],
+        )?;
+        run_command(
+            &args.samtools,
+            &[
+                "sort".into(),
+                "-@".into(),
+                threads.to_string(),
+                "-o".into(),
+                position_bam.display().to_string(),
+                fixmate_bam.display().to_string(),
+            ],
+        )?;
+        run_command(
+            &args.samtools,
+            &[
+                "markdup".into(),
+                position_bam.display().to_string(),
+                bam.display().to_string(),
+            ],
+        )?;
+        for temporary in [&name_bam, &fixmate_bam, &position_bam] {
+            let _ = fs::remove_file(temporary);
+        }
+    } else {
+        run_pipe(
+            &args.minibwa,
+            &mapper_args,
+            &args.samtools,
+            &[
+                "sort".into(),
+                "-@".into(),
+                threads.to_string(),
+                "-o".into(),
+                bam.display().to_string(),
+                "-".into(),
+            ],
+        )?;
+    }
+    run_command(
+        &args.samtools,
+        &["quickcheck".into(), bam.display().to_string()],
+    )?;
+    run_command(
+        &args.samtools,
+        &[
+            "index".into(),
+            "-@".into(),
+            threads.to_string(),
+            bam.display().to_string(),
+        ],
+    )?;
+    let flagstat_path = mapping_dir.join(format!("{}.flagstat.txt", sample.vcf_id));
+    let output = Command::new(&args.samtools)
+        .args(["flagstat", &bam.display().to_string()])
+        .output()
+        .map_err(|e| format!("unable to run samtools flagstat: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("samtools flagstat failed for {}", sample.vcf_id));
+    }
+    fs::write(&flagstat_path, &output.stdout).map_err(|e| e.to_string())?;
+    let coverage_output = Command::new(&args.samtools)
+        .args(["coverage", &bam.display().to_string()])
+        .output()
+        .map_err(|e| format!("unable to run samtools coverage: {e}"))?;
+    if !coverage_output.status.success() {
+        return Err(format!("samtools coverage failed for {}", sample.vcf_id));
+    }
+    let mut metrics = MappingMetrics::default();
+    parse_flagstat(&String::from_utf8_lossy(&output.stdout), &mut metrics);
+    parse_coverage(
+        &String::from_utf8_lossy(&coverage_output.stdout),
+        &mut metrics,
+    );
+    let qc_line = format!(
+        "{}\tok\t{}\t{}\t{:.6}\t{}\t{:.6}\t{}\t{}\t{:.6}\t{:.4}\t{}",
+        sample.vcf_id,
+        metrics.total_reads,
+        metrics.mapped_reads,
+        rate(metrics.mapped_reads, metrics.total_reads),
+        metrics.properly_paired_reads,
+        rate(metrics.properly_paired_reads, metrics.total_reads),
+        metrics.reference_bases,
+        metrics.covered_bases,
+        rate(metrics.covered_bases, metrics.reference_bases),
+        metrics.mean_depth,
+        bam.display()
+    );
+    Ok((bam, qc_line))
 }
 
 fn call_variants(args: &Args, reference: &Path, bams: &[PathBuf]) -> AppResult<PathBuf> {
@@ -2457,7 +2503,7 @@ printf 'CV error (K=%s): 0.%s\n' "$last" "$last"
             population: String::new(),
             batch: String::new(),
         };
-        let argv = minibwa_map_args(&args, &sample, Path::new("ref.fa"));
+        let argv = minibwa_map_args(args.threads, &sample, Path::new("ref.fa"));
         assert_eq!(argv[0], "map");
         assert_eq!(argv[1..4], ["-t", "4", "-R"]);
         assert!(argv[4].contains("ID:Coral_1"));
