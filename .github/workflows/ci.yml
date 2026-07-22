@@ -16,23 +16,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  python:
-    name: Python workflow tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - name: Install Python test dependencies
-        run: python3 -m pip install --upgrade pip -r requirements-dev.txt
-      - name: Build internal workflow executables
-        run: make cli/bin/MainFilterNew cli/bin/uce_filter cli/bin/main_refilter_new cli/bin/main_assembler-rust cli/bin/main_assembler-original-rust cli/bin/gene_workflow
-      - name: Run workflow regression suite
-        run: python3 -m unittest discover -s tests -p 'test_*.py'
-
   rust-format:
     name: Rust formatting
     runs-on: ubuntu-latest

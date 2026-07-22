@@ -442,9 +442,7 @@ fn gene_anchor_sequence(reference: &[u8], row: &GeneRow) -> Vec<u8> {
 /// chosen for invertebrate references that lack tRNA-Phe.
 fn anchor_rank(name: &str) -> usize {
     let lowered = name.to_ascii_lowercase();
-    const ORDER: [&str; 8] = [
-        "phe", "trnf", "cox1", "coi", "co1", "nad1", "rrns", "12s",
-    ];
+    const ORDER: [&str; 8] = ["phe", "trnf", "cox1", "coi", "co1", "nad1", "rrns", "12s"];
     ORDER
         .iter()
         .position(|key| lowered.contains(key))
@@ -486,7 +484,11 @@ fn standardize_circular(
     let threshold = (lead_len * 15 / 100).max(1);
     let mut best: Option<(usize, usize, bool)> = None;
     for reversed in [false, true] {
-        let oriented = if reversed { rc(sequence) } else { sequence.to_vec() };
+        let oriented = if reversed {
+            rc(sequence)
+        } else {
+            sequence.to_vec()
+        };
         let mut doubled = oriented.clone();
         doubled.extend_from_slice(&oriented[..lead_len]);
         for offset in 0..oriented.len() {
@@ -510,7 +512,11 @@ fn standardize_circular(
     if mismatches > threshold {
         return None;
     }
-    let oriented = if reversed { rc(sequence) } else { sequence.to_vec() };
+    let oriented = if reversed {
+        rc(sequence)
+    } else {
+        sequence.to_vec()
+    };
     let mut rotated = oriented[offset..].to_vec();
     rotated.extend_from_slice(&oriented[..offset]);
     Some(Standardized {

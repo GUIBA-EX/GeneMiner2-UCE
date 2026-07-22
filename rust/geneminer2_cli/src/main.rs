@@ -4807,10 +4807,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "gm2_move_tree_{}_{unique}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("gm2_move_tree_{}_{unique}", std::process::id()));
         let source = root.join("source");
         let nested = source.join("nested");
         fs::create_dir_all(&nested).unwrap();

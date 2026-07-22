@@ -1965,7 +1965,7 @@ fn write_repeat_families(fragment_dir: &Path, groups: &[String], minimum_length:
         } else {
             Vec::new()
         };
-        candidates.sort_by(|left, right| right.1.len().cmp(&left.1.len()));
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.1.len()));
         sequences.push(
             candidates
                 .into_iter()
