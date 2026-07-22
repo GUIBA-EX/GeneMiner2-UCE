@@ -38,11 +38,11 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 只有 `--legacy-uce-filter` 会恢复 main + re 兼容路径，主要用于历史结果对照或诊断。其 `filtered_pe/` 是宽松招募候选，`filtered/` 才是组装输入；默认 `ucefilter` 直接写 `filtered/`，不产生前者。
 
-主组装完成并接受 contig 后，`--uce-rescue-reads` 才启动 rescue：第一轮用原参考与已接受 contig 共同招募，第二轮只对仍增长的 locus 使用两端窗口。每轮必须保留旧 contig，并按每侧新增长度、breadth、gap、独立 fragment、跨 core 边界 fragment 与 unique-read density 审计；不通过即按侧或按 locus 回退。rescue 是对主结果的受约束延伸，不是参考补洞。
+`--uce-rescue-reads` 借鉴 MITObim 的 baiting-and-iterative-mapping 核心思路，只在主组装完成并接受 contig 后启动，rescue 组装固定使用 k=21，默认最多两轮：第一轮用原参考与已接受 contig 共同招募，第二轮只对仍增长的 locus 使用两端窗口。旧 contig 必须完整保留；每侧新增区域独立要求至少 30 bp、85% breadth、最大 gap 30 bp、2 个独立 fragment 和 1 个跨旧 core 边界 fragment；不通过即按侧或按 locus 逐一回退。rescue 是对主结果的受约束延伸，不是参考补洞。
 
 ## UCE 选择、组装与 QC
 
-UCE 模式默认通过融合的 Rust `ucefilter` 招募和选择 reads：rolling k-mer 粗招募、run-k 方向验证、最大精确匹配和逐 locus 自动选择在同一次原始 reads 扫描中完成，最终直接写入 `filtered/`。自动选择先沿用动态 exact-match 阈值去除弱证据；候选少于 512、估计深度不超过 160×或只覆盖少于 48/64 个参考区间的 locus 不做 reservoir 压缩。饱和 locus 至少保留 60% 合格核心，并按参考位置分散选择；跨 bait/contig 边缘的 reads 按 overhang 长度分层，每个长度保留少量高质量 PE fragment，避免切断 core 到 flank 的重叠阶梯。它不产生 GM2 或按 locus 重复的候选 FASTQ；完整 PE fragment 只保存一次并作为一个单位保留。并行沿用 GeneMiner2 的样品级调度；每个样品从招募、选择、assemble 到 rescue 均为单线程。`backbone` 策略在每个气泡作一次有限前瞻决策，提交胜出分支而不回溯。`--uce-rescue-reads` 借鉴 MITObim 的 baiting-and-iterative-mapping 核心；rescue 组装固定使用 k=21，且默认最多两轮：第一轮以 accepted contig 和原始参考共同作为 bait；第二轮只让上一轮仍增长的 locus 参加，并只用 contig 左右末端窗口招募。旧 contig 必须完整保留；左右新增区域分别要求至少 30 bp、85% breadth、最大 gap 30 bp、2 个独立 fragment 和 1 个跨旧 core 边界 fragment。单侧失败只移除该侧，组装失败或 unique-read density 降低则逐 locus 回退。
+UCE 模式默认通过融合的 Rust `ucefilter` 招募和选择 reads：rolling k-mer 粗招募、run-k 方向验证、最大精确匹配和逐 locus 自动选择在同一次原始 reads 扫描中完成，最终直接写入 `filtered/`。自动选择先沿用动态 exact-match 阈值去除弱证据；候选少于 512、估计深度不超过 160×或只覆盖少于 48/64 个参考区间的 locus 不做 reservoir 压缩。饱和 locus 至少保留 60% 合格核心，并按参考位置分散选择；跨 bait/contig 边缘的 reads 按 overhang 长度分层，每个长度保留少量高质量 PE fragment，避免切断 core 到 flank 的重叠阶梯。它不产生 GM2 或按 locus 重复的候选 FASTQ；完整 PE fragment 只保存一次并作为一个单位保留。并行沿用 GeneMiner2 的样品级调度；每个样品从招募、选择、assemble 到 rescue 均为单线程。`backbone` 策略在每个气泡作一次有限前瞻决策，提交胜出分支而不回溯。`--uce-rescue-reads` 的细节见前文"UCE reads 路径"一节。
 
 `--uce-alignment-shadow` 是默认关闭的证据模式：在自动选择完成后确定性、均匀地抽取每 locus 最多 64 个 fragment，用最大精确匹配定位参考窗口，再执行局部 affine-gap 比对。原始逐 mate 证据和 per-locus 汇总分别写入 `alignment_shadow.tsv` 与 `alignment_shadow_summary.tsv`。初始 bait、whole-contig rescue 和 terminal rescue 分轮保存；短 bait terminal 只代表设计边界，只有 assembly contig 上的 terminal 才可用于评价延伸。
 

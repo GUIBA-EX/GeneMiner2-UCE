@@ -383,6 +383,174 @@ fn write_feature_evidence(
     report.flush().map_err(|error| error.to_string())
 }
 
+/// One annotation row parsed from `metadata/mitochondrial_genes.tsv`.
+struct GeneRow {
+    name: String,
+    segments: Vec<(usize, usize)>,
+    reverse: bool,
+    start: usize,
+}
+
+fn read_gene_rows(metadata: &Path) -> Result<Vec<GeneRow>, String> {
+    let raw = fs::read_to_string(metadata).map_err(|error| error.to_string())?;
+    let mut rows = Vec::new();
+    for line in raw.lines().skip(1) {
+        let fields: Vec<_> = line.split('\t').collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let reverse = fields[3] == "-1";
+        let start = fields[1].parse::<usize>().unwrap_or(usize::MAX);
+        let mut segments = Vec::new();
+        for interval in fields[4].split(',') {
+            if let Some((from, to)) = interval.split_once("..") {
+                if let (Ok(from), Ok(to)) = (from.parse::<usize>(), to.parse::<usize>()) {
+                    segments.push((from, to));
+                }
+            }
+        }
+        if !segments.is_empty() {
+            rows.push(GeneRow {
+                name: fields[0].to_string(),
+                segments,
+                reverse,
+                start,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// Reconstruct an annotated gene's nucleotide sequence on its own coding strand.
+fn gene_anchor_sequence(reference: &[u8], row: &GeneRow) -> Vec<u8> {
+    let mut sequence = Vec::new();
+    for (from, to) in &row.segments {
+        if from < to && *to <= reference.len() {
+            sequence.extend_from_slice(&reference[*from..*to]);
+        }
+    }
+    if row.reverse {
+        rc(&sequence)
+    } else {
+        sequence
+    }
+}
+
+/// Preference order for the standardization anchor. tRNA-Phe is the canonical
+/// vertebrate start (as in mtGrasp); the conserved protein-coding and rRNA
+/// genes are near-universal fallbacks so a reproducible start can still be
+/// chosen for invertebrate references that lack tRNA-Phe.
+fn anchor_rank(name: &str) -> usize {
+    let lowered = name.to_ascii_lowercase();
+    const ORDER: [&str; 8] = [
+        "phe", "trnf", "cox1", "coi", "co1", "nad1", "rrns", "12s",
+    ];
+    ORDER
+        .iter()
+        .position(|key| lowered.contains(key))
+        .unwrap_or(usize::MAX)
+}
+
+struct Standardized {
+    sequence: Vec<u8>,
+    anchor: String,
+    strand: char,
+    offset: usize,
+    mismatches: usize,
+}
+
+/// Rotate a verified circular assembly to a reproducible gene start and place it
+/// on that gene's coding strand. Only existing assembled bases are reordered or
+/// reverse-complemented; no reference base ever enters the sequence. Returns
+/// `None` when no annotated anchor can be located confidently, leaving the
+/// audited assembly unchanged.
+fn standardize_circular(
+    sequence: &[u8],
+    rows: &[GeneRow],
+    reference: &[u8],
+) -> Option<Standardized> {
+    if sequence.len() < 100 {
+        return None;
+    }
+    let anchor = rows
+        .iter()
+        .min_by_key(|row| (anchor_rank(&row.name), row.start))?;
+    let gene = gene_anchor_sequence(reference, anchor);
+    let lead_len = gene.len().min(120);
+    if lead_len < 20 {
+        return None;
+    }
+    let lead = &gene[..lead_len];
+    // A divergent sample still standardizes: the leading window may differ by up
+    // to 15% before the anchor is judged absent and the assembly left as is.
+    let threshold = (lead_len * 15 / 100).max(1);
+    let mut best: Option<(usize, usize, bool)> = None;
+    for reversed in [false, true] {
+        let oriented = if reversed { rc(sequence) } else { sequence.to_vec() };
+        let mut doubled = oriented.clone();
+        doubled.extend_from_slice(&oriented[..lead_len]);
+        for offset in 0..oriented.len() {
+            let mismatches = doubled[offset..offset + lead_len]
+                .iter()
+                .zip(lead)
+                .filter(|(a, b)| a != b)
+                .count();
+            if best.is_none_or(|(_, best_mismatches, _)| mismatches < best_mismatches) {
+                best = Some((offset, mismatches, reversed));
+                if mismatches == 0 {
+                    break;
+                }
+            }
+        }
+        if best.is_some_and(|(_, mismatches, _)| mismatches == 0) {
+            break;
+        }
+    }
+    let (offset, mismatches, reversed) = best?;
+    if mismatches > threshold {
+        return None;
+    }
+    let oriented = if reversed { rc(sequence) } else { sequence.to_vec() };
+    let mut rotated = oriented[offset..].to_vec();
+    rotated.extend_from_slice(&oriented[..offset]);
+    Some(Standardized {
+        sequence: rotated,
+        anchor: anchor.name.clone(),
+        strand: if reversed { '-' } else { '+' },
+        offset,
+        mismatches,
+    })
+}
+
+fn write_standardized(
+    output: &Path,
+    reference: &[u8],
+    metadata: &Path,
+    assembly: &Path,
+) -> Result<(), String> {
+    let rows = read_gene_rows(metadata)?;
+    let primary = read_fasta(assembly)?
+        .into_iter()
+        .next()
+        .map(|(_, sequence)| sequence)
+        .unwrap_or_default();
+    let Some(result) = standardize_circular(&primary, &rows, reference) else {
+        return Ok(());
+    };
+    let header = format!(
+        "mito_standardized anchor={} strand={} rotation_offset={} anchor_lead_mismatches={} length={}",
+        result.anchor,
+        result.strand,
+        result.offset,
+        result.mismatches,
+        result.sequence.len(),
+    );
+    write_fasta(
+        &output.join("mitochondrial_standardized.fasta"),
+        &[(header, result.sequence)],
+    )
+}
+
 fn finalize(options: &HashMap<String, String>) -> Result<(), String> {
     let reference = read_fasta(Path::new(required(options, "--reference-genome")))?
         .into_iter()
@@ -428,12 +596,15 @@ fn finalize(options: &HashMap<String, String>) -> Result<(), String> {
         &config,
     )?;
     if let Some(metadata) = options.get("--gene-metadata") {
-        write_feature_evidence(
-            Path::new(metadata),
-            &reference,
-            &Path::new(required(options, "--out-dir")).join("mitochondrial_assembly.fasta"),
-            Path::new(required(options, "--out-dir")),
-        )?;
+        let out_dir = Path::new(required(options, "--out-dir"));
+        let assembly = out_dir.join("mitochondrial_assembly.fasta");
+        write_feature_evidence(Path::new(metadata), &reference, &assembly, out_dir)?;
+        // Standardize only a verified circle: reorder its bases to a reproducible
+        // gene start and coding strand so assemblies are directly comparable
+        // across samples, without altering the audited raw assembly.
+        if status == "circular" {
+            write_standardized(out_dir, &reference, Path::new(metadata), &assembly)?;
+        }
     }
     let require_circular = options
         .get("--require-circular")
@@ -557,6 +728,79 @@ fn main() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn pseudo_dna(length: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed;
+        (0..length)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                match (state >> 33) & 3 {
+                    0 => b'A',
+                    1 => b'C',
+                    2 => b'G',
+                    _ => b'T',
+                }
+            })
+            .collect()
+    }
+
+    fn rotate(sequence: &[u8], by: usize) -> Vec<u8> {
+        let mut rotated = sequence[by..].to_vec();
+        rotated.extend_from_slice(&sequence[..by]);
+        rotated
+    }
+
+    #[test]
+    fn standardize_rotates_a_forward_anchor_to_the_start() {
+        let reference = pseudo_dna(200, 11);
+        let rows = vec![GeneRow {
+            name: "cox1".into(),
+            segments: vec![(10, 60)],
+            reverse: false,
+            start: 10,
+        }];
+        // The circular assembly is the same molecule rotated by 5 bases.
+        let assembly = rotate(&reference, 5);
+        let result = standardize_circular(&assembly, &rows, &reference).unwrap();
+        assert_eq!(result.strand, '+');
+        assert_eq!(result.mismatches, 0);
+        // Standardized sequence begins exactly at the anchor gene.
+        assert_eq!(&result.sequence[..50], &reference[10..60]);
+        assert_eq!(result.sequence.len(), reference.len());
+    }
+
+    #[test]
+    fn standardize_orients_a_reverse_strand_assembly() {
+        let reference = pseudo_dna(200, 29);
+        let rows = vec![GeneRow {
+            name: "cox1".into(),
+            segments: vec![(10, 60)],
+            reverse: false,
+            start: 10,
+        }];
+        // Same molecule, rotated then reverse-complemented onto the other strand.
+        let assembly = rc(&rotate(&reference, 5));
+        let result = standardize_circular(&assembly, &rows, &reference).unwrap();
+        assert_eq!(result.strand, '-');
+        assert_eq!(result.mismatches, 0);
+        assert_eq!(&result.sequence[..50], &reference[10..60]);
+    }
+
+    #[test]
+    fn standardize_declines_when_no_anchor_matches() {
+        let reference = pseudo_dna(200, 7);
+        let rows = vec![GeneRow {
+            name: "cox1".into(),
+            segments: vec![(10, 60)],
+            reverse: false,
+            start: 10,
+        }];
+        // An unrelated circular sequence shares no anchor: leave it unchanged.
+        let assembly = pseudo_dna(200, 99999);
+        assert!(standardize_circular(&assembly, &rows, &reference).is_none());
+    }
 
     #[test]
     fn reference_is_one_mitochondrial_locus_with_many_baits() {

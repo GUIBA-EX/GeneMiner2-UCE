@@ -38,6 +38,7 @@ const FLAG_OPTIONS: &[&str] = &[
     "--rad-linked-recruitment",
     "--uce-alignment-shadow",
     "--uce-rescue-reads",
+    "--uce-artifact-pipeline",
     "--stats-count-input-reads",
     "--stats-no-heatmap",
     "--population-panrefv2-include-low-confidence",
@@ -263,6 +264,7 @@ struct Options {
     shadow_band: String,
     shadow_terminal_window: String,
     rescue: bool,
+    artifact_pipeline: bool,
     stats_count_input_reads: bool,
     stats_no_heatmap: bool,
     cleanup_intermediates: bool,
@@ -417,6 +419,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         shadow_band: value(args, &["--uce-shadow-band"], "32")?,
         shadow_terminal_window: value(args, &["--uce-shadow-terminal-window"], "150")?,
         rescue: flag(args, "--uce-rescue-reads")?,
+        artifact_pipeline: flag(args, "--uce-artifact-pipeline")?,
         stats_count_input_reads: flag(args, "--stats-count-input-reads")?,
         stats_no_heatmap: flag(args, "--stats-no-heatmap")?,
         cleanup_intermediates: flag(args, "--cleanup-intermediates")?,
@@ -614,6 +617,16 @@ fn uce_filter_args_for_recruit(
             opt.shadow_band.clone(),
             "--terminal-window".into(),
             opt.shadow_terminal_window.clone(),
+        ]);
+    }
+    if opt.rescue && opt.artifact_pipeline && !opt.alignment_shadow {
+        let artifacts = sample_dir.join(".gm2_read_artifacts");
+        args.extend([
+            "--read-catalog".into(),
+            artifacts.join("read_catalog.arrow").display().to_string(),
+            "--seed-index".into(),
+            artifacts.join("seed_index.arrow").display().to_string(),
+            "--build-read-artifacts".into(),
         ]);
     }
     args
@@ -2227,7 +2240,16 @@ fn fasta_records(path: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(records)
 }
 
-fn build_mito_rescue_reference(reference: &Path, sample: &Path) -> Result<Option<PathBuf>, String> {
+/// Builds the rescue reference at the caller-chosen `rescue_root`, independent
+/// of `sample`'s own directory. Keeping it outside `sample` lets the caller
+/// back up and later reassemble into `sample` with a cheap directory rename
+/// instead of a byte copy, since the rescue reference is never nested inside
+/// the tree being moved.
+fn build_mito_rescue_reference(
+    reference: &Path,
+    sample: &Path,
+    rescue_root: &Path,
+) -> Result<Option<PathBuf>, String> {
     let contigs = sample.join("contigs_all/mitochondrion.fasta");
     if !contigs.is_file() {
         return Ok(None);
@@ -2236,14 +2258,13 @@ fn build_mito_rescue_reference(reference: &Path, sample: &Path) -> Result<Option
     if seeds.is_empty() {
         return Ok(None);
     }
-    let rescue = sample.join("mito_rescue_round_1/assembly_refs");
-    if rescue.exists() {
-        fs::remove_dir_all(&rescue).map_err(|e| e.to_string())?;
+    if rescue_root.exists() {
+        fs::remove_dir_all(rescue_root).map_err(|e| e.to_string())?;
     }
-    copy_tree(reference, &rescue)?;
+    copy_tree(reference, rescue_root)?;
     let mut bait = fs::OpenOptions::new()
         .append(true)
-        .open(rescue.join("mitochondrion.fasta"))
+        .open(rescue_root.join("mitochondrion.fasta"))
         .map_err(|e| e.to_string())?;
     use std::io::Write;
     for (index, (_, sequence)) in seeds.iter().enumerate() {
@@ -2251,7 +2272,23 @@ fn build_mito_rescue_reference(reference: &Path, sample: &Path) -> Result<Option
             writeln!(bait, ">sample_seed_{index}\n{sequence}").map_err(|e| e.to_string())?;
         }
     }
-    Ok(Some(rescue))
+    Ok(Some(rescue_root.to_path_buf()))
+}
+
+/// Moves a directory tree cheaply. `destination` must not already exist.
+/// A same-filesystem rename is an O(1) metadata operation, unlike `copy_tree`
+/// which reads and rewrites every file's bytes. Falls back to copy-then-delete
+/// only if the rename itself fails (for example across a filesystem boundary),
+/// so the move still succeeds on unusual mount layouts.
+fn move_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if fs::rename(source, destination).is_ok() {
+        return Ok(());
+    }
+    copy_tree(source, destination)?;
+    fs::remove_dir_all(source).map_err(|e| e.to_string())
 }
 
 fn build_mito_dictionary(
@@ -2427,21 +2464,20 @@ fn finalize_mito_sample(
     run(bins, "mito_workflow", &args)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_mito_single_stage(
     opt: &Options,
     bins: &Path,
     samples: &[Sample],
     reference: &Path,
     output: &Path,
+    dictionary: &Path,
     max_reads: usize,
     require_circular: bool,
 ) -> Result<(), String> {
-    let dictionary = output.join(format!(
-        "mito_kmer_dict_k{}.dict",
-        value(&opt.raw, &["-kf"], "31")?
-    ));
+    // The recruitment dictionary depends only on the fixed reference and `-kf`,
+    // so it is built once by the caller and reused across every adaptive stage.
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
-    build_mito_dictionary(opt, bins, reference, &dictionary, output)?;
     let failures = Arc::new(Mutex::new(Vec::new()));
     let queued_samples = samples.to_vec();
     let next = Arc::new(Mutex::new(queued_samples.into_iter()));
@@ -2452,12 +2488,15 @@ fn execute_mito_single_stage(
         let next = Arc::clone(&next);
         let bins = bins.to_path_buf();
         let reference = reference.to_path_buf();
-        let dictionary = dictionary.clone();
+        let dictionary = dictionary.to_path_buf();
         let staged = output.to_path_buf();
         let mut stage_opt = stage_options.clone();
         stage_opt.output = staged.display().to_string();
         stage_opt.workers = 1;
-        handles.push(thread::spawn(move || {
+        handles.push(thread::spawn(move || loop {
+            // Each worker keeps pulling samples until the shared queue is empty,
+            // so a cohort with more samples than workers still processes every
+            // sample instead of silently dropping those past the worker count.
             let Some(sample) = next.lock().expect("mito queue poisoned").next() else {
                 return;
             };
@@ -2472,43 +2511,71 @@ fn execute_mito_single_stage(
                 max_reads,
             )
             .and_then(|_| {
+                // Reference-recruited mitochondrial pools are very high
+                // coverage, so the first UCE-style pass frequently closes the
+                // circle on its own. Finalize once to check: a junction-verified
+                // circular assembly is already a complete single molecule and
+                // cannot be improved by the seed rescue, whose whole purpose is
+                // to join fragments. Skipping the rescue recruit+refilter+
+                // assemble in that case removes the most expensive redundant
+                // work for the common "closed on the first pass" sample.
+                finalize_mito_sample(&stage_opt, &bins, &reference, &sample_dir, false)?;
+                if mito_observation(&sample_dir)?.0 == "circular" {
+                    return Ok(());
+                }
+                // The rescue reference is built outside sample_dir (a sibling
+                // staging area) so backing up the pre-rescue sample directory
+                // can be a rename instead of a byte-for-byte copy: nothing the
+                // rescue pass is about to overwrite is read back afterward
+                // except on the rare hard-failure path.
+                let rescue_stage_root = staged.join(".mito_rescue_stage").join(&sample.name);
+                if rescue_stage_root.exists() {
+                    fs::remove_dir_all(&rescue_stage_root).map_err(|e| e.to_string())?;
+                }
+                let rescue_ref_dir = rescue_stage_root.join("assembly_refs");
+                let rescue_reference =
+                    build_mito_rescue_reference(&reference, &sample_dir, &rescue_ref_dir)?;
                 let backup = staged.join(".mito_seed_backups").join(&sample.name);
                 if backup.exists() {
                     fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
                 }
-                copy_tree(&sample_dir, &backup)?;
-                let rescue_result = build_mito_rescue_reference(&reference, &sample_dir)?.map_or(
-                    Ok(()),
-                    |rescue| {
-                        let rescue_root =
-                            rescue.parent().ok_or("rescue reference has no parent")?;
-                        let rescue_dict = rescue_root.join("filter.dict");
-                        build_mito_dictionary(
-                            &stage_opt,
-                            &bins,
-                            &rescue,
-                            &rescue_dict,
-                            rescue_root,
-                        )?;
-                        mito_recruit_refilter_assemble(
-                            &stage_opt,
-                            &bins,
-                            &rescue,
-                            &sample,
-                            &sample_dir,
-                            &rescue_dict,
-                            max_reads,
-                        )
-                    },
-                );
+                move_tree(&sample_dir, &backup)?;
+                let rescue_result = rescue_reference.map_or(Ok(()), |rescue| {
+                    let rescue_dict = rescue_stage_root.join("filter.dict");
+                    build_mito_dictionary(
+                        &stage_opt,
+                        &bins,
+                        &rescue,
+                        &rescue_dict,
+                        &rescue_stage_root,
+                    )?;
+                    mito_recruit_refilter_assemble(
+                        &stage_opt,
+                        &bins,
+                        &rescue,
+                        &sample,
+                        &sample_dir,
+                        &rescue_dict,
+                        max_reads,
+                    )
+                });
                 if rescue_result.is_err() {
                     if sample_dir.exists() {
                         fs::remove_dir_all(&sample_dir).map_err(|e| e.to_string())?;
                     }
-                    copy_tree(&backup, &sample_dir)?;
-                }
-                if backup.exists() {
+                    move_tree(&backup, &sample_dir)?;
+                } else if backup.exists() {
                     fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
+                }
+                // Fold the attempted rescue reference into the sample directory
+                // so the on-disk layout matches prior behaviour for inspection,
+                // whether the rescue attempt succeeded or was rolled back.
+                if rescue_stage_root.exists() {
+                    let destination = sample_dir.join("mito_rescue_round_1");
+                    if destination.exists() {
+                        fs::remove_dir_all(&destination).map_err(|e| e.to_string())?;
+                    }
+                    move_tree(&rescue_stage_root, &destination)?;
                 }
                 finalize_mito_sample(&stage_opt, &bins, &reference, &sample_dir, require_circular)
             });
@@ -2861,6 +2928,14 @@ fn execute_rad(opt: &Options, bins: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn status_line(observations: &std::collections::BTreeMap<String, (String, String)>) -> String {
+    observations
+        .iter()
+        .map(|(sample, (status, _))| format!("{sample}={status}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn execute_mito(opt: &Options, bins: &Path, samples: &[Sample]) -> Result<(), String> {
     if opt.commands != ["mito"] {
         return Err(
@@ -2878,60 +2953,116 @@ fn execute_mito(opt: &Options, bins: &Path, samples: &[Sample]) -> Result<(), St
     if initial == 0 || maximum < initial {
         return Err("--mito-max-reads must be at least --mito-initial-reads".into());
     }
+    let root = Path::new(&opt.output);
+    fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    // Build the reference k-mer dictionary once. It depends only on the fixed
+    // reference and `-kf`, so every adaptive stage reuses this single build
+    // instead of recomputing an identical dictionary each time.
+    let dictionary = root.join(format!(
+        "mito_kmer_dict_k{}.dict",
+        value(&opt.raw, &["-kf"], "31")?
+    ));
+    build_mito_dictionary(opt, bins, &reference, &dictionary, root)?;
     if flag(&opt.raw, "--no-mito-adaptive-stop")? {
         return execute_mito_single_stage(
             opt,
             bins,
             samples,
             &reference,
-            Path::new(&opt.output),
+            root,
+            &dictionary,
             initial,
             true,
         );
     }
-    let root = Path::new(&opt.output);
     let stages = root.join(".mito_adaptive");
-    let mut previous: Option<std::collections::BTreeMap<String, (String, String)>> = None;
+    // `previous` holds each still-changing sample's observation from the prior
+    // depth; `settled` holds the final observation of samples that have stopped
+    // changing. Recruited mitochondrial coverage saturates quickly and samples
+    // reach a stable assembly at different depths, so once a sample matches its
+    // own previous observation it is frozen and never recruited or reassembled
+    // again — only the samples that are still moving pay for deeper stages.
+    let mut previous: std::collections::BTreeMap<String, (String, String)> =
+        std::collections::BTreeMap::new();
+    let mut settled: std::collections::BTreeMap<String, (String, String)> =
+        std::collections::BTreeMap::new();
+    let freeze_sample = |stage: &Path,
+                         settled: &mut std::collections::BTreeMap<String, (String, String)>,
+                         name: &str,
+                         observation: (String, String)|
+     -> Result<(), String> {
+        let destination = root.join(name);
+        if destination.exists() {
+            fs::remove_dir_all(&destination).map_err(|e| e.to_string())?;
+        }
+        copy_tree(&stage.join(name), &destination)?;
+        settled.insert(name.to_string(), observation);
+        Ok(())
+    };
     let mut limit = initial;
     loop {
+        let pending: Vec<Sample> = samples
+            .iter()
+            .filter(|sample| !settled.contains_key(&sample.name))
+            .cloned()
+            .collect();
         let stage = stages.join(format!("{limit}m"));
         if stage.exists() {
             fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
         }
-        execute_mito_single_stage(opt, bins, samples, &reference, &stage, limit, false)?;
-        let mut current = std::collections::BTreeMap::new();
-        for sample in samples {
-            current.insert(
-                sample.name.clone(),
-                mito_observation(&stage.join(&sample.name))?,
-            );
-        }
-        let stable = previous
-            .as_ref()
-            .is_some_and(|previous| previous == &current);
-        if stable || limit >= maximum {
-            for sample in samples {
-                let destination = root.join(&sample.name);
-                if destination.exists() {
-                    fs::remove_dir_all(&destination).map_err(|e| e.to_string())?;
-                }
-                copy_tree(&stage.join(&sample.name), &destination)?;
-            }
-            if stable && current.values().all(|(status, _)| status == "circular") {
-                return Ok(());
-            }
-            let statuses = current
-                .iter()
-                .map(|(sample, (status, _))| format!("{sample}={status}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(if stable {
-                format!("mito adaptive stop reached a stable non-circular assembly; preserved the final partial result ({statuses})")
+        execute_mito_single_stage(
+            opt,
+            bins,
+            &pending,
+            &reference,
+            &stage,
+            &dictionary,
+            limit,
+            false,
+        )?;
+        for sample in &pending {
+            let observation = mito_observation(&stage.join(&sample.name))?;
+            // Two consecutive identical observations mean adding reads no longer
+            // changes this sample: freeze its result and stop reprocessing it.
+            if previous.get(&sample.name) == Some(&observation) {
+                freeze_sample(&stage, &mut settled, &sample.name, observation)?;
             } else {
-                format!("mito adaptive stop did not confirm a stable circular assembly by {limit}M reads; {statuses}")
-            });
+                previous.insert(sample.name.clone(), observation);
+            }
         }
-        previous = Some(current);
+        let reached_max = limit >= maximum;
+        if settled.len() == samples.len() {
+            // Every sample stabilised across two consecutive depths. A stabilised
+            // circular assembly is confirmed; a stabilised non-circular one is a
+            // preserved partial. This is the only path that can succeed.
+            let statuses = status_line(&settled);
+            return if settled.values().all(|(status, _)| status == "circular") {
+                Ok(())
+            } else {
+                Err(format!("mito adaptive stop reached a stable non-circular assembly; preserved the final partial result ({statuses})"))
+            };
+        }
+        if reached_max {
+            // The read budget is spent with at least one sample still changing:
+            // keep each unsettled sample's latest partial and fail, since deeper
+            // stability could not be confirmed within the budget.
+            let mut report = settled.clone();
+            for sample in samples {
+                if settled.contains_key(&sample.name) {
+                    continue;
+                }
+                let observation = previous
+                    .get(&sample.name)
+                    .cloned()
+                    .unwrap_or_else(|| ("missing".into(), String::new()));
+                freeze_sample(&stage, &mut settled, &sample.name, observation.clone())?;
+                report.insert(sample.name.clone(), observation);
+            }
+            let statuses = status_line(&report);
+            return Err(format!(
+                "mito adaptive stop did not confirm a stable circular assembly by {limit}M reads; {statuses}"
+            ));
+        }
         limit = (limit.saturating_mul(2)).min(maximum);
     }
 }
@@ -4213,6 +4344,10 @@ fn cleanup_native_intermediates(opt: &Options, samples: &[Sample]) -> Result<(),
         for (name, reason) in [
             ("filtered", "reproducible filtered reads"),
             ("filtered_pe", "reproducible filter candidates"),
+            (
+                ".gm2_read_artifacts",
+                "reproducible UCE read catalog and candidate index",
+            ),
         ] {
             let path = sample_dir.join(name);
             if path.is_dir() && !path.is_symlink() {
@@ -4397,6 +4532,14 @@ fn execute_native(opt: Options) -> Result<(), String> {
         .map(|sample| sample.name.clone())
         .collect::<Vec<_>>();
     let is_uce = opt.assembly_mode == "uce";
+    if opt.artifact_pipeline && (!is_uce || !opt.rescue) {
+        return Err(
+            "--uce-artifact-pipeline requires --assembly-mode uce and --uce-rescue-reads".into(),
+        );
+    }
+    if opt.artifact_pipeline && opt.alignment_shadow {
+        return Err("--uce-artifact-pipeline does not yet support --uce-alignment-shadow".into());
+    }
     if is_uce {
         let implementation = value(&opt.raw, &["--assembler-implementation"], "auto")?;
         if !matches!(implementation.as_str(), "auto" | "uce-rust") {
@@ -4658,6 +4801,31 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_tree_relocates_nested_content_and_clears_the_source() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gm2_move_tree_{}_{unique}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let nested = source.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("leaf.txt"), b"payload").unwrap();
+        let destination = root.join("destination");
+        move_tree(&source, &destination).unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(destination.join("nested/leaf.txt")).unwrap(),
+            "payload"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn consensus_uses_legacy_filtered_fastx_extension() {
         assert_eq!(fastx_output_extension("reads.fastq.gz"), ".fq");
@@ -4751,6 +4919,38 @@ mod tests {
             parsed.commands,
             ["filter", "refilter", "assemble", "combine", "tree"]
         );
+    }
+
+    #[test]
+    fn artifact_pipeline_is_explicit_opt_in() {
+        let plain = parse(&[
+            "--assembly-mode".into(),
+            "uce".into(),
+            "-f".into(),
+            "a".into(),
+            "-r".into(),
+            "r".into(),
+            "-o".into(),
+            "o".into(),
+        ])
+        .unwrap();
+        assert!(!plain.artifact_pipeline);
+
+        let enabled = parse(&[
+            "--assembly-mode".into(),
+            "uce".into(),
+            "--uce-rescue-reads".into(),
+            "--uce-artifact-pipeline".into(),
+            "-f".into(),
+            "a".into(),
+            "-r".into(),
+            "r".into(),
+            "-o".into(),
+            "o".into(),
+        ])
+        .unwrap();
+        assert!(enabled.rescue);
+        assert!(enabled.artifact_pipeline);
     }
     #[test]
     fn sample_names_match_legacy_rule() {

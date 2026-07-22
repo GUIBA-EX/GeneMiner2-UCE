@@ -1128,6 +1128,20 @@ pub fn assemble_and_write(
     let longest = components
         .first()
         .map_or(0, |component| component.sequence.len());
+    // Ambiguity load of the primary contig, reported like mtGrasp's Ns/1000 bp so
+    // a linear or partial result with residual gaps is easy to judge at a glance.
+    let ambiguous_bases = components.first().map_or(0, |component| {
+        component
+            .sequence
+            .iter()
+            .filter(|base| !matches!(base.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T'))
+            .count()
+    });
+    let ambiguous_per_kb = if longest == 0 {
+        0.0
+    } else {
+        ambiguous_bases as f64 * 1000.0 / longest as f64
+    };
 
     // Keep the legacy coarse status for callers, but make the reason explicit
     // for users deciding whether more short reads or long reads are needed.
@@ -1253,6 +1267,9 @@ pub fn assemble_and_write(
     writeln!(summary, "merged_components\t{}", components.len())
         .map_err(|error| error.to_string())?;
     writeln!(summary, "longest_contig\t{longest}").map_err(|error| error.to_string())?;
+    writeln!(summary, "ambiguous_bases\t{ambiguous_bases}").map_err(|error| error.to_string())?;
+    writeln!(summary, "ambiguous_per_kb\t{ambiguous_per_kb:.3}")
+        .map_err(|error| error.to_string())?;
     writeln!(summary, "resolved_mate_links\t{}", accepted_links.len())
         .map_err(|error| error.to_string())?;
     writeln!(summary, "candidate_mate_links\t{}", candidate_links.len())
