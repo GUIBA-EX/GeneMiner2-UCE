@@ -144,4 +144,18 @@ Add `--workflow-profile` to write `workflow_profile.tsv` at the output root. Sup
 
 Please cite: Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. [doi:10.1111/1755-0998.70111](https://doi.org/10.1111/1755-0998.70111)
 
+### Citing this work
+
+```bibtex
+@software{GeneMiner2_UCE,
+  author  = {XIA, Fei and TANG, Zizhen and XU, Yan},
+  title   = {GeneMiner2-UCE: Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
+  year    = {2026},
+  version = {1.5.4},
+  url     = {https://github.com/GUIBA-EX/GeneMiner2-UCE},
+  publisher = {GitHub},
+  note    = {GPL-3.0-or-later licensed software}
+}
+```
+
 Report bugs and feature requests through [GitHub Issues](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues). This project is released under [GPL-3.0-or-later](LICENSE); see [NOTICE](NOTICE) for provenance boundaries of third-party and ported code.

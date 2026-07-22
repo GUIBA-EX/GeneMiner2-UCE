@@ -149,4 +149,18 @@ cli/geneminer2 rad-validate --rad-probe rad_probe/rad_reference \
 
 请引用：Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. [doi:10.1111/1755-0998.70111](https://doi.org/10.1111/1755-0998.70111)
 
+### 引用本软件
+
+```bibtex
+@software{GeneMiner2_UCE,
+  author  = {XIA, Fei and TANG, Zizhen and XU, Yan},
+  title   = {GeneMiner2-UCE: Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
+  year    = {2026},
+  version = {1.5.4},
+  url     = {https://github.com/GUIBA-EX/GeneMiner2-UCE},
+  publisher = {GitHub},
+  note    = {GPL-3.0-or-later licensed software}
+}
+```
+
 问题和功能建议请提交 [GitHub Issue](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues)。项目以 [GPL-3.0-or-later](LICENSE) 发布；第三方与移植代码的来源边界见 [NOTICE](NOTICE)。
