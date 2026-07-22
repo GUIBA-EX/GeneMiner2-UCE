@@ -414,11 +414,7 @@ fn suffix_symbol(text: &[u8], position: usize) -> u16 {
 }
 
 #[inline]
-fn suffix_edge_length(
-    nodes: &[SuffixTreeNode],
-    node: usize,
-    leaf_end: usize,
-) -> usize {
+fn suffix_edge_length(nodes: &[SuffixTreeNode], node: usize, leaf_end: usize) -> usize {
     let end = if nodes[node].end == usize::MAX {
         leaf_end
     } else {
@@ -525,13 +521,7 @@ fn build_suffix_array(text: &[u8]) -> Result<Vec<usize>, String> {
             }
 
             let active_symbol = suffix_symbol(text, active_edge);
-            let edge_link = find_child_link(
-                text,
-                &nodes,
-                &links,
-                active_node,
-                active_symbol,
-            );
+            let edge_link = find_child_link(text, &nodes, &links, active_node, active_symbol);
 
             if edge_link == usize::MAX {
                 /*
@@ -548,8 +538,7 @@ fn build_suffix_array(text: &[u8]) -> Result<Vec<usize>, String> {
                 }
             } else {
                 let next = links[edge_link].child;
-                let edge_length =
-                    suffix_edge_length(&nodes, next, leaf_end);
+                let edge_length = suffix_edge_length(&nodes, next, leaf_end);
 
                 /*
                  * Skip/count trick: move over an entire edge rather than
@@ -562,10 +551,7 @@ fn build_suffix_array(text: &[u8]) -> Result<Vec<usize>, String> {
                     continue;
                 }
 
-                let next_symbol = suffix_symbol(
-                    text,
-                    nodes[next].start + active_length,
-                );
+                let next_symbol = suffix_symbol(text, nodes[next].start + active_length);
                 let current_symbol = suffix_symbol(text, position);
 
                 if next_symbol == current_symbol {
@@ -674,14 +660,11 @@ fn build_suffix_array(text: &[u8]) -> Result<Vec<usize>, String> {
             link = links[link].next;
         }
 
-        children.sort_unstable_by_key(|&child| {
-            suffix_symbol(text, nodes[child].start)
-        });
+        children.sort_unstable_by_key(|&child| suffix_symbol(text, nodes[child].start));
 
         // The stack is LIFO, so push children in reverse order.
         for child in children.into_iter().rev() {
-            let child_depth =
-                depth + suffix_edge_length(&nodes, child, leaf_end);
+            let child_depth = depth + suffix_edge_length(&nodes, child, leaf_end);
 
             stack.push((child, child_depth));
         }
