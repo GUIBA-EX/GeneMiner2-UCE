@@ -178,7 +178,7 @@ fn base_code(base: u8) -> Option<u128> {
 
 #[inline]
 fn base_char(code: u128) -> u8 {
-    [b'A', b'C', b'G', b'T'][code as usize]
+    b"ACGT"[code as usize]
 }
 
 fn normalize_dna(text: &str) -> Vec<u8> {
@@ -715,7 +715,7 @@ fn calculate_kmer_size(
     if slice_len <= k_min {
         return Ok(k_min);
     }
-    if k_min % 2 == 0 {
+    if k_min.is_multiple_of(2) {
         k_min += 1;
     }
     if k_min > k_max {
@@ -770,7 +770,7 @@ fn calculate_kmer_size(
         return Ok(k_min);
     };
     let upper = k_min + upper_offset;
-    let lower = (upper + 1) / 2;
+    let lower = upper.div_ceil(2);
     let scores: Vec<(usize, f64)> = run_stats
         .iter()
         .enumerate()
@@ -833,7 +833,9 @@ fn walk_graph(
     let suffix_mask = (1u128 << (2 * k - 2)) - 1;
     let mut path = vec![seed];
     let mut seen: HashMap<u128, u32> = HashMap::from([(seed, 1)]);
-    let mut stack: Vec<(Vec<(u128, u16, u32)>, usize, u16)> = Vec::new();
+    type WeightedNode = (u128, u16, u32);
+    type WalkStackEntry = (Vec<WeightedNode>, usize, u16);
+    let mut stack: Vec<WalkStackEntry> = Vec::new();
     let mut weights = Vec::new();
     let mut bases = Vec::new();
     let mut walks = Vec::new();
@@ -855,7 +857,7 @@ fn walk_graph(
                 }
             })
             .collect();
-        nodes.sort_by(|a, b| b.2.cmp(&a.2));
+        nodes.sort_by_key(|node| std::cmp::Reverse(node.2));
         if nodes.is_empty() {
             iteration -= 1;
             let total: u32 = weights.iter().sum();
@@ -942,7 +944,7 @@ fn process_walks(
             })
         })
         .collect();
-    out.sort_by(|a, b| b.support.cmp(&a.support));
+    out.sort_by_key(|candidate| std::cmp::Reverse(candidate.support));
     out
 }
 
@@ -962,16 +964,28 @@ fn slice_support(sequence: &str, slice_len: usize, reads: &HashMap<String, u32>)
     total
 }
 
-fn get_contigs(
-    reads: &HashMap<String, u32>,
+struct ContigSearch<'a> {
+    reads: &'a HashMap<String, u32>,
     slice_len: usize,
-    graph: &HashMap<u128, KmerInfo>,
+    graph: &'a HashMap<u128, KmerInfo>,
     seed: u128,
     k: usize,
     cov_min: f64,
     iteration: usize,
     soft: usize,
-) -> (Vec<Candidate>, HashSet<u128>, i32) {
+}
+
+fn get_contigs(search: ContigSearch<'_>) -> (Vec<Candidate>, HashSet<u128>, i32) {
+    let ContigSearch {
+        reads,
+        slice_len,
+        graph,
+        seed,
+        k,
+        cov_min,
+        iteration,
+        soft,
+    } = search;
     let (forward, used_f, pos_f, weight_f) = walk_graph(graph, seed, k, iteration);
     let (reverse, used_r, pos_r, weight_r) = walk_graph(graph, reverse_kmer(seed, k), k, iteration);
     let positions: Vec<u32> = pos_f
@@ -1026,13 +1040,12 @@ fn get_contigs(
             }
             let cov_len = right_coord.saturating_sub(left_coord);
             let cov_depth = support as f64 * slice_len as f64 / 0.9;
-            if cov_min > 0.0 {
-                if cov_len == 0
+            if cov_min > 0.0
+                && (cov_len == 0
                     || cov_depth / (cov_len as f64) < cov_min
-                    || cov_depth / (sequence.len() as f64) < cov_min
-                {
-                    continue;
-                }
+                    || cov_depth / (sequence.len() as f64) < cov_min)
+            {
+                continue;
             }
             candidates.push(Candidate {
                 sequence,
@@ -1204,16 +1217,16 @@ fn process_locus(
     let mut high = Vec::new();
     let mut low = Vec::new();
     while seeds.len() as f64 > initial as f64 * 0.5 {
-        let (candidates, used, position) = get_contigs(
-            &reads,
+        let (candidates, used, position) = get_contigs(ContigSearch {
+            reads: &reads,
             slice_len,
-            &graph,
-            seeds[0].0,
+            graph: &graph,
+            seed: seeds[0].0,
             k,
-            args.cov_min,
-            args.iteration,
+            cov_min: args.cov_min,
+            iteration: args.iteration,
             soft,
-        );
+        });
         seeds.retain(|seed| !used.contains(&seed.0) && !used.contains(&reverse_kmer(seed.0, k)));
         for candidate in candidates {
             let record = (candidate, seed_set.intersection(&used).count(), position);
@@ -1230,7 +1243,7 @@ fn process_locus(
         fs::remove_file(&best_path)?;
         return Ok((key.to_owned(), "no contigs".to_owned(), 0));
     }
-    selected.sort_by(|a, b| (b.0.support, b.0.weight).cmp(&(a.0.support, a.0.weight)));
+    selected.sort_by_key(|entry| std::cmp::Reverse((entry.0.support, entry.0.weight)));
     let mut all = File::create(&all_path)?;
     for (candidate, seed_count, position) in &selected {
         writeln!(

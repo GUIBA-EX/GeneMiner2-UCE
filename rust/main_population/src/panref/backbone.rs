@@ -240,10 +240,7 @@ fn stream_interleaved_pairs(
 ) -> Result<(), String> {
     let file = File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut reader = BufReader::new(file);
-    loop {
-        let Some((header, first)) = read_fastq_sequence(&mut reader)? else {
-            break;
-        };
+    while let Some((header, first)) = read_fastq_sequence(&mut reader)? {
         if header.ends_with("/0") {
             continue;
         }
@@ -382,7 +379,7 @@ mod tests {
     }
     #[test]
     fn sample_breadth_outranks_pe_depth_and_length() {
-        let unitigs = vec![
+        let unitigs = [
             Unitig {
                 sequence: b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec(),
                 kmer_count: 1,

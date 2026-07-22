@@ -34,12 +34,17 @@ struct UnrolledCycle {
     matches: usize,
 }
 
+type OrientedSegment = (String, bool);
+type GfaEdges = HashMap<OrientedSegment, Vec<(String, bool, usize)>>;
+type ComponentPair = (usize, usize);
+type ComponentLinks = HashMap<ComponentPair, usize>;
+
 /// Directed unitig graph read from the assembler GFA.  Segment orientation is
 /// represented at traversal time, avoiding a second copy of every sequence.
 #[derive(Clone, Debug)]
 struct GfaGraph {
     segments: HashMap<String, Vec<u8>>,
-    edges: HashMap<(String, bool), Vec<(String, bool, usize)>>,
+    edges: GfaEdges,
 }
 
 /// Compact directed read graph. Most mito runs use k <= 32, so a packed u64
@@ -73,6 +78,29 @@ pub struct LinkConfig {
     pub maximum_bridge: usize,
     pub minimum_junction_support: usize,
     pub expected_length: usize,
+}
+
+/// The configured k-mer is always attempted first. Smaller and larger values
+/// are strictly fallback-only Sealer-like probes: a path is still accepted
+/// only when it is unique and subsequently crossed by real reads. Keeping
+/// this policy here avoids adding another public tuning surface.
+fn bridge_kmers(config: &LinkConfig) -> Vec<usize> {
+    let mut values = vec![config.bridge_kmer];
+    for candidate in [
+        config.bridge_kmer.saturating_sub(10),
+        config.bridge_kmer.saturating_add(10),
+    ] {
+        if (1..=63).contains(&candidate) && !values.contains(&candidate) {
+            values.push(candidate);
+        }
+    }
+    values
+}
+
+fn with_bridge_kmer(config: &LinkConfig, bridge_kmer: usize) -> LinkConfig {
+    let mut adjusted = config.clone();
+    adjusted.bridge_kmer = bridge_kmer;
+    adjusted
 }
 
 fn rc(sequence: &[u8]) -> Vec<u8> {
@@ -419,7 +447,7 @@ fn mate_links_from_reads(
     components: &[Component],
     paired_reads: &Path,
     config: &LinkConfig,
-) -> Result<(HashMap<(usize, usize), usize>, usize), String> {
+) -> Result<(ComponentLinks, usize), String> {
     let (suffix, prefix) = terminal_indexes(components, config.link_kmer, config.terminal_window);
     let mut links = HashMap::new();
     let count = visit_interleaved_pairs(paired_reads, |first, second| {
@@ -725,7 +753,7 @@ fn bridge_components(
     loop {
         let links = mate_links(&components, pairs, config);
         let mut ranked: Vec<_> = links.into_iter().collect();
-        ranked.sort_by(|left, right| right.1.cmp(&left.1));
+        ranked.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         let mut joined = None;
         for ((from, to), support) in ranked {
             if support < config.minimum_pair_support || from / 2 == to / 2 {
@@ -759,6 +787,40 @@ fn bridge_components(
         components = collapse_overlaps(components, config);
     }
     components
+}
+
+fn read_bridge_path_multi(
+    left: &[u8],
+    right: &[u8],
+    pairs: &[ReadPair],
+    config: &LinkConfig,
+) -> Option<(Vec<u8>, usize)> {
+    // The primary k has already failed when this helper is called.  Rebuild
+    // only the two fallback graphs; this keeps ordinary successful runs on
+    // the original single-k fast path.
+    for kmer in bridge_kmers(config).into_iter().skip(1) {
+        let adjusted = with_bridge_kmer(config, kmer);
+        let graph = read_graph(pairs, kmer, adjusted.bridge_minimum_depth);
+        if let Some(path) = bridge_path(left, right, &graph, &adjusted) {
+            return Some((path, kmer));
+        }
+    }
+    None
+}
+
+fn gfa_bridge_path_multi(
+    left: &[u8],
+    right: &[u8],
+    graph: &GfaGraph,
+    config: &LinkConfig,
+) -> Option<(Vec<u8>, usize)> {
+    for kmer in bridge_kmers(config) {
+        let adjusted = with_bridge_kmer(config, kmer);
+        if let Some(path) = gfa_bridge_path(left, right, graph, &adjusted) {
+            return Some((path, kmer));
+        }
+    }
+    None
 }
 
 fn cached_pairs<'a>(
@@ -858,7 +920,7 @@ pub fn assemble_and_write(
             &mut accepted_links,
         );
     }
-    components.sort_by(|left, right| right.sequence.len().cmp(&left.sequence.len()));
+    components.sort_by_key(|component| std::cmp::Reverse(component.sequence.len()));
     let raw_components = components.clone();
 
     let mut closure = "none";
@@ -889,7 +951,7 @@ pub fn assemble_and_write(
                 gfa_cache = Some(read_gfa(path)?);
                 gfa_graph_used = true;
             }
-            if let Some(bridge) = gfa_bridge_path(
+            if let Some((bridge, kmer)) = gfa_bridge_path_multi(
                 &components[0].sequence,
                 &components[0].sequence,
                 gfa_cache.as_ref().expect("GFA just loaded"),
@@ -897,7 +959,11 @@ pub fn assemble_and_write(
             ) {
                 if !bridge.is_empty() {
                     components[0].sequence.extend_from_slice(&bridge);
-                    closure = "gfa_bridge";
+                    closure = if kmer == config.bridge_kmer {
+                        "gfa_bridge"
+                    } else {
+                        "gfa_bridge_multik"
+                    };
                 }
             }
             if closure == "none" && components.len() == 1 {
@@ -922,13 +988,27 @@ pub fn assemble_and_write(
                         read_graph_used = true;
                     }
                     let graph = read_graph_cache.as_ref().expect("read graph just built");
-                    if let Some(path) = bridge_path(&oriented, &oriented, graph, config) {
-                        if path.len() >= config.bridge_kmer {
-                            let addition = path.len() - config.bridge_kmer;
+                    let mut path = bridge_path(&oriented, &oriented, graph, config)
+                        .map(|path| (path, config.bridge_kmer));
+                    if path.is_none() {
+                        path = read_bridge_path_multi(
+                            &oriented,
+                            &oriented,
+                            cached_pairs(&mut pairs, paired_reads)?,
+                            config,
+                        );
+                    }
+                    if let Some((path, kmer)) = path {
+                        if path.len() >= kmer {
+                            let addition = path.len() - kmer;
                             let mut closed = oriented;
                             closed.extend_from_slice(&path[..addition]);
                             components[0].sequence = closed;
-                            closure = "mate_bridge";
+                            closure = if kmer == config.bridge_kmer {
+                                "mate_bridge"
+                            } else {
+                                "mate_bridge_multik"
+                            };
                         }
                     }
                 }
@@ -954,13 +1034,27 @@ pub fn assemble_and_write(
                     read_graph_used = true;
                 }
                 let graph = read_graph_cache.as_ref().expect("read graph just built");
-                if let Some(path) = bridge_path(&oriented, &oriented, graph, config) {
-                    if path.len() >= config.bridge_kmer {
-                        let addition = path.len() - config.bridge_kmer;
+                let mut path = bridge_path(&oriented, &oriented, graph, config)
+                    .map(|path| (path, config.bridge_kmer));
+                if path.is_none() {
+                    path = read_bridge_path_multi(
+                        &oriented,
+                        &oriented,
+                        cached_pairs(&mut pairs, paired_reads)?,
+                        config,
+                    );
+                }
+                if let Some((path, kmer)) = path {
+                    if path.len() >= kmer {
+                        let addition = path.len() - kmer;
                         let mut closed = oriented;
                         closed.extend_from_slice(&path[..addition]);
                         components[0].sequence = closed;
-                        closure = "mate_bridge";
+                        closure = if kmer == config.bridge_kmer {
+                            "mate_bridge"
+                        } else {
+                            "mate_bridge_multik"
+                        };
                     }
                 }
             }
@@ -992,7 +1086,7 @@ pub fn assemble_and_write(
                 gfa_cache = Some(read_gfa(path)?);
                 gfa_graph_used = true;
             }
-            if let Some(bridge) = gfa_bridge_path(
+            if let Some((bridge, kmer)) = gfa_bridge_path_multi(
                 &components[0].sequence,
                 &components[0].sequence,
                 gfa_cache.as_ref().expect("GFA just loaded"),
@@ -1000,7 +1094,11 @@ pub fn assemble_and_write(
             ) {
                 if !bridge.is_empty() {
                     components[0].sequence.extend_from_slice(&bridge);
-                    closure = "gfa_bridge";
+                    closure = if kmer == config.bridge_kmer {
+                        "gfa_bridge"
+                    } else {
+                        "gfa_bridge_multik"
+                    };
                     closure_candidate = closure;
                     junction_support = count_junction_support(
                         paired_reads,
@@ -1026,6 +1124,75 @@ pub fn assemble_and_write(
     } else {
         "partial_multi_contig"
     };
+
+    let longest = components
+        .first()
+        .map_or(0, |component| component.sequence.len());
+
+    // Keep the legacy coarse status for callers, but make the reason explicit
+    // for users deciding whether more short reads or long reads are needed.
+    let resolution_reason = if status == "circular" {
+        "verified_circular"
+    } else if components.len() > 1 {
+        "partial_multi_component"
+    } else if matches!(closure_candidate, "overlap" | "unrolled_cycle") {
+        "closure_candidate_unverified"
+    } else if closure_candidate != "none" {
+        if junction_support == 0 {
+            "no_junction_evidence"
+        } else {
+            "junction_support_below_threshold"
+        }
+    } else if gfa_graph_used {
+        // GFA availability alone does not tell us whether anchors were absent,
+        // repeated, disconnected, or branched. Keep the report evidence-based.
+        "no_unique_gfa_path"
+    } else if maximum_pair_support < config.minimum_pair_support {
+        "insufficient_coverage"
+    } else {
+        "no_junction_evidence"
+    };
+
+    let mut evidence = File::create(output.join("mitochondrial_evidence.json"))
+        .map_err(|error| error.to_string())?;
+    writeln!(
+        evidence,
+        concat!(
+            "{{\n",
+            "  \"status\": \"{}\",\n",
+            "  \"resolution_reason\": \"{}\",\n",
+            "  \"closure_candidate\": \"{}\",\n",
+            "  \"closure_method\": \"{}\",\n",
+            "  \"input_read_pairs\": {},\n",
+            "  \"input_contigs\": {},\n",
+            "  \"components\": {},\n",
+            "  \"longest_contig\": {},\n",
+            "  \"candidate_mate_links\": {},\n",
+            "  \"resolved_mate_links\": {},\n",
+            "  \"maximum_pair_support\": {},\n",
+            "  \"junction_read_support\": {},\n",
+            "  \"minimum_junction_support\": {},\n",
+            "  \"gfa_graph_used\": {},\n",
+            "  \"read_graph_used\": {}\n",
+            "}}"
+        ),
+        status,
+        resolution_reason,
+        closure_candidate,
+        closure,
+        input_read_pairs,
+        input_contigs,
+        components.len(),
+        longest,
+        candidate_links.len(),
+        accepted_links.len(),
+        maximum_pair_support,
+        junction_support,
+        config.minimum_junction_support,
+        gfa_graph_used,
+        read_graph_used,
+    )
+    .map_err(|error| error.to_string())?;
 
     let mut fasta = File::create(output.join("mitochondrial_assembly.fasta"))
         .map_err(|error| error.to_string())?;
@@ -1075,13 +1242,12 @@ pub fn assemble_and_write(
         writeln!(links, "{from}\t{to}\t{support}\tresolved\t{bases}")
             .map_err(|error| error.to_string())?;
     }
-    let longest = components
-        .first()
-        .map_or(0, |component| component.sequence.len());
     let mut summary = File::create(output.join("mitochondrial_assembly_summary.tsv"))
         .map_err(|error| error.to_string())?;
     writeln!(summary, "metric\tvalue").map_err(|error| error.to_string())?;
     writeln!(summary, "status\t{status}").map_err(|error| error.to_string())?;
+    writeln!(summary, "resolution_reason\t{resolution_reason}")
+        .map_err(|error| error.to_string())?;
     writeln!(summary, "input_read_pairs\t{input_read_pairs}").map_err(|error| error.to_string())?;
     writeln!(summary, "input_contigs\t{input_contigs}").map_err(|error| error.to_string())?;
     writeln!(summary, "merged_components\t{}", components.len())
@@ -1280,6 +1446,76 @@ mod tests {
     }
 
     #[test]
+    fn multik_gfa_bridge_falls_back_only_after_the_primary_anchor_is_ambiguous() {
+        let left_anchor = b"AAAACCCCGGGGTT";
+        let right_anchor = b"TTTTGGGGCCCCAA";
+        let mut graph = GfaGraph {
+            segments: HashMap::new(),
+            edges: HashMap::new(),
+        };
+        graph
+            .segments
+            .insert("left".into(), [b"GGGG".as_slice(), left_anchor].concat());
+        graph
+            .segments
+            .insert("other_left".into(), b"CCCCCCCCCCGGTT".to_vec());
+        graph
+            .segments
+            .insert("right".into(), [b"ACG".as_slice(), right_anchor].concat());
+        graph
+            .segments
+            .insert("other_right".into(), b"AAAATTTTAAAA".to_vec());
+        graph
+            .edges
+            .insert(("left".into(), false), vec![("right".into(), false, 0)]);
+        let mut policy = config();
+        policy.bridge_kmer = 4;
+        policy.terminal_window = 20;
+        assert!(gfa_bridge_path(left_anchor, right_anchor, &graph, &policy).is_none());
+        assert_eq!(
+            gfa_bridge_path_multi(left_anchor, right_anchor, &graph, &policy),
+            Some((b"ACG".to_vec(), 14))
+        );
+    }
+
+    #[test]
+    fn closure_candidate_without_junction_reads_remains_linear() {
+        let unique = format!(
+            "gm2_mito_no_junction_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&root).unwrap();
+        let reads = root.join("reads.fq");
+        fs::write(
+            &reads,
+            "@x/1\nTATATATA\n+\nFFFFFFFF\n@x/2\nCGCGCGCG\n+\nFFFFFFFF\n",
+        )
+        .unwrap();
+        let output = root.join("output");
+        let status = assemble_and_write(
+            &output,
+            vec![MitoContig {
+                id: "candidate".into(),
+                sequence: b"AAAACCCCGGGGTTTTAAAA".to_vec(),
+            }],
+            &reads,
+            None,
+            &config(),
+        )
+        .unwrap();
+        assert_eq!(status, "linear_single_contig");
+        let summary =
+            fs::read_to_string(output.join("mitochondrial_assembly_summary.tsv")).unwrap();
+        assert!(summary.contains("resolution_reason\tclosure_candidate_unverified\n"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn detects_two_laps_and_a_partial_third_lap() {
         let mut state = 17_u64;
         let cycle: Vec<u8> = (0..1_200)
@@ -1334,8 +1570,14 @@ FFFFFFFF
         let status = assemble_and_write(
             &output,
             vec![
-                MitoContig { id: "left".into(), sequence: b"AAAACCCC".to_vec() },
-                MitoContig { id: "right".into(), sequence: b"GGGGACAC".to_vec() },
+                MitoContig {
+                    id: "left".into(),
+                    sequence: b"AAAACCCC".to_vec(),
+                },
+                MitoContig {
+                    id: "right".into(),
+                    sequence: b"GGGGACAC".to_vec(),
+                },
             ],
             &reads,
             None,
@@ -1343,9 +1585,12 @@ FFFFFFFF
         )
         .unwrap();
         assert_eq!(status, "partial_multi_contig");
-        let summary = fs::read_to_string(output.join("mitochondrial_assembly_summary.tsv")).unwrap();
-        assert!(summary.contains("read_graph_used	false
-"));
+        let summary =
+            fs::read_to_string(output.join("mitochondrial_assembly_summary.tsv")).unwrap();
+        assert!(summary.contains(
+            "read_graph_used	false
+"
+        ));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -30,13 +30,16 @@ MITO_WORKFLOW_BIN := cli/bin/mito_workflow
 GENE_WORKFLOW_BIN := cli/bin/gene_workflow
 MARKER_PROFILE_BIN := cli/bin/marker_profile
 REPEAT_BIN := cli/bin/main_repeat
+RUST_CLI_BIN := cli/bin/geneminer2-rust
+RUST_CLI_MANIFEST := rust/geneminer2_cli/Cargo.toml
+RUST_CLI_SOURCES := $(RUST_CLI_MANIFEST) $(wildcard rust/geneminer2_cli/src/*.rs)
 REPEAT_RUST_MANIFEST := rust/main_repeat/Cargo.toml
 REPEAT_RUST_SOURCES := $(REPEAT_RUST_MANIFEST) $(wildcard rust/main_repeat/src/*.rs)
 FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp scripts/filter/*.hx)
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(PY_BIN)
+build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(RUST_CLI_BIN) $(PY_BIN)
 	rm -f -r cli/bin/_internal
 	cp -L -r scripts/dist/unix_command/_internal cli/bin/
 	cd cli && ln -f -r -s bin/unix_command geneminer2
@@ -157,6 +160,10 @@ $(MARKER_PROFILE_BIN): rust/marker_profile/Cargo.toml rust/marker_profile/src/ma
 $(REPEAT_BIN): $(REPEAT_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(REPEAT_RUST_MANIFEST)
 	install rust/main_repeat/target/release/main_repeat $(REPEAT_BIN)
+
+$(RUST_CLI_BIN): $(RUST_CLI_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(RUST_CLI_MANIFEST)
+	install rust/geneminer2_cli/target/release/geneminer2_cli $(RUST_CLI_BIN)
 
 $(PY_BIN): cli/bin/%: scripts/%.py | cli/bin
 	cd scripts && pyinstaller -D -y --optimize 2 $(notdir $<)

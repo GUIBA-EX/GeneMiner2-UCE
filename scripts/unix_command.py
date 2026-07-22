@@ -187,6 +187,7 @@ def run_mito_finalize(args, samples, require_circular=True):
         command = [
             mito_bin, "finalize",
             "--reference-genome", reference_genome,
+            "--gene-metadata", os.path.join(reference_dir, "metadata", "mitochondrial_genes.tsv"),
             "--contigs", os.path.join(sample_dir, "contigs_all", "mitochondrion.fasta"),
             "--paired-reads", os.path.join(sample_dir, "filtered", "mitochondrion.fq"),
             "--out-dir", os.path.join(sample_dir, "mito"),
@@ -608,6 +609,76 @@ def select_terminal_rescue_loci(before_rows, after_rows):
     return active
 
 
+def terminal_rescue_selection_reason(before, after):
+    """Explain the existing R2 admission decision without changing it."""
+    if not uce_summary_row_is_accepted(after):
+        return 'not_accepted_after_r1'
+    growth = delta_or_blank(after.get('selected_contig_length'), before.get('selected_contig_length'))
+    if before and growth != '' and growth >= UCE_TERMINAL_MIN_EXTENSION:
+        return 'length_gain'
+    read_growth = delta_or_blank(after.get('unique_read_count'), before.get('unique_read_count'))
+    if before and read_growth != '' and read_growth >= UCE_TERMINAL_MIN_FRAGMENTS:
+        return 'unique_read_gain'
+    if not uce_summary_row_is_accepted(before):
+        return 'newly_accepted'
+    return 'no_r2_admission_signal'
+
+
+def terminal_window_diagnostics(sequence, reads, window):
+    """Measure exact-read support at both current contig ends for report-only R2 triage."""
+    flank = min(window, len(sequence) // 2)
+    if flank == 0:
+        return {}, {}
+    left, right, _, _ = terminal_support_metrics(sequence, flank, len(sequence) - flank, reads)
+    return left, right
+
+
+def write_uce_terminal_rescue_diagnostics(
+    sample_dir, sample, before_rows, after_rows, candidate_loci, bait_loci, window
+):
+    """Write R1 endpoint evidence for future R2 admission tuning; never alters R2."""
+    path = os.path.join(sample_dir, 'uce_terminal_rescue_diagnostics.tsv')
+    candidate_loci = set(candidate_loci)
+    bait_loci = set(bait_loci)
+    with open(path, 'w', newline='') as out:
+        writer = csv.DictWriter(out, fieldnames=UCE_TERMINAL_DIAGNOSTIC_FIELDS, delimiter='\t')
+        writer.writeheader()
+        for locus in sorted(set(before_rows) | set(after_rows)):
+            before = before_rows.get(locus, {})
+            after = after_rows.get(locus, {})
+            sequence = read_first_fasta_sequence(os.path.join(sample_dir, 'results', f'{locus}.fasta'))
+            left, right = ({}, {})
+            if locus in bait_loci and sequence:
+                left, right = terminal_window_diagnostics(sequence, read_locus_fastq(sample_dir, locus), window)
+            writer.writerow({
+                'sample': sample, 'locus': locus,
+                'r2_candidate': int(locus in candidate_loci),
+                'terminal_bait_written': int(locus in bait_loci),
+                'selection_reason': terminal_rescue_selection_reason(before, after),
+                'before_length': before.get('selected_contig_length', ''),
+                'after_r1_length': after.get('selected_contig_length', ''),
+                'length_gain': delta_or_blank(after.get('selected_contig_length'), before.get('selected_contig_length')),
+                'before_unique_reads': before.get('unique_read_count', ''),
+                'after_r1_unique_reads': after.get('unique_read_count', ''),
+                'unique_read_gain': delta_or_blank(after.get('unique_read_count'), before.get('unique_read_count')),
+                'after_r1_read_supported_span': after.get('read_supported_span', ''),
+                'after_r1_slice_support_breadth': after.get('slice_support_breadth', ''),
+                'after_r1_max_slice_support_gap': after.get('max_slice_support_gap', ''),
+                'after_r1_multi_mapping_reads': after.get('multi_mapping_read_count', ''),
+                'after_r1_unique_read_density': after.get('unique_read_density', ''),
+                'left_window_bp': left.get('length', ''),
+                'left_breadth': format_float_or_blank(left.get('breadth', '')),
+                'left_max_gap': left.get('max_gap', ''),
+                'left_fragments': left.get('fragments', ''),
+                'left_bridges': left.get('bridges', ''),
+                'right_window_bp': right.get('length', ''),
+                'right_breadth': format_float_or_blank(right.get('breadth', '')),
+                'right_max_gap': right.get('max_gap', ''),
+                'right_fragments': right.get('fragments', ''),
+                'right_bridges': right.get('bridges', ''),
+            })
+
+
 def read_locus_fastq(sample_dir, locus):
     path = os.path.join(sample_dir, 'filtered', f'{locus}.fq')
     if not os.path.isfile(path):
@@ -877,6 +948,18 @@ UCE_RESCUE_ROUND_FIELDS = [
     'left_bridges', 'left_accepted', 'right_extension_length', 'right_breadth',
     'right_max_gap', 'right_fragments', 'right_bridges', 'right_accepted',
 ]
+
+UCE_TERMINAL_DIAGNOSTIC_FIELDS = [
+    'sample', 'locus', 'r2_candidate', 'terminal_bait_written',
+    'selection_reason', 'before_length', 'after_r1_length', 'length_gain',
+    'before_unique_reads', 'after_r1_unique_reads', 'unique_read_gain',
+    'after_r1_read_supported_span', 'after_r1_slice_support_breadth',
+    'after_r1_max_slice_support_gap', 'after_r1_multi_mapping_reads',
+    'after_r1_unique_read_density', 'left_window_bp', 'left_breadth',
+    'left_max_gap', 'left_fragments', 'left_bridges', 'right_window_bp',
+    'right_breadth', 'right_max_gap', 'right_fragments', 'right_bridges',
+]
+
 
 UCE_RESCUE_SUMMARY_FIELDS = [
     'sample',
@@ -1224,8 +1307,10 @@ def get_rescue_sample_names(samples, failures):
     return [name for name in samples if name not in failed]
 
 def get_uce_sample_parallelism(total_threads, sample_count):
-    """Limit complete UCE sample workers by GeneMiner2's normal process budget."""
-    return max(1, min(total_threads, sample_count)), 1
+    """Budget one compute thread and two bounded decode workers per UCE sample."""
+    active_threads_per_sample = 3
+    worker_budget = max(1, total_threads // active_threads_per_sample)
+    return max(1, min(worker_budget, sample_count)), 1
 
 
 def run_ordered_sample_stages(name, do_filter, do_refilter, do_assemble, do_rescue,
@@ -1702,24 +1787,28 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
                         args.uce_rescue_min_contig_length,
                     )
                 elif terminal_round:
-                    active_loci = select_terminal_rescue_loci(previous_round_input, current_rows)
-                    if not active_loci:
+                    candidate_loci = select_terminal_rescue_loci(previous_round_input, current_rows)
+                    if not candidate_loci:
                         print(f'No growing UCE loci remain for {name}; stopping after round {round_index - 1}.')
                         break
                     added_contigs = build_uce_rescue_refs(
                         args.r, sample_dir, assembly_ref_dir,
                         args.uce_rescue_min_contig_length,
-                        active_loci=active_loci,
+                        active_loci=candidate_loci,
                     )
                     filter_ref_dir = os.path.join(round_root, 'terminal_baits')
                     active_loci = build_uce_terminal_rescue_refs(
-                        sample_dir, filter_ref_dir, active_loci,
+                        sample_dir, filter_ref_dir, candidate_loci,
                         args.uce_rescue_terminal_window,
                         args.uce_rescue_min_contig_length,
                     )
                     if not active_loci:
                         print(f'No informative terminal baits remain for {name}; stopping after round {round_index - 1}.')
                         break
+                    write_uce_terminal_rescue_diagnostics(
+                        sample_dir, name, previous_round_input, current_rows,
+                        candidate_loci, active_loci, args.uce_rescue_terminal_window,
+                    )
                 else:
                     added_contigs = build_uce_rescue_refs(
                         args.r, sample_dir, assembly_ref_dir,
@@ -1855,7 +1944,7 @@ def do_filter_assemble(args, samples, do_filter, do_refilter, do_assemble, ignor
         sample_workers, sample_threads = get_uce_sample_parallelism(args.p, len(samples))
         print(
             f'Running UCE as {sample_workers} whole-sample pipeline(s) in parallel; '
-            f'each sample uses {sample_threads} thread.'
+            'each filter uses 1 compute thread and 2 bounded decode workers.'
         )
 
         def run_uce_sample_pipeline(name):

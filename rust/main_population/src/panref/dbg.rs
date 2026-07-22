@@ -157,7 +157,7 @@ fn encode_base(base: u8) -> Option<u8> {
     }
 }
 fn decode_base(bits: u8) -> u8 {
-    [b'A', b'C', b'G', b'T'][bits as usize]
+    b"ACGT"[bits as usize]
 }
 fn decode_kmer(mut value: u64, k: usize) -> Vec<u8> {
     let mut out = vec![b'A'; k];
@@ -166,6 +166,30 @@ fn decode_kmer(mut value: u64, k: usize) -> Vec<u8> {
         value >>= 2;
     }
     out
+}
+
+/// Recover directed unitig overlap edges from a compact DBG.  An edge means
+/// a real k-1 base overlap, never an inferred gap.
+pub(crate) fn unitig_edges(unitigs: &[Unitig], k: usize) -> Vec<(usize, usize)> {
+    if k < 2 {
+        return Vec::new();
+    }
+    let overlap = k - 1;
+    let mut edges = Vec::new();
+    for (from, left) in unitigs.iter().enumerate() {
+        if left.sequence.len() < overlap {
+            continue;
+        }
+        let suffix = &left.sequence[left.sequence.len() - overlap..];
+        for (to, right) in unitigs.iter().enumerate() {
+            if from != to && right.sequence.len() >= overlap && right.sequence[..overlap] == *suffix
+            {
+                edges.push((from, to));
+            }
+        }
+    }
+    edges.sort_unstable();
+    edges
 }
 
 #[cfg(test)]
@@ -194,28 +218,4 @@ mod tests {
             .iter()
             .all(|unitig| !unitig.sequence.windows(4).any(|kmer| kmer == b"CGAT")));
     }
-}
-
-/// Recover directed unitig overlap edges from a compact DBG.  An edge means
-/// a real k-1 base overlap, never an inferred gap.
-pub(crate) fn unitig_edges(unitigs: &[Unitig], k: usize) -> Vec<(usize, usize)> {
-    if k < 2 {
-        return Vec::new();
-    }
-    let overlap = k - 1;
-    let mut edges = Vec::new();
-    for (from, left) in unitigs.iter().enumerate() {
-        if left.sequence.len() < overlap {
-            continue;
-        }
-        let suffix = &left.sequence[left.sequence.len() - overlap..];
-        for (to, right) in unitigs.iter().enumerate() {
-            if from != to && right.sequence.len() >= overlap && right.sequence[..overlap] == *suffix
-            {
-                edges.push((from, to));
-            }
-        }
-    }
-    edges.sort_unstable();
-    edges
 }

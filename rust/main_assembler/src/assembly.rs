@@ -791,7 +791,7 @@ fn process_sides(
                 .then_with(|| left.sequence.cmp(&right.sequence))
         });
     } else {
-        processed.sort_by(|left, right| right.read_count.cmp(&left.read_count));
+        processed.sort_by_key(|candidate| std::cmp::Reverse(candidate.read_count));
     }
     processed
 }

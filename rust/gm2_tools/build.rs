@@ -6,7 +6,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR");
 
-    let Ok(output) = Command::new("pkg-config").args(["--libs", "zlib-ng"]).output() else {
+    let Ok(output) = Command::new("pkg-config")
+        .args(["--libs", "zlib-ng"])
+        .output()
+    else {
         return;
     };
     if !output.status.success() {

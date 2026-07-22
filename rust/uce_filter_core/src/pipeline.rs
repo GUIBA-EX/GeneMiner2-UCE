@@ -7,6 +7,8 @@ use gm2_tools::fastx::{gzip_backend_name, open_input, FastxRecord};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -41,6 +43,8 @@ pub struct RunSummary {
     pub loci_written: usize,
     pub fragment_memory_bytes: u64,
     pub fragment_spill_bytes: u64,
+    pub evidence_scratch_bytes: u64,
+    pub candidate_memory_bytes: u64,
     pub shadow_sampled_assignments: usize,
     pub shadow_aligned_mates: usize,
     pub shadow_seconds: f64,
@@ -57,6 +61,8 @@ pub struct RunSummary {
 }
 
 const LOCUS_BUFFER_BYTES: usize = 64 * 1024;
+const DECODE_CHUNK_BYTES: usize = 1024 * 1024;
+const DECODE_BUFFERS_PER_MATE: usize = 2;
 
 struct LocusOutput {
     path: PathBuf,
@@ -70,6 +76,69 @@ struct OutputRouter {
 struct FragmentRoutes {
     offsets: Vec<u32>,
     loci: Vec<LocusId>,
+}
+
+const NO_CANDIDATE: u32 = u32::MAX;
+const CANDIDATE_MIN_GROWTH: usize = 4096;
+
+/// Append-only candidate arena. Per-locus linked indices preserve input order
+/// without thousands of independently growing `Vec<Candidate>` allocations.
+struct LocusCandidateStore {
+    heads: Vec<u32>,
+    tails: Vec<u32>,
+    next: Vec<u32>,
+    candidates: Vec<Candidate>,
+}
+
+impl LocusCandidateStore {
+    fn new(locus_count: usize) -> Self {
+        Self {
+            heads: vec![NO_CANDIDATE; locus_count],
+            tails: vec![NO_CANDIDATE; locus_count],
+            next: Vec::new(),
+            candidates: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, locus: LocusId, candidate: Candidate) -> Result<(), String> {
+        if self.candidates.len() == self.candidates.capacity() {
+            let growth = (self.candidates.capacity() / 4).max(CANDIDATE_MIN_GROWTH);
+            self.candidates.reserve_exact(growth);
+        }
+        if self.next.len() == self.next.capacity() {
+            let growth = (self.next.capacity() / 4).max(CANDIDATE_MIN_GROWTH);
+            self.next.reserve_exact(growth);
+        }
+        let node = u32::try_from(self.candidates.len())
+            .map_err(|_| "too many UCE locus candidates".to_string())?;
+        let locus = locus as usize;
+        let tail = self.tails[locus];
+        if tail == NO_CANDIDATE {
+            self.heads[locus] = node;
+        } else {
+            self.next[tail as usize] = node;
+        }
+        self.tails[locus] = node;
+        self.next.push(NO_CANDIDATE);
+        self.candidates.push(candidate);
+        Ok(())
+    }
+
+    fn copy_locus(&self, locus: usize, output: &mut Vec<Candidate>) {
+        output.clear();
+        let mut node = self.heads[locus];
+        while node != NO_CANDIDATE {
+            let index = node as usize;
+            output.push(self.candidates[index]);
+            node = self.next[index];
+        }
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        (self.heads.capacity() + self.tails.capacity() + self.next.capacity())
+            * std::mem::size_of::<u32>()
+            + self.candidates.capacity() * std::mem::size_of::<Candidate>()
+    }
 }
 
 impl FragmentRoutes {
@@ -376,22 +445,148 @@ fn write_record(out: &mut impl Write, record: &FastxRecord) -> Result<(), String
     Ok(())
 }
 
+type DecodeMessage = Result<Option<Vec<u8>>, String>;
+
+/// Pull-based view over one bounded background decompressor. Two reusable
+/// chunks allow inflate to run ahead while keeping memory bounded.
+struct BackgroundReader {
+    filled: Option<Receiver<DecodeMessage>>,
+    empty: Option<SyncSender<Vec<u8>>>,
+    current: Vec<u8>,
+    offset: usize,
+    finished: bool,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl BackgroundReader {
+    fn open(path: &Path, mate: &str) -> Result<Self, String> {
+        let (filled_tx, filled_rx) = mpsc::sync_channel(DECODE_BUFFERS_PER_MATE);
+        let (empty_tx, empty_rx) = mpsc::sync_channel(DECODE_BUFFERS_PER_MATE);
+        for _ in 0..DECODE_BUFFERS_PER_MATE {
+            empty_tx
+                .send(vec![0_u8; DECODE_CHUNK_BYTES])
+                .map_err(|error| error.to_string())?;
+        }
+        let path = path.to_path_buf();
+        let worker = thread::Builder::new()
+            .name(format!("uce-decode-{mate}"))
+            .spawn(move || {
+                let mut input = match open_input(&path) {
+                    Ok(input) => input,
+                    Err(error) => {
+                        let _ = filled_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                while let Ok(mut buffer) = empty_rx.recv() {
+                    buffer.resize(DECODE_CHUNK_BYTES, 0);
+                    match input.read(&mut buffer) {
+                        Ok(0) => {
+                            let _ = filled_tx.send(Ok(None));
+                            return;
+                        }
+                        Ok(length) => {
+                            buffer.truncate(length);
+                            if filled_tx.send(Ok(Some(buffer))).is_err() {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = filled_tx.send(Err(error.to_string()));
+                            return;
+                        }
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            filled: Some(filled_rx),
+            empty: Some(empty_tx),
+            current: Vec::new(),
+            offset: 0,
+            finished: false,
+            worker: Some(worker),
+        })
+    }
+
+    fn next_chunk(&mut self) -> std::io::Result<bool> {
+        if !self.current.is_empty() {
+            let mut buffer = std::mem::take(&mut self.current);
+            buffer.clear();
+            if let Some(empty) = &self.empty {
+                let _ = empty.send(buffer);
+            }
+        }
+        let message = self
+            .filled
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("background decoder is closed"))?
+            .recv()
+            .map_err(|_| std::io::Error::other("background decoder stopped unexpectedly"))?;
+        match message {
+            Ok(Some(buffer)) => {
+                self.current = buffer;
+                self.offset = 0;
+                Ok(true)
+            }
+            Ok(None) => {
+                self.finished = true;
+                Ok(false)
+            }
+            Err(error) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        }
+    }
+}
+
+impl Read for BackgroundReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() || self.finished {
+            return Ok(0);
+        }
+        if self.offset == self.current.len() && !self.next_chunk()? {
+            return Ok(0);
+        }
+        let length = output.len().min(self.current.len() - self.offset);
+        output[..length].copy_from_slice(&self.current[self.offset..self.offset + length]);
+        self.offset += length;
+        Ok(length)
+    }
+}
+
+impl Drop for BackgroundReader {
+    fn drop(&mut self) {
+        self.filled.take();
+        self.empty.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 /// UCE-only FASTQ reader. Unlike the shared general-purpose reader, it fills
 /// caller-owned records so non-candidate fragments retain their allocations.
 struct FastqScratchReader {
-    input: BufReader<Box<dyn Read>>,
+    input: BufReader<BackgroundReader>,
 }
 
 impl FastqScratchReader {
-    fn open(path: &Path) -> Result<Self, String> {
+    fn open(path: &Path, mate: &str) -> Result<Self, String> {
         Ok(Self {
-            input: open_input(path).map_err(|e| e.to_string())?,
+            input: BufReader::with_capacity(
+                DECODE_CHUNK_BYTES,
+                BackgroundReader::open(path, mate)?,
+            ),
         })
     }
 
     fn read_line_into(&mut self, target: &mut Vec<u8>) -> Result<bool, String> {
         target.clear();
-        if self.input.read_until(b'\n', target).map_err(|e| e.to_string())? == 0 {
+        if self
+            .input
+            .read_until(b'\n', target)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
             return Ok(false);
         }
         while matches!(target.last(), Some(b'\n' | b'\r')) {
@@ -442,9 +637,7 @@ fn next_pair_into(
     let second_present = r2.next_record_into(second)?;
     match (first_present, second_present) {
         (false, false) => Ok(false),
-        (true, true) if paired_read_id(&first.header) == paired_read_id(&second.header) => {
-            Ok(true)
-        }
+        (true, true) if paired_read_id(&first.header) == paired_read_id(&second.header) => Ok(true),
         (true, true) => Err("paired input files contain mismatched read identifiers".to_string()),
         _ => Err("paired input files contain different numbers of records".to_string()),
     }
@@ -472,12 +665,18 @@ fn keep_linked_pair(orient1: u8, orient2: u8) -> bool {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct FastEvidence {
-    max_exact: u16,
     covered_bins: u64,
-    terminal_mask: u8,
+    max_exact: u16,
     left_extension: u16,
     right_extension: u16,
+    terminal_mask: u8,
     aligned_mates: u8,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MateEvidence {
+    best: Option<ExactSeed>,
+    orientation: u8,
 }
 
 fn add_exact_evidence(
@@ -542,16 +741,23 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
     )?;
     let index_seconds = index_started.elapsed().as_secs_f64();
     eprintln!(
-        "UCEFilter index: {} loci, {} positional anchors, k={}, run-k={} ({:.3}s)",
+        "UCEFilter index: {} loci, {} FM-index symbols, k={}, run-k={} ({:.3}s)",
         index.loci.len(),
-        index.anchor_entries(),
+        index.exact_index_symbols(),
         index.k,
         index.run_k,
         index_seconds
     );
     eprintln!("UCEFilter gzip backend: {}", gzip_backend_name());
-    let mut reader1 = FastqScratchReader::open(&config.read1)?;
-    let mut reader2 = FastqScratchReader::open(&config.read2)?;
+    if config.profile {
+        eprintln!(
+            "UCEFilter paired decode: 2 background workers, {} x {} KiB buffers per mate",
+            DECODE_BUFFERS_PER_MATE,
+            DECODE_CHUNK_BYTES / 1024,
+        );
+    }
+    let mut reader1 = FastqScratchReader::open(&config.read1, "r1")?;
+    let mut reader2 = FastqScratchReader::open(&config.read2, "r2")?;
     // Parse one complete paired record before replacing a prior result. This
     // catches malformed leading FASTQ records and paired-file mix-ups without
     // losing that fragment from the actual filtering pass.
@@ -559,7 +765,8 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
     let mut r1 = FastxRecord::default();
     let mut r2 = FastxRecord::default();
     let mut pending_pair = next_pair_into(&mut reader1, &mut reader2, &mut r1, &mut r2)?;
-    let initial_decode_seconds = initial_decode_started.map_or(0.0, |started| started.elapsed().as_secs_f64());
+    let initial_decode_seconds =
+        initial_decode_started.map_or(0.0, |started| started.elapsed().as_secs_f64());
     // Do not replace a previous result until the references and both inputs
     // have passed their initial open/index checks.
     fs::create_dir_all(&config.output).map_err(|e| e.to_string())?;
@@ -570,12 +777,13 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
     fs::create_dir_all(&filtered).map_err(|e| e.to_string())?;
     let memory_limit = config.memory_limit_mib.saturating_mul(1024 * 1024);
     let mut bank = FragmentBank::new(memory_limit, default_spill_path(&config.output));
-    let mut locus_candidates: Vec<Vec<Candidate>> = vec![Vec::new(); index.loci.len()];
+    let mut locus_candidates = LocusCandidateStore::new(index.loci.len());
     let mut coarse_counts = vec![0_u64; index.loci.len()];
     let mut ordinal = 0_u64;
     let mut recruited_loci = RecruitScratch::default();
-    let mut read1_evidence = ReadEvidenceScratch::default();
-    let mut read2_evidence = ReadEvidenceScratch::default();
+    let mut read_evidence = ReadEvidenceScratch::default();
+    let mut mate1_evidence = Vec::<MateEvidence>::new();
+    let mut evidence = Vec::<(LocusId, FastEvidence)>::new();
     let mut decode_seconds = initial_decode_seconds;
     let mut recruit_seconds = 0.0_f64;
     let mut evidence_seconds = 0.0_f64;
@@ -587,7 +795,12 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
             break;
         }
         let stage_started = config.profile.then(Instant::now);
-        let pair_available = if pending_pair { pending_pair = false; true } else { next_pair_into(&mut reader1, &mut reader2, &mut r1, &mut r2)? };
+        let pair_available = if pending_pair {
+            pending_pair = false;
+            true
+        } else {
+            next_pair_into(&mut reader1, &mut reader2, &mut r1, &mut r2)?
+        };
         if let Some(started) = stage_started {
             decode_seconds += started.elapsed().as_secs_f64();
         }
@@ -624,24 +837,31 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         index.read_evidence(
             &r1.sequence,
             loci,
-            &mut read1_evidence,
+            &mut read_evidence,
             config.profile.then_some(&mut index_profile),
         );
+        mate1_evidence.clear();
+        for i in 0..loci.len() {
+            mate1_evidence.push(MateEvidence {
+                best: read_evidence.best(i),
+                orientation: infer_orientation(collect_runs_stats(read_evidence.orientation(i))),
+            });
+        }
         index.read_evidence(
             &r2.sequence,
             loci,
-            &mut read2_evidence,
+            &mut read_evidence,
             config.profile.then_some(&mut index_profile),
         );
-        let mut evidence = Vec::new();
+        evidence.clear();
         for (i, &locus) in loci.iter().enumerate() {
-            let orient1 = infer_orientation(collect_runs_stats(read1_evidence.orientation(i)));
-            let orient2 = infer_orientation(collect_runs_stats(read2_evidence.orientation(i)));
-            if !keep_linked_pair(orient1, orient2) {
+            let mate1 = mate1_evidence[i];
+            let orient2 = infer_orientation(collect_runs_stats(read_evidence.orientation(i)));
+            if !keep_linked_pair(mate1.orientation, orient2) {
                 continue;
             }
             let mut fast = FastEvidence::default();
-            if let Some(seed) = read1_evidence.best(i) {
+            if let Some(seed) = mate1.best {
                 add_exact_evidence(
                     &index,
                     seed,
@@ -650,7 +870,7 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
                     &mut fast,
                 );
             }
-            if let Some(seed) = read2_evidence.best(i) {
+            if let Some(seed) = read_evidence.best(i) {
                 add_exact_evidence(
                     &index,
                     seed,
@@ -673,19 +893,21 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
                 r2: std::mem::take(&mut r2),
             })?;
             let locus_count = evidence.len().min(u16::MAX as usize) as u16;
-            for (locus, fast) in evidence {
-                locus_candidates[locus as usize].push(Candidate {
-                    fragment_id,
-                    ordinal,
-                    fragment_bases,
-                    max_exact: fast.max_exact,
-                    covered_bins: fast.covered_bins,
-                    terminal_mask: fast.terminal_mask,
-                    left_extension: fast.left_extension,
-                    right_extension: fast.right_extension,
-                    aligned_mates: fast.aligned_mates,
-                    locus_count,
-                });
+            for &(locus, fast) in &evidence {
+                locus_candidates.push(
+                    locus,
+                    Candidate {
+                        fragment_id,
+                        fragment_bases,
+                        covered_bins: fast.covered_bins,
+                        max_exact: fast.max_exact,
+                        left_extension: fast.left_extension,
+                        right_extension: fast.right_extension,
+                        locus_count,
+                        terminal_mask: fast.terminal_mask,
+                        aligned_mates: fast.aligned_mates,
+                    },
+                )?;
             }
         }
         if let Some(started) = stage_started {
@@ -697,6 +919,10 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         }
     }
     let scan_seconds = scan_started.elapsed().as_secs_f64();
+    let evidence_scratch_bytes = read_evidence.allocated_bytes()
+        + mate1_evidence.capacity() * std::mem::size_of::<MateEvidence>()
+        + evidence.capacity() * std::mem::size_of::<(LocusId, FastEvidence)>();
+    let candidate_memory_bytes = locus_candidates.allocated_bytes();
     let selection_started = Instant::now();
     let mut loci_written = 0_usize;
     let mut assignments = 0_usize;
@@ -723,10 +949,11 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         )
         .map_err(|e| e.to_string())?;
     }
-    for (locus_id, candidates) in locus_candidates.iter().enumerate() {
-        let locus = &index.loci[locus_id];
+    let mut candidates = Vec::<Candidate>::new();
+    for (locus_id, locus) in index.loci.iter().enumerate() {
+        locus_candidates.copy_locus(locus_id, &mut candidates);
         let decision = choose_legacy(
-            candidates,
+            &candidates,
             locus.effective_length,
             config.kmer_size,
             config.min_depth,
@@ -735,7 +962,7 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         );
         let (selected_ids, auto_details) = if config.selection_auto {
             let automatic = choose_auto(
-                candidates,
+                &candidates,
                 &decision,
                 locus.effective_length,
                 config.reference_is_contig,
@@ -824,6 +1051,8 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
             route_pairs.push((id, locus_id as LocusId));
         }
     }
+    drop(candidates);
+    drop(locus_candidates);
     summary.flush().map_err(|e| e.to_string())?;
     let routes = FragmentRoutes::from_pairs(bank.len(), &route_pairs)?;
     drop(route_pairs);
@@ -891,6 +1120,8 @@ pub fn run(config: &Config) -> Result<RunSummary, String> {
         loci_written,
         fragment_memory_bytes,
         fragment_spill_bytes,
+        evidence_scratch_bytes: evidence_scratch_bytes as u64,
+        candidate_memory_bytes: candidate_memory_bytes as u64,
         shadow_sampled_assignments,
         shadow_aligned_mates,
         shadow_seconds,
@@ -915,12 +1146,14 @@ pub fn output_exists(path: &Path) -> bool {
 mod tests {
     use super::{
         add_exact_evidence, evenly_sample, keep_linked_pair, next_pair_into, paired_read_id,
-        FastEvidence, FastqScratchReader, FragmentRoutes,
+        BackgroundReader, FastEvidence, FastqScratchReader, FragmentRoutes, LocusCandidateStore,
+        DECODE_CHUNK_BYTES,
     };
     use crate::index::UceIndex;
+    use crate::model::Candidate;
     use gm2_tools::fastx::FastxRecord;
     use std::fs;
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     #[test]
     fn paired_end_decision_preserves_legacy_linked_mate_semantics() {
@@ -942,6 +1175,37 @@ mod tests {
     }
 
     #[test]
+    fn background_reader_preserves_recycled_chunks_and_eof() {
+        let root = std::env::temp_dir().join(format!(
+            "uce-filter-background-reader-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("input.fastq");
+        let expected = (0..DECODE_CHUNK_BYTES * 3 + 17)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&path, &expected).unwrap();
+        let mut reader = BackgroundReader::open(&path, "test-bytes").unwrap();
+        let mut observed = Vec::new();
+        reader.read_to_end(&mut observed).unwrap();
+        assert_eq!(observed, expected);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn background_reader_propagates_open_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "uce-filter-missing-background-input-{}",
+            std::process::id()
+        ));
+        let mut reader = BackgroundReader::open(&path, "test-error").unwrap();
+        let mut observed = Vec::new();
+        assert!(reader.read_to_end(&mut observed).is_err());
+    }
+
+    #[test]
     fn mismatched_paired_fastq_identifiers_fail() {
         let root = std::env::temp_dir().join(format!("uce-filter-pair-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -950,8 +1214,8 @@ mod tests {
         let r2_path = root.join("r2.fq");
         fs::write(&r1_path, b"@read-a/1\nACGT\n+\n!!!!\n").unwrap();
         fs::write(&r2_path, b"@read-b/2\nACGT\n+\n!!!!\n").unwrap();
-        let mut reader1 = FastqScratchReader::open(&r1_path).unwrap();
-        let mut reader2 = FastqScratchReader::open(&r2_path).unwrap();
+        let mut reader1 = FastqScratchReader::open(&r1_path, "test-r1").unwrap();
+        let mut reader2 = FastqScratchReader::open(&r2_path, "test-r2").unwrap();
         let mut r1 = FastxRecord::default();
         let mut r2 = FastxRecord::default();
         assert!(next_pair_into(&mut reader1, &mut reader2, &mut r1, &mut r2).is_err());
@@ -973,6 +1237,68 @@ mod tests {
         assert!(routes.get(1).is_empty());
         assert_eq!(routes.get(2), &[7, 9]);
         assert_eq!(routes.get(3), &[1]);
+    }
+
+    #[test]
+    fn compact_candidate_store_preserves_per_locus_input_order() {
+        let candidate = |fragment_id| Candidate {
+            fragment_id,
+            fragment_bases: 300,
+            covered_bins: 1,
+            max_exact: 31,
+            left_extension: 0,
+            right_extension: 0,
+            locus_count: 1,
+            terminal_mask: 0,
+            aligned_mates: 1,
+        };
+        let mut store = LocusCandidateStore::new(3);
+        store.push(2, candidate(4)).unwrap();
+        store.push(0, candidate(5)).unwrap();
+        store.push(2, candidate(8)).unwrap();
+        store.push(1, candidate(9)).unwrap();
+        let mut scratch = Vec::new();
+        store.copy_locus(2, &mut scratch);
+        assert_eq!(
+            scratch
+                .iter()
+                .map(|value| value.fragment_id)
+                .collect::<Vec<_>>(),
+            vec![4, 8]
+        );
+        store.copy_locus(0, &mut scratch);
+        assert_eq!(
+            scratch
+                .iter()
+                .map(|value| value.fragment_id)
+                .collect::<Vec<_>>(),
+            vec![5]
+        );
+    }
+
+    #[test]
+    fn evidence_layout_remains_compact() {
+        assert!(std::mem::size_of::<FastEvidence>() <= 16);
+    }
+
+    #[test]
+    fn candidate_arena_limits_unused_capacity() {
+        let candidate = Candidate {
+            fragment_id: 0,
+            fragment_bases: 300,
+            covered_bins: 1,
+            max_exact: 31,
+            left_extension: 0,
+            right_extension: 0,
+            locus_count: 1,
+            terminal_mask: 0,
+            aligned_mates: 1,
+        };
+        let mut store = LocusCandidateStore::new(1);
+        for _ in 0..70_000 {
+            store.push(0, candidate).unwrap();
+        }
+        assert!(store.allocated_bytes() < 3 * 1024 * 1024);
     }
 
     #[test]
