@@ -353,48 +353,326 @@ fn base_symbol(base: u8) -> u8 {
     code(base).map_or(SEPARATOR, |value| value + 1)
 }
 
+/// A suffix-tree node.
+///
+/// The incoming edge is represented by the inclusive range `start..=end`.
+/// Leaves use `usize::MAX`, meaning their edge ends at the current global
+/// leaf end.
+#[derive(Clone, Copy)]
+struct SuffixTreeNode {
+    start: usize,
+    end: usize,
+    suffix_link: usize,
+    first_child: usize,
+}
+
+impl SuffixTreeNode {
+    fn root() -> Self {
+        Self {
+            start: 0,
+            end: 0,
+            suffix_link: 0,
+            first_child: usize::MAX,
+        }
+    }
+
+    fn new(start: usize, end: usize) -> Self {
+        Self {
+            start,
+            end,
+            suffix_link: 0,
+            first_child: usize::MAX,
+        }
+    }
+}
+
+/// Compact adjacency-list entry.
+///
+/// Children are stored in one contiguous vector rather than using a
+/// HashMap or separate allocation for every node.
+#[derive(Clone, Copy)]
+struct ChildLink {
+    child: usize,
+    next: usize,
+}
+
+/// Return the symbol at an augmented-text position.
+///
+/// Original bytes are mapped from 0..=255 to 1..=256. Position
+/// `text.len()` is a virtual sentinel with value zero, so it is:
+///
+/// - distinct from every byte;
+/// - lexicographically smaller than every byte;
+/// - not stored in a copied augmented buffer.
+#[inline]
+fn suffix_symbol(text: &[u8], position: usize) -> u16 {
+    if position == text.len() {
+        0
+    } else {
+        u16::from(text[position]) + 1
+    }
+}
+
+#[inline]
+fn suffix_edge_length(nodes: &[SuffixTreeNode], node: usize, leaf_end: usize) -> usize {
+    let end = if nodes[node].end == usize::MAX {
+        leaf_end
+    } else {
+        nodes[node].end
+    };
+
+    end - nodes[node].start + 1
+}
+
+/// Locate an outgoing edge by its first symbol.
+///
+/// The alphabet contains only 257 possible symbols, including the sentinel.
+/// Consequently, scanning the compact child list is bounded by a constant
+/// independent of the text length.
+fn find_child_link(
+    text: &[u8],
+    nodes: &[SuffixTreeNode],
+    links: &[ChildLink],
+    parent: usize,
+    symbol: u16,
+) -> usize {
+    let mut link = nodes[parent].first_child;
+
+    while link != usize::MAX {
+        let child = links[link].child;
+        let child_symbol = suffix_symbol(text, nodes[child].start);
+
+        if child_symbol == symbol {
+            return link;
+        }
+
+        link = links[link].next;
+    }
+
+    usize::MAX
+}
+
+fn add_child(
+    nodes: &mut [SuffixTreeNode],
+    links: &mut Vec<ChildLink>,
+    parent: usize,
+    child: usize,
+) {
+    let link = links.len();
+
+    links.push(ChildLink {
+        child,
+        next: nodes[parent].first_child,
+    });
+
+    nodes[parent].first_child = link;
+}
+
 fn build_suffix_array(text: &[u8]) -> Result<Vec<usize>, String> {
     if text.len() > u32::MAX as usize {
         return Err("locus FM-index text length exceeds u32".to_string());
     }
+
     let length = text.len();
-    let mut suffixes = (0..length).collect::<Vec<_>>();
-    let mut ranks = text.iter().map(|&symbol| symbol as i64).collect::<Vec<_>>();
-    let mut next_ranks = vec![0_i64; length];
-    let mut width = 1_usize;
-    while width < length {
-        suffixes.sort_unstable_by_key(|&position| {
-            (
-                ranks[position],
-                ranks.get(position + width).copied().unwrap_or(-1),
-            )
-        });
-        if let Some(&first) = suffixes.first() {
-            next_ranks[first] = 0;
-        }
-        for pair in suffixes.windows(2) {
-            let previous = pair[0];
-            let current = pair[1];
-            let previous_key = (
-                ranks[previous],
-                ranks.get(previous + width).copied().unwrap_or(-1),
-            );
-            let current_key = (
-                ranks[current],
-                ranks.get(current + width).copied().unwrap_or(-1),
-            );
-            next_ranks[current] = next_ranks[previous] + i64::from(previous_key != current_key);
-        }
-        std::mem::swap(&mut ranks, &mut next_ranks);
-        if suffixes
-            .last()
-            .is_some_and(|&position| ranks[position] as usize + 1 == length)
-        {
-            break;
-        }
-        width = width.saturating_mul(2);
+
+    if length == 0 {
+        return Ok(Vec::new());
     }
-    Ok(suffixes)
+
+    // Includes one virtual terminal symbol at position `length`.
+    let total_length = length
+        .checked_add(1)
+        .ok_or_else(|| "locus FM-index text length exceeds address space".to_string())?;
+
+    /*
+     * Build a compact suffix tree using Ukkonen's algorithm.
+     *
+     * Node zero is always the root. Each non-root node represents both:
+     *
+     * - a suffix-tree node;
+     * - the incoming edge from its parent.
+     *
+     * Edge strings are represented only by start/end positions.
+     */
+    let mut nodes = Vec::with_capacity(total_length);
+    let mut links = Vec::with_capacity(total_length);
+
+    nodes.push(SuffixTreeNode::root());
+
+    let root = 0_usize;
+
+    let mut active_node = root;
+    let mut active_edge = 0_usize;
+    let mut active_length = 0_usize;
+    let mut remaining_suffixes = 0_usize;
+    let mut leaf_end = 0_usize;
+
+    for position in 0..total_length {
+        leaf_end = position;
+        remaining_suffixes += 1;
+
+        // The most recently created internal node whose suffix link has
+        // not yet been assigned during this phase.
+        let mut last_internal = usize::MAX;
+
+        while remaining_suffixes > 0 {
+            if active_length == 0 {
+                active_edge = position;
+            }
+
+            let active_symbol = suffix_symbol(text, active_edge);
+            let edge_link = find_child_link(text, &nodes, &links, active_node, active_symbol);
+
+            if edge_link == usize::MAX {
+                /*
+                 * Rule 2: no outgoing edge begins with the current symbol.
+                 * Add a new leaf.
+                 */
+                let leaf = nodes.len();
+                nodes.push(SuffixTreeNode::new(position, usize::MAX));
+                add_child(&mut nodes, &mut links, active_node, leaf);
+
+                if last_internal != usize::MAX {
+                    nodes[last_internal].suffix_link = active_node;
+                    last_internal = usize::MAX;
+                }
+            } else {
+                let next = links[edge_link].child;
+                let edge_length = suffix_edge_length(&nodes, next, leaf_end);
+
+                /*
+                 * Skip/count trick: move over an entire edge rather than
+                 * comparing it one symbol at a time.
+                 */
+                if active_length >= edge_length {
+                    active_edge += edge_length;
+                    active_length -= edge_length;
+                    active_node = next;
+                    continue;
+                }
+
+                let next_symbol = suffix_symbol(text, nodes[next].start + active_length);
+                let current_symbol = suffix_symbol(text, position);
+
+                if next_symbol == current_symbol {
+                    /*
+                     * Rule 3: the current symbol is already present.
+                     * The current phase ends early.
+                     */
+                    if last_internal != usize::MAX && active_node != root {
+                        nodes[last_internal].suffix_link = active_node;
+                    }
+
+                    active_length += 1;
+                    break;
+                }
+
+                /*
+                 * Rule 2 with edge splitting.
+                 *
+                 * Existing:
+                 *
+                 * parent ---- next
+                 *
+                 * Becomes:
+                 *
+                 * parent ---- split ---- next
+                 *                 \
+                 *                  leaf
+                 */
+                let split_start = nodes[next].start;
+                let split_end = split_start + active_length - 1;
+
+                let split = nodes.len();
+                nodes.push(SuffixTreeNode::new(split_start, split_end));
+
+                // Replace parent -> next with parent -> split.
+                links[edge_link].child = split;
+
+                let leaf = nodes.len();
+                nodes.push(SuffixTreeNode::new(position, usize::MAX));
+                add_child(&mut nodes, &mut links, split, leaf);
+
+                // Shorten the beginning of the original edge and attach
+                // it below the new internal node.
+                nodes[next].start += active_length;
+                add_child(&mut nodes, &mut links, split, next);
+
+                if last_internal != usize::MAX {
+                    nodes[last_internal].suffix_link = split;
+                }
+
+                last_internal = split;
+            }
+
+            remaining_suffixes -= 1;
+
+            /*
+             * Move to the active point for the next pending suffix.
+             */
+            if active_node == root && active_length > 0 {
+                active_length -= 1;
+                active_edge = position + 1 - remaining_suffixes;
+            } else if active_node != root {
+                active_node = nodes[active_node].suffix_link;
+            }
+        }
+    }
+
+    /*
+     * A lexicographic depth-first traversal of suffix-tree leaves gives
+     * the suffix array.
+     *
+     * Use an explicit stack to avoid overflowing the call stack on highly
+     * repetitive input.
+     */
+    let mut suffix_array = Vec::with_capacity(length);
+    let mut stack = Vec::with_capacity(nodes.len().min(1024));
+
+    // Each stack entry is `(node, string_depth)`.
+    stack.push((root, 0_usize));
+
+    while let Some((node, depth)) = stack.pop() {
+        if nodes[node].first_child == usize::MAX {
+            if node != root {
+                let suffix_start = total_length - depth;
+
+                // Exclude the suffix containing only the virtual sentinel.
+                if suffix_start < length {
+                    suffix_array.push(suffix_start);
+                }
+            }
+
+            continue;
+        }
+
+        /*
+         * Child links are stored in insertion order. Sort each node's
+         * outgoing edges by their leading symbol before traversal.
+         *
+         * A suffix-tree node has at most 257 children for byte input.
+         */
+        let mut children = Vec::new();
+        let mut link = nodes[node].first_child;
+
+        while link != usize::MAX {
+            children.push(links[link].child);
+            link = links[link].next;
+        }
+
+        children.sort_unstable_by_key(|&child| suffix_symbol(text, nodes[child].start));
+
+        // The stack is LIFO, so push children in reverse order.
+        for child in children.into_iter().rev() {
+            let child_depth = depth + suffix_edge_length(&nodes, child, leaf_end);
+
+            stack.push((child, child_depth));
+        }
+    }
+
+    debug_assert_eq!(suffix_array.len(), length);
+
+    Ok(suffix_array)
 }
 
 #[cfg(test)]
