@@ -73,6 +73,88 @@ def path_size_bytes(path):
     return total
 
 
+def _cleanup_path_size(path):
+    """Measure a cleanup target without traversing or counting symlink targets."""
+    if os.path.islink(path):
+        return 0
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for root, directories, files in os.walk(path, followlinks=False):
+        directories[:] = [name for name in directories if not os.path.islink(os.path.join(root, name))]
+        for name in files:
+            candidate = os.path.join(root, name)
+            if os.path.islink(candidate):
+                continue
+            try:
+                total += os.path.getsize(candidate)
+            except OSError:
+                pass
+    return total
+
+
+def cleanup_intermediates(args, samples):
+    """Remove only reproducible workflow scratch data after a successful full run."""
+    output = os.path.abspath(args.o.strip())
+    if not os.path.isdir(output):
+        return
+    targets = []
+
+    def add(relative_path, reason):
+        candidate = os.path.abspath(os.path.join(output, relative_path))
+        if os.path.commonpath((output, candidate)) != output:
+            raise RuntimeError(f'Unsafe cleanup path outside output directory: {relative_path}')
+        targets.append((relative_path, candidate, reason))
+
+    is_mito = bool(getattr(args, 'is_mito_workflow', False))
+    if is_mito:
+        for sample in samples:
+            add(os.path.join(sample, 'filtered', 'mitochondrion.fq'), 'mito_finalize_complete')
+        add('.mito_adaptive', 'adaptive_final_output_copied')
+    else:
+        is_uce = args.assembly_mode == 'uce'
+        for sample in samples:
+            add(os.path.join(sample, 'filtered'), 'assembly_complete')
+            if is_uce:
+                add(os.path.join(sample, 'filtered_pe'), 'assembly_and_rescue_complete')
+            if getattr(args, 'uce_rescue_reads', False):
+                sample_dir = os.path.join(output, sample)
+                if not os.path.isdir(sample_dir):
+                    continue
+                for entry in os.scandir(sample_dir):
+                    if not entry.name.startswith('uce_rescue_round_') or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    round_relative = os.path.relpath(entry.path, output)
+                    for name in ('assembly_refs', 'terminal_baits'):
+                        add(os.path.join(round_relative, name), 'rescue_summary_written')
+                    for child in os.scandir(entry.path):
+                        if child.is_file(follow_symlinks=False) and child.name.startswith('filter_k') and child.name.endswith('.dict'):
+                            add(os.path.join(round_relative, child.name), 'rescue_summary_written')
+
+    manifest_path = os.path.join(output, 'cleanup_manifest.tsv')
+    with open(manifest_path, 'w', newline='') as handle:
+        writer = csv.writer(handle, delimiter='\t')
+        writer.writerow(('relative_path', 'bytes_before', 'reason', 'action', 'status'))
+        for relative_path, candidate, reason in targets:
+            if not os.path.lexists(candidate):
+                continue
+            size = _cleanup_path_size(candidate)
+            if os.path.islink(candidate):
+                writer.writerow((relative_path, size, reason, 'none', 'skipped_symlink'))
+                continue
+            try:
+                if os.path.isdir(candidate):
+                    shutil.rmtree(candidate)
+                    action = 'remove_tree'
+                else:
+                    os.remove(candidate)
+                    action = 'remove_file'
+                writer.writerow((relative_path, size, reason, action, 'removed'))
+            except OSError as error:
+                writer.writerow((relative_path, size, reason, 'none', f'failed: {error}'))
+                raise RuntimeError(f'Cleanup failed for {relative_path}: {error}') from error
+
+
 _ASSEMBLER_PROFILE_SUPPORT = {}
 
 
@@ -3396,6 +3478,8 @@ def execute_tasks(args, samples):
             return 0
         if getattr(args, 'is_mito_workflow', False) and getattr(args, 'mito_adaptive_stop', False):
             run_mito_adaptive(args, samples)
+            if getattr(args, 'cleanup_intermediates', False):
+                cleanup_intermediates(args, samples)
             return 0
         if do_profile:
             if len(commands) != 1:
@@ -3454,6 +3538,9 @@ def execute_tasks(args, samples):
         if do_stats:
             run_stats(args, samples)
 
+        if getattr(args, 'cleanup_intermediates', False):
+            cleanup_intermediates(args, samples)
+
     # 文件和外部工具报错都兜住，别甩一屏 traceback。
     except (OSError, ValueError, csv.Error, RuntimeError, subprocess.SubprocessError) as e:
         print(f'Error: {e}')
@@ -3492,6 +3579,7 @@ if __name__ == '__main__':
     group_io.add_argument('--mito-max-reads', default=320, type=int, help='Maximum adaptive input limit in approximately 1.05M paired-read blocks (default = 320)', metavar='INT')
     group_io.add_argument('--no-mito-adaptive-stop', dest='mito_adaptive_stop', action='store_false', default=True, help='Disable default staged mito adaptive stopping')
     group_io.add_argument('-o', help='Output directory', metavar='DIR', required=True)
+    group_io.add_argument('--cleanup-intermediates', action='store_true', default=False, help='After a successful complete workflow, remove reproducible filtered reads and rescue scratch data; write cleanup_manifest.tsv')
     group_io.add_argument('-p', default=1, help='Number of parallel processes', metavar='INT', type=int)
     group_io.add_argument('--gene-protein-reference', default='', help='Optional per-family protein FASTA directory; enables gene annotation', metavar='DIR')
     group_io.add_argument('--gene-miniprot', default='miniprot', help='miniprot executable for --gene-protein-reference', metavar='FILE')
@@ -3795,6 +3883,9 @@ if __name__ == '__main__':
             args.command = ('filter', 'refilter', 'assemble', 'combine', 'tree')
         else:
             args.command = ('filter', 'refilter', 'assemble', 'trim', 'combine', 'tree')
+
+    if args.cleanup_intermediates and not ({'filter', 'assemble'} <= set(args.command)):
+        parser.error('--cleanup-intermediates requires filter and assemble in the same invocation')
 
     if args.min_depth is not None:
         print('  Option --min-depth has been removed. Please use --depth-low-water-mark, --error-threshold or --min-coverage instead.')

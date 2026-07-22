@@ -21,6 +21,7 @@ cli/geneminer2 mito \
 ```
 
 `--mito-max-reads 320` caps adaptive input; `--no-mito-adaptive-stop` switches to one-pass filtering.
+`--cleanup-intermediates` is opt-in: only after final circular confirmation does it remove `filtered/mitochondrion.fq` and adaptive stage copies, while writing `cleanup_manifest.tsv`; the default retains all intermediates.
 
 ## Workflow
 

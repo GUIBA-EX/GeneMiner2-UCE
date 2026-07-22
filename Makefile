@@ -26,6 +26,7 @@ BUILD_TRIMED_BIN := cli/bin/build_trimed
 GM2_STATS_BIN := cli/bin/gm2_stats
 MITO_WORKFLOW_BIN := cli/bin/mito_workflow
 GENE_WORKFLOW_BIN := cli/bin/gene_workflow
+RAD_WORKFLOW_BIN := cli/bin/rad_workflow
 MARKER_PROFILE_BIN := cli/bin/marker_profile
 REPEAT_BIN := cli/bin/main_repeat
 RUST_CLI_BIN := cli/bin/geneminer2-rust
@@ -37,7 +38,7 @@ FILTER_HAXE_SOURCES := $(wildcard scripts/filter/*.h scripts/filter/*.hpp script
 
 .PHONY: build clean cython distclean haxe-filter rust-assembler
 
-build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(REPEAT_BIN) $(RUST_CLI_BIN)
+build: $(CONSENSUS_BIN) cli/bin/MainFilterNew $(REFILTER_BIN) $(UCE_FILTER_BIN) $(ORIGINAL_ASSEMBLER_BIN) $(ORIGINAL_RUST_ASSEMBLER_BIN) $(RUST_ASSEMBLER_BIN) $(POPULATION_BIN) $(ALIGNMENT_CLEAN_BIN) $(MERGE_SEQ_BIN) $(BUILD_TRIMED_BIN) $(GM2_STATS_BIN) $(MARKER_PROFILE_BIN) $(MITO_WORKFLOW_BIN) $(GENE_WORKFLOW_BIN) $(RAD_WORKFLOW_BIN) $(REPEAT_BIN) $(RUST_CLI_BIN)
 	cd cli && ln -sfn -r bin/geneminer2-rust geneminer2
 
 clean:
@@ -148,6 +149,10 @@ $(MITO_WORKFLOW_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
 $(GENE_WORKFLOW_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
 	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin gene_workflow
 	install rust/gm2_tools/target/release/gene_workflow $(GENE_WORKFLOW_BIN)
+
+$(RAD_WORKFLOW_BIN): $(TOOLS_RUST_SOURCES) | cli/bin
+	cargo build --release --manifest-path $(TOOLS_RUST_MANIFEST) --bin rad_workflow
+	install rust/gm2_tools/target/release/rad_workflow $(RAD_WORKFLOW_BIN)
 
 $(MARKER_PROFILE_BIN): rust/marker_profile/Cargo.toml rust/marker_profile/src/main.rs | cli/bin
 	cargo build --release --manifest-path rust/marker_profile/Cargo.toml

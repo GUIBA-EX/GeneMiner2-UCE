@@ -2,7 +2,7 @@
 
 [English](filter_EN.md) · [输出说明](../manual/ZH_CN/output.md) · [命令行指南](../manual/ZH_CN/command_line.md)
 
-MainFilter 是 GeneMiner2 的共同 reads 招募层。它用参考序列中的 k-mer 扫描原始 reads，把命中 read（或完整 paired-end fragment）分配到相应 locus，供后续 `refilter` 和组装使用。它不是比对器，也不直接判定 contig 正确性、marker 丰度或群体结构。
+MainFilter 是 GeneMiner2 的通用 reads 招募层。它用参考序列中的 k-mer 扫描原始 reads，把命中 read（或完整 paired-end fragment）分配到相应 locus，供后续 `refilter` 和组装使用。它不是比对器，也不直接判定 contig 正确性、marker 丰度或群体结构。默认 UCE 不使用本页的两步路径，而使用融合的 `ucefilter`；见 [Assembler](assembler_ZH.md)。
 
 ## 在工作流中的位置
 
@@ -18,7 +18,7 @@ FASTQ/FASTA + 每 locus 一个参考 FASTA
           filtered/ → assembler
 ```
 
-在 UCE 和 gene 工作流中，只要一对 reads 中任一 mate 命中，该 paired fragment 的两端都会保留。核心区命中可因此携带另一端的侧翼变异信息。profiling 只使用首次招募，不运行 `refilter`。
+在 `original`、gene 与 `--legacy-uce-filter` 路径中，只要一对 reads 中任一 mate 命中，该 paired fragment 的两端都会保留。核心区命中可因此携带另一端的侧翼变异信息。默认 UCE 的 paired-fragment 规则由 `ucefilter` 在同一次扫描中执行。profiling 只使用首次招募，不运行 `refilter`。
 
 ## 输入与参考
 

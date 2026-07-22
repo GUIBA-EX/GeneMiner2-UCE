@@ -22,6 +22,7 @@ GeneMiner2-UCE is a reference-guided short-read recovery toolkit for genome skim
 | Analyse variation across UCE samples | `population` | Cohort pseudo-reference, joint VCF, PCA, and ADMIXTURE inputs |
 | Recover nuclear gene-family candidates | `gene` | Family status, candidate FASTA, and cohort summaries |
 | Build a repeatome from short reads | `te` | Conservative repeat library, annotation, and sample RPM |
+| Supplement ipyrad RAD loci with WGS reads | `rad` / `rad-validate` | Independent-arm recovery, status table, and validated strict matrix |
 
 `original` uses deterministic `original-rust` by default. UCE always uses Rust `ucefilter` and `uce-rust`; it does not fall back to Python.
 
@@ -53,6 +54,22 @@ cli/geneminer2 filter assemble \
   -f samples.tsv -r references -o output -p 8 \
   --assembly-mode uce --uce-rescue-reads
 ```
+
+### The two UCE read routes
+
+Default UCE does **not** use the generic two-stage `MainFilter + refilter` route (often shortened to **main + re**). `ucefilter` fuses broad recruitment, paired-fragment retention, orientation/exact-match evidence, and per-locus depth/position selection into one scan of the original FASTQ:
+
+```text
+raw paired FASTQ
+  → ucefilter (recruitment + selection; fused main + re roles)
+  → <sample>/filtered/
+  → uce-rust primary assembly
+  → contigs + uce_assembly_summary.csv
+```
+
+Default UCE therefore uses `filter assemble`, has no separate `refilter` step, and does not write `filtered_pe/`. `--legacy-uce-filter` restores the compatibility route, `MainFilter → filtered_pe/ → refilter → filtered/ → uce-rust`; use it only for comparison or diagnosis.
+
+`--uce-rescue-reads` starts only after a primary contig has been accepted. Round 1 recruits and reassembles with the original reference plus accepted contigs; round 2 uses terminal windows only for loci still growing. Every round is audited per locus, and unsupported sides or whole contigs revert. Rescue therefore extends an established primary result; it never reference-fills a gap.
 
 Inspect these outputs first:
 
@@ -89,6 +106,22 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 
 `mito` is limited to ordinary single circular animal mitochondrial genomes; it is not intended for multipartite, strongly rearranged, or complex plant/fungal mitochondria. `profiling` measures reference compatibility, not unique taxonomic identification or abundance.
 
+## RAD: supplement an existing RAD matrix with WGS
+
+The RAD route adds only **new WGS samples missing from an ipyrad `.loci` matrix**. R1 and R2 remain independent restriction-site arms: the workflow does not infer their unsequenced insert, and WGS recovery alone is not direct proof of restriction-site allele dropout.
+
+The conservative route is to build a probe from a completed `.loci`, recover WGS arms, then validate them separately:
+
+```bash
+cli/geneminer2 rad-probe --ipyrad-loci assembly.loci -o rad_probe
+cli/geneminer2 rad --rad-probe rad_probe/rad_reference \
+  -f wgs_samples.tsv -o rad_out -p 8
+cli/geneminer2 rad-validate --rad-probe rad_probe/rad_reference \
+  --rad-recovery rad_out/rad_recovery -o rad_validate_out
+```
+
+`rad-probe --ipyrad-params params.txt` can run ipyrad steps 1--7. `--rad-denovo` accepts already-demultiplexed paired RAD reads and makes a conservative candidate probe; it is not a replacement for full ipyrad clustering. `rad-validate` admits a WGS sample only when both arms pass coverage, identity, and cross-locus competition checks. See the [RAD guide](docs/rad_EN.md) for inputs, parameters, outputs, and interpretation.
+
 ## Documentation
 
 | Task | Document |
@@ -102,6 +135,7 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 | Nuclear gene families | [Gene](docs/gene_EN.md) |
 | Repeatome | [TE / repeatome](docs/te_EN.md) |
 | Mitochondria | [Mito](docs/mitochondria_EN.md) |
+| Supplement ipyrad RAD loci with WGS | [RAD](docs/rad_EN.md) |
 | Performance design and scope | [MainFilter performance note](docs/development/mainfilter-performance.md) |
 
 Add `--workflow-profile` to write `workflow_profile.tsv` at the output root. Supported Rust assemblers also write per-sample `assembly_profile.tsv`. Both record timing and I/O only; neither changes results.

@@ -21,6 +21,7 @@ cli/geneminer2 mito \
 ```
 
 `--mito-max-reads 320` 限制自适应流程的最大输入；`--no-mito-adaptive-stop` 改为一次性过滤。
+`--cleanup-intermediates` 仅在最终闭环确认后删除 `filtered/mitochondrion.fq` 与自适应 stage 副本，并在输出根目录留下 `cleanup_manifest.tsv`；默认不删除。
 
 ## 流程
 

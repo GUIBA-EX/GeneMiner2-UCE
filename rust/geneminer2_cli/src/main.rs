@@ -29,6 +29,9 @@ const COMMANDS: &[&str] = &[
     "gene-tree",
     "profiling",
     "mito",
+    "rad",
+    "rad-probe",
+    "rad-validate",
 ];
 const FLAG_OPTIONS: &[&str] = &[
     "--uce-alignment-shadow",
@@ -48,6 +51,7 @@ const FLAG_OPTIONS: &[&str] = &[
     "--reuse-reference-cache",
     "--legacy-uce-filter",
     "--workflow-profile",
+    "--rad-denovo",
 ];
 const VALUE_OPTIONS: &[&str] = &[
     "-f",
@@ -193,6 +197,22 @@ const VALUE_OPTIONS: &[&str] = &[
     "--uce-backbone-lookahead",
     "--min-depth",
     "--max-depth",
+    "--ipyrad-loci",
+    "--rad-min-arm-breadth",
+    "--rad-probe",
+    "--ipyrad-params",
+    "--ipyrad-executable",
+    "--ipyrad-steps",
+    "--rad-overhang",
+    "--rad-overhang-r2",
+    "--rad-kmer",
+    "--rad-min-count",
+    "--rad-min-samples",
+    "--rad-min-length",
+    "--rad-recovery",
+    "--rad-validate-min-identity",
+    "--rad-validate-min-breadth",
+    "--rad-validate-min-delta",
 ];
 
 #[derive(Clone, Debug)]
@@ -452,6 +472,49 @@ fn read_samples(path: &str, output: &Path) -> Result<Vec<Sample>, String> {
     }
     if samples.is_empty() {
         return Err("Sample list is empty or invalid".into());
+    }
+    Ok(samples)
+}
+
+fn read_rad_samples(path: &str) -> Result<Vec<Sample>, String> {
+    let file = fs::File::open(path)
+        .map_err(|e| format!("Unable to read RAD sample list '{path}': {e}"))?;
+    let mut samples = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
+    for (index, line) in io::BufReader::new(file).lines().enumerate() {
+        let line = line.map_err(|e| e.to_string())?;
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() < 3 || fields[1].is_empty() || fields[2].is_empty() {
+            return Err(format!(
+                "RAD sample row {} must be: sample<TAB>R1.fastq<TAB>R2.fastq",
+                index + 1
+            ));
+        }
+        let name = sample_name(fields[0]);
+        if name.is_empty() {
+            return Err(format!("Invalid RAD sample name '{}'", fields[0]));
+        }
+        if !names.insert(name.clone()) {
+            return Err(format!(
+                "Duplicate RAD sample name after normalization: {name}"
+            ));
+        }
+        for read in [fields[1], fields[2]] {
+            if !Path::new(read).is_file() {
+                return Err(format!("RAD read file does not exist: {read}"));
+            }
+        }
+        samples.push(Sample {
+            name,
+            read1: fields[1].to_owned(),
+            read2: Some(fields[2].to_owned()),
+        });
+    }
+    if samples.is_empty() {
+        return Err("RAD sample list has no paired reads".into());
     }
     Ok(samples)
 }
@@ -2428,6 +2491,324 @@ fn execute_mito_single_stage(
     }
 }
 
+fn inferred_ipyrad_loci(params: &Path) -> Result<PathBuf, String> {
+    let text = fs::read_to_string(params)
+        .map_err(|e| format!("Unable to read ipyrad params '{}': {e}", params.display()))?;
+    let values = text
+        .lines()
+        .filter_map(|line| line.split("##").next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if values.len() < 2 {
+        return Err("ipyrad params must contain assembly_name [0] and project_dir [1]".into());
+    }
+    let project = PathBuf::from(&values[1]);
+    let project = if project.is_absolute() {
+        project
+    } else {
+        params
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(project)
+    };
+    Ok(project
+        .join(format!("{}_outfiles", values[0]))
+        .join(format!("{}.loci", values[0])))
+}
+
+fn rad_loci_input(opt: &Options) -> Result<(PathBuf, String), String> {
+    let supplied = value(&opt.raw, &["--ipyrad-loci"], "")?;
+    let params = value(&opt.raw, &["--ipyrad-params"], "")?;
+    if !params.is_empty() {
+        let params_path = PathBuf::from(&params);
+        if !params_path.is_file() {
+            return Err("--ipyrad-params must name a readable params file".into());
+        }
+        let executable = value(&opt.raw, &["--ipyrad-executable"], "ipyrad")?;
+        let steps = value(&opt.raw, &["--ipyrad-steps"], "1234567")?;
+        if steps.is_empty()
+            || !steps
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() && byte != b'0')
+        {
+            return Err("--ipyrad-steps must be a non-empty sequence of steps 1-7".into());
+        }
+        if !steps.bytes().all(|byte| matches!(byte, b'1'..=b'7')) {
+            return Err("--ipyrad-steps may contain only digits 1 through 7".into());
+        }
+        let status = Command::new(&executable)
+            .arg("-p")
+            .arg(&params)
+            .arg("-s")
+            .arg(&steps)
+            .status()
+            .map_err(|e| format!("Unable to start ipyrad executable '{executable}': {e}"))?;
+        if !status.success() {
+            return Err(format!("ipyrad assembly failed with status {status}"));
+        }
+        let loci = if supplied.is_empty() {
+            inferred_ipyrad_loci(&params_path)?
+        } else {
+            PathBuf::from(supplied)
+        };
+        if !loci.is_file() {
+            return Err(format!(
+                "ipyrad completed but no .loci file was found at '{}'; pass --ipyrad-loci explicitly if its output was relocated",
+                loci.display()
+            ));
+        }
+        return Ok((loci, format!("ipyrad params={params} steps={steps}")));
+    }
+    let loci = PathBuf::from(supplied);
+    if !loci.is_file() {
+        return Err("provide a readable --ipyrad-loci FILE, or --ipyrad-params FILE to assemble raw RAD reads with ipyrad".into());
+    }
+    Ok((loci, "existing ipyrad .loci".into()))
+}
+
+fn build_rad_reference(opt: &Options, bins: &Path, reference: &Path) -> Result<PathBuf, String> {
+    let (loci, source) = rad_loci_input(opt)?;
+    run(
+        bins,
+        "rad_workflow",
+        &[
+            "reference".into(),
+            "--loci".into(),
+            loci.display().to_string(),
+            "--out".into(),
+            reference.display().to_string(),
+        ],
+    )?;
+    fs::write(
+        reference.join("PROVENANCE.txt"),
+        format!("source\t{source}\nloci\t{}\n", loci.display()),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(reference.to_path_buf())
+}
+
+fn execute_rad_probe(opt: &Options, bins: &Path) -> Result<(), String> {
+    if opt.commands != ["rad-probe"] {
+        return Err("rad-probe cannot be combined with other subcommands".into());
+    }
+    let root = Path::new(&opt.output);
+    fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let reference = root.join("rad_reference");
+    if flag(&opt.raw, "--rad-denovo")? {
+        if !value(&opt.raw, &["--ipyrad-loci", "--ipyrad-params"], "")?.is_empty() {
+            return Err(
+                "--rad-denovo cannot be combined with --ipyrad-loci or --ipyrad-params".into(),
+            );
+        }
+        if opt.samples.is_empty() {
+            return Err("rad-probe --rad-denovo requires -f paired_rad_samples.tsv".into());
+        }
+        let samples = read_rad_samples(&opt.samples)?;
+        let mut args = vec![
+            "denovo".into(),
+            "--out".into(),
+            reference.display().to_string(),
+        ];
+        for sample in &samples {
+            args.extend([
+                "--sample".into(),
+                sample.name.clone(),
+                "--read1".into(),
+                sample.read1.clone(),
+                "--read2".into(),
+                sample.read2.clone().expect("paired RAD samples validated"),
+            ]);
+        }
+        let options = [
+            ("--rad-overhang", "--overhang"),
+            ("--rad-overhang-r2", "--overhang-r2"),
+            ("--rad-kmer", "--kmer"),
+            ("--rad-min-count", "--min-count"),
+            ("--rad-min-samples", "--min-samples"),
+            ("--rad-min-length", "--min-length"),
+        ];
+        for (source, target) in options {
+            if let Some(value) = optional_value(&opt.raw, &[source])? {
+                args.extend([target.into(), value]);
+            }
+        }
+        run(bins, "rad_workflow", &args)?;
+        fs::write(
+            reference.join("PROVENANCE.txt"),
+            "source\tdenovo_candidate_probe\nmode\tcanonical_solid_kmer_paired_arms\n",
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        if !opt.samples.is_empty() {
+            return Err("rad-probe uses no -f unless --rad-denovo is selected".into());
+        }
+        build_rad_reference(opt, bins, &reference)?;
+    }
+    Ok(())
+}
+
+fn execute_rad_validate(opt: &Options, bins: &Path) -> Result<(), String> {
+    if opt.commands != ["rad-validate"] {
+        return Err("rad-validate cannot be combined with other subcommands".into());
+    }
+    if !opt.samples.is_empty() {
+        return Err("rad-validate discovers samples from --rad-recovery; do not pass -f".into());
+    }
+    let reference = value(&opt.raw, &["--rad-probe"], "")?;
+    if reference.is_empty() || !Path::new(&reference).join("arms").is_dir() {
+        return Err("rad-validate requires --rad-probe DIR containing arms/".into());
+    }
+    let recovery = value(&opt.raw, &["--rad-recovery"], "")?;
+    if recovery.is_empty() || !Path::new(&recovery).is_dir() {
+        return Err("rad-validate requires --rad-recovery DIR from a completed rad run".into());
+    }
+    let mut args = vec![
+        "validate".into(),
+        "--reference".into(),
+        reference,
+        "--recovery".into(),
+        recovery,
+        "--out".into(),
+        Path::new(&opt.output)
+            .join("rad_validated")
+            .display()
+            .to_string(),
+    ];
+    for (source, target) in [
+        ("--rad-validate-min-identity", "--min-identity"),
+        ("--rad-validate-min-breadth", "--min-breadth"),
+        ("--rad-validate-min-delta", "--min-delta"),
+    ] {
+        if let Some(value) = optional_value(&opt.raw, &[source])? {
+            args.extend([target.into(), value]);
+        }
+    }
+    run(bins, "rad_workflow", &args)
+}
+
+fn execute_rad(opt: &Options, bins: &Path) -> Result<(), String> {
+    if opt.commands != ["rad"] {
+        return Err(
+            "rad is a complete workflow and cannot be combined with other subcommands".into(),
+        );
+    }
+    let implementation = value(&opt.raw, &["--assembler-implementation"], "auto")?;
+    if !matches!(
+        implementation.as_str(),
+        "auto" | "original" | "original-rust"
+    ) {
+        return Err(
+            "rad requires --assembler-implementation auto, original, or original-rust".into(),
+        );
+    }
+    let min_arm_breadth = value(&opt.raw, &["--rad-min-arm-breadth"], "0.80")?;
+    let breadth = min_arm_breadth
+        .parse::<f64>()
+        .map_err(|_| "--rad-min-arm-breadth must be a number")?;
+    if !(0.0..=1.0).contains(&breadth) {
+        return Err("--rad-min-arm-breadth must be in [0, 1]".into());
+    }
+    let root = Path::new(&opt.output);
+    fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let provided_reference = value(&opt.raw, &["--rad-probe"], "")?;
+    if !provided_reference.is_empty()
+        && (!value(&opt.raw, &["--ipyrad-loci"], "")?.is_empty()
+            || !value(&opt.raw, &["--ipyrad-params"], "")?.is_empty())
+    {
+        return Err("rad accepts either --rad-probe or an ipyrad input, not both".into());
+    }
+    let reference = if provided_reference.is_empty() {
+        build_rad_reference(opt, bins, &root.join("rad_reference"))?
+    } else {
+        let path = PathBuf::from(provided_reference);
+        if !path.join("arms").is_dir() {
+            return Err("--rad-probe must name a rad_reference directory containing arms/".into());
+        }
+        path
+    };
+    let recovery = root.join("rad_recovery");
+    fs::create_dir_all(&recovery).map_err(|e| e.to_string())?;
+    let samples = read_samples(&opt.samples, &recovery)?;
+    let mut stage = opt.clone();
+    stage.reference = reference.join("arms").display().to_string();
+    stage.output = recovery.display().to_string();
+    stage.assembly_mode = "original".into();
+    stage.commands = vec!["filter".into(), "refilter".into(), "assemble".into()];
+    let dictionary = recovery.join(format!("rad_kmer_dict_k{}.dict", stage.kf));
+    run(
+        bins,
+        "MainFilterNew",
+        &[
+            "-r".into(),
+            stage.reference.clone(),
+            "-o".into(),
+            stage.output.clone(),
+            "-kf".into(),
+            stage.kf.clone(),
+            "-s".into(),
+            stage.step.clone(),
+            "-gr".into(),
+            "-lkd".into(),
+            dictionary.display().to_string(),
+            "-m".into(),
+            "2".into(),
+        ],
+    )?;
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    let pending = Arc::new(Mutex::new(samples.clone().into_iter()));
+    let mut handles = Vec::new();
+    for _ in 0..stage.workers.min(samples.len()).max(1) {
+        let pending = Arc::clone(&pending);
+        let failures = Arc::clone(&failures);
+        let stage = stage.clone();
+        let bins = bins.to_path_buf();
+        let dictionary = dictionary.clone();
+        handles.push(thread::spawn(move || loop {
+            let Some(sample) = pending.lock().expect("rad sample queue poisoned").next() else {
+                break;
+            };
+            if let Err(error) = execute_gene(&stage, &bins, &sample, &dictionary, None) {
+                failures
+                    .lock()
+                    .expect("rad failures poisoned")
+                    .push(format!("{}: {error}", sample.name));
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().map_err(|_| "Rust rad worker panicked")?;
+    }
+    let failures = failures.lock().map_err(|_| "rad failures poisoned")?;
+    if !failures.is_empty() {
+        return Err(format!(
+            "{} RAD sample(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ));
+    }
+    let mut finalize = vec![
+        "finalize".into(),
+        "--reference".into(),
+        reference.display().to_string(),
+        "--recovery".into(),
+        recovery.display().to_string(),
+        "--out".into(),
+        root.join("rad_matrix").display().to_string(),
+        "--min-arm-breadth".into(),
+        min_arm_breadth,
+    ];
+    for sample in &samples {
+        finalize.extend(["--sample".into(), sample.name.clone()]);
+    }
+    run(bins, "rad_workflow", &finalize)?;
+    if stage.cleanup_intermediates {
+        cleanup_native_intermediates(&stage, &samples)?;
+    }
+    Ok(())
+}
+
 fn execute_mito(opt: &Options, bins: &Path, samples: &[Sample]) -> Result<(), String> {
     if opt.commands != ["mito"] {
         return Err(
@@ -3872,6 +4253,9 @@ fn execute_native(opt: Options) -> Result<(), String> {
         "gene-tree",
         "profiling",
         "mito",
+        "rad",
+        "rad-probe",
+        "rad-validate",
     ];
     if opt.commands.len() > 1
         && opt
@@ -3896,6 +4280,18 @@ fn execute_native(opt: Options) -> Result<(), String> {
         }
         let samples = read_samples(&opt.samples, Path::new(&opt.output))?;
         return execute_mito(&opt, &bins, &samples);
+    }
+    if opt.commands == ["rad-probe"] {
+        return execute_rad_probe(&opt, &bins);
+    }
+    if opt.commands == ["rad-validate"] {
+        return execute_rad_validate(&opt, &bins);
+    }
+    if opt.commands == ["rad"] {
+        if opt.samples.is_empty() {
+            return Err("-f is required for rad".into());
+        }
+        return execute_rad(&opt, &bins);
     }
     if opt.commands == ["profiling"] {
         if opt.samples.is_empty() {

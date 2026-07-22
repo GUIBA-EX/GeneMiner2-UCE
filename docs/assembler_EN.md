@@ -26,7 +26,21 @@ cli/geneminer2 -f samples.tsv -r references -o output -p 8 \
 
 `original-rust` can reuse a versioned binary reference-k-mer cache with `--reuse-reference-cache`.
 
-## UCE workflow and QC
+## UCE read routes: `ucefilter` and main + re
+
+The default UCE route is:
+
+```text
+raw paired FASTQ → ucefilter → filtered/ → uce-rust → contig
+```
+
+`ucefilter` is the UCE-specific fused read stage. In one scan of the original FASTQ it performs broad recruitment, complete paired-fragment retention, orientation and maximum-exact-match evidence, and per-locus depth/position selection. It therefore replaces the generic `MainFilter → filtered_pe/ → refilter → filtered/` (**main + re**) route for default UCE. Use `filter assemble`; a separate `refilter` stage is neither needed nor valid afterwards.
+
+Only `--legacy-uce-filter` restores the main + re compatibility route, chiefly for historical comparison or diagnosis. There `filtered_pe/` is broad recruitment and `filtered/` is the assembly input. Default `ucefilter` writes `filtered/` directly and does not create `filtered_pe/`.
+
+`--uce-rescue-reads` starts only after primary assembly has accepted contigs. Round 1 recruits with original references plus accepted contigs; round 2 uses terminal windows only for loci still growing. Every round must retain the old contig and is audited for per-side extension length, breadth, gap, independent fragments, core-boundary bridges, and unique-read density; unsupported sides or loci revert. Rescue is constrained extension of a primary result, never reference gap filling.
+
+## UCE selection, assembly, and QC
 
 UCE mode uses the fused Rust `ucefilter` by default. Rolling-k-mer recruitment, run-k orientation verification, maximum-exact-match evidence, and adaptive per-locus selection are completed during one scan of the original reads, followed by direct output to `filtered/`. Weak evidence is first removed with the existing dynamic exact-match threshold. Reservoir reduction is bypassed when a locus has fewer than 512 candidates, estimated depth at most 160x, or exact seeds spanning fewer than 48 of 64 reference bins. A saturated locus retains at least 60% of its eligible core with reference-position diversity. Reads crossing bait or contig edges are stratified by overhang length so that a small set at each length preserves the overlap ladder from core to flank. It creates neither GM2 nor per-locus duplicated candidate FASTQ; each complete PE fragment is stored once and selected atomically. Parallelism follows GeneMiner2's sample-level scheduling, while each sample runs recruitment, selection, assembly, and rescue single-threaded. The `backbone` strategy makes one bounded look-ahead decision at each bubble, commits the winning branch, and does not backtrack. `--uce-rescue-reads` borrows the core baiting-and-iterative-mapping idea from MITObim, uses fixed k=21 for rescue assembly, and is bounded to at most two rounds by default. Round one uses accepted contigs plus original references; round two includes only loci that were still growing and recruits with terminal windows only. The previous contig must remain intact. Each added side independently requires at least 30 bp, 85% breadth, a maximum 30-bp gap, two independent fragments, and one fragment bridging the frozen-core boundary. A failed side is trimmed alone; failed or lower-unique-read-density loci revert individually.
 
