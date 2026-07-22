@@ -88,8 +88,8 @@ def _cleanup_path_size(path):
                 continue
             try:
                 total += os.path.getsize(candidate)
-            except OSError:
-                pass
+            except OSError as exc:
+                print(f"Warning: failed to stat '{candidate}' during cleanup size calculation: {exc}", file=sys.stderr)
     return total
 
 
