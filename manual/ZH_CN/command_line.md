@@ -10,7 +10,6 @@ GeneMiner2-UCE 是面向 UCE 和其他系统发育标记的命令行流程。本
 
 - C/C++ 编译器和 [zlib](https://zlib.net/)；
 - [Rust 和 Cargo](https://www.rust-lang.org/tools/install/)；
-- Python 3.11、Cython、PyInstaller、Biopython、NumPy、SciPy、pandas、matplotlib 和 seaborn。
 
 Rust/Cargo 是当前完整构建的必需依赖，用于编译主 reads 过滤器、二次过滤器、assembler、population 以及 alignment cleanup、sequence merge、reference trimming 和 UCE statistics 工具。Haxe 源码仅作为主过滤器的兼容实现保留，不能替代完整 Rust 构建。
 
@@ -18,15 +17,6 @@ Ubuntu 可先安装系统依赖：
 
 ```bash
 sudo apt install build-essential zlib1g zlib1g-dev
-```
-
-然后创建 Python 环境：
-
-```bash
-conda create -c conda-forge -n geneminer \
-  python=3.11 numpy=2.1.3 biopython cython matplotlib \
-  pandas seaborn pyinstaller scipy setuptools wheel
-conda activate geneminer
 ```
 
 ### 1.2 运行时依赖
@@ -268,7 +258,7 @@ cli/geneminer2 stats \
 | `-sb, --soft-boundary VALUE` | 软边界：整数、`auto` 或 `unlimited`；默认 `auto` |
 | `-i, --search-depth INT` | 搜索深度，默认 `4096` |
 | `--min-coverage INT` | contig 最低 read depth，默认 `0` |
-| `--assembler-implementation MODE` | `auto`（默认）在 original 模式使用 `original-rust`，在 uce 模式使用 `uce-rust`；`original` 选择上游 Python；`original-rust` 选择单线程、确定性的 Rust 原版兼容实现；`original` 和 `original-rust` 仅用于 original；uce 不再回退 Python |
+| `--assembler-implementation MODE` | `auto`（默认）在 original 模式使用 `original-rust`，在 uce 模式使用 `uce-rust`；`original` 与 `original-rust` 均使用单线程、确定性的 Rust 原版兼容实现；uce 不会回退至其他实现 |
 | `--assembler-read-chunk-size INT` | Rust assembler 每批读取的 reads 数，默认 `8192` |
 | `--assembler-kmer-count-threads INT` | 每个 locus 的 k-mer 排序和计数线程；默认 `0`，表示自动分配 |
 | `--assembler-graph-format MODE` | 可选组装图输出：`none`（默认）、`gfa`、`dot` 或 `both` |

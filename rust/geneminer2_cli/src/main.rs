@@ -1461,8 +1461,7 @@ fn execute_gene(
         let implementation = value(&opt.raw, &["--assembler-implementation"], "auto")?;
         let binary =
             match implementation.as_str() {
-                "auto" | "original-rust" => "main_assembler-original-rust",
-                "original" => "main_assembler-original",
+                "auto" | "original" | "original-rust" => "main_assembler-original-rust",
                 "uce-rust" => "main_assembler-rust",
                 _ => return Err(
                     "--assembler-implementation must be auto, uce-rust, original, or original-rust"

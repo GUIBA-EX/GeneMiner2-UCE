@@ -10,7 +10,6 @@ A complete build requires:
 
 - a C/C++ compiler and [zlib](https://zlib.net/);
 - [Rust and Cargo](https://www.rust-lang.org/tools/install/);
-- Python 3.11, Cython, PyInstaller, Biopython, NumPy, SciPy, pandas, matplotlib, and seaborn.
 
 Rust/Cargo is required for the complete current build, including the primary read filter, secondary filter, assembler, population workflow, alignment cleanup, sequence merging, reference trimming, and UCE statistics. The Haxe source remains available only as a compatible implementation of the primary filter; it does not replace the complete Rust build.
 
@@ -18,15 +17,6 @@ On Ubuntu, first install the system dependencies:
 
 ```bash
 sudo apt install build-essential zlib1g zlib1g-dev
-```
-
-Then create the Python environment:
-
-```bash
-conda create -c conda-forge -n geneminer \
-  python=3.11 numpy=2.1.3 biopython cython matplotlib \
-  pandas seaborn pyinstaller scipy setuptools wheel
-conda activate geneminer
 ```
 
 ### 1.2 Runtime dependencies
@@ -268,7 +258,7 @@ The tables below list the main public options and current defaults. Run `cli/gen
 | `-sb, --soft-boundary VALUE` | Integer, `auto`, or `unlimited`; default `auto` |
 | `-i, --search-depth INT` | Search depth; default `4096` |
 | `--min-coverage INT` | Minimum contig read depth; default `0` |
-| `--assembler-implementation MODE` | `auto` (default) uses `original-rust` in original mode and `uce-rust` in UCE mode; `uce-rust` selects the UCE-oriented Rust assembler; `original` selects upstream Python; `original-rust` selects the deterministic single-thread Rust compatibility implementation; `original` and `original-rust` are original-only; UCE never falls back to Python |
+| `--assembler-implementation MODE` | `auto` (default) uses `original-rust` in original mode and `uce-rust` in UCE mode; `uce-rust` selects the UCE-oriented Rust assembler; `original` and `original-rust` use the deterministic Rust compatibility implementation; UCE never falls back to another implementation |
 | `--assembler-read-chunk-size INT` | Reads loaded per Rust assembler batch; default `8192` |
 | `--assembler-kmer-count-threads INT` | K-mer sorting/counting workers per locus; default `0` selects automatically |
 | `--assembler-graph-format MODE` | Optional graph output: `none` (default), `gfa`, `dot`, or `both` |

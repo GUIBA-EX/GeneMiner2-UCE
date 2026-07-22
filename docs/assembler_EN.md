@@ -11,7 +11,7 @@ Assembly turns recruited locus reads into contigs. Choose the workflow by biolog
 
 ## Backends
 
-`original-rust` is the deterministic Rust compatibility backend for `original`. Use `--assembler-implementation original` only for strict comparison with the fixed upstream GeneMiner2 Python implementation. `uce-rust` is the only backend for `uce`; it does not fall back to Python.
+`original-rust` is the deterministic Rust compatibility backend for `original`; `original` remains an alias for compatibility. `uce-rust` is the only backend for `uce`.
 
 All backends use reference-positioned seeds, read-k-mer support, bidirectional extension, and read-slice validation.
 
