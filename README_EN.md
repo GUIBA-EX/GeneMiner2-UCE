@@ -99,7 +99,7 @@ Please cite: Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. 
   author  = {XIA, Fei and TANG, Zizhen and XU, Yan},
   title   = {GeneMiner2-UCE: Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
   year    = {2026},
-  version = {1.5.5},
+  version = {1.5.6},
   url     = {https://github.com/GUIBA-EX/GeneMiner2-UCE},
   publisher = {GitHub},
   note    = {GPL-3.0-or-later licensed software}
