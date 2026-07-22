@@ -4,11 +4,5 @@ version = "0.1.0"
 edition = "2021"
 default-run = "geneminer2_cli"
 
-[profile.release]
-codegen-units = 1
-lto = "fat"
-strip = true
-panic = "abort"
-
 [dependencies]
 sha2 = "0.10"

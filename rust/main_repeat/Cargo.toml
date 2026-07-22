@@ -12,8 +12,3 @@ ahash = "0.8"
 flate2 = "1.0"
 gm2_tools = { path = "../gm2_tools" }
 rayon = "1.10"
-
-[profile.release]
-lto = true
-codegen-units = 1
-strip = true

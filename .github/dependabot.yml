@@ -9,38 +9,6 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: cargo
-    directory: "/rust/build_consensus"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/geneminer2_cli"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/gm2_tools"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/main_assembler"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/main_assembler_original"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/main_filter_new"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/main_population"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/main_refilter_new"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/main_repeat"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/marker_profile"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/uce_filter"
-    schedule: { interval: weekly }
-  - package-ecosystem: cargo
-    directory: "/rust/uce_filter_core"
-    schedule: { interval: weekly }
+    directory: "/"
+    schedule:
+      interval: weekly

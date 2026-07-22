@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "rust/build_consensus",
+    "rust/geneminer2_cli",
+    "rust/gm2_tools",
+    "rust/main_assembler",
+    "rust/main_assembler_original",
+    "rust/main_filter_new",
+    "rust/main_population",
+    "rust/main_refilter_new",
+    "rust/main_repeat",
+    "rust/marker_profile",
+    "rust/uce_filter",
+    "rust/uce_filter_core",
+    "rust/xtask",
+]
+exclude = ["experiments/gm2_artifact_pipeline"]
+resolver = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = true
+panic = "abort"

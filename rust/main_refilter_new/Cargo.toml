@@ -6,8 +6,3 @@ edition = "2021"
 [dependencies]
 ahash = "0.8"
 gm2_tools = { path = "../gm2_tools" }
-
-[profile.release]
-codegen-units = 1
-lto = true
-strip = true

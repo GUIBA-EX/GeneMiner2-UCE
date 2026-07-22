@@ -16,7 +16,7 @@ GeneMiner2-UCE is a native Rust toolkit for short-read recovery: recruit reads w
 Install Rust/Cargo and the required bioinformatics tools, then build from the repository root:
 
 ```bash
-make build
+cargo run -p xtask -- build
 ```
 
 The common entry point is `cli/geneminer2`. Sample manifests are tab-delimited `sample_id  R1  [R2]`; each FASTA in a reference directory is one locus or bait.

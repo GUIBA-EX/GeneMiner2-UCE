@@ -7,11 +7,6 @@ edition = "2021"
 name = "build_consensus"
 path = "src/main.rs"
 
-[profile.release]
-codegen-units = 1
-lto = true
-strip = true
-
 [dependencies]
 flate2 = "1"
 plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series"] }

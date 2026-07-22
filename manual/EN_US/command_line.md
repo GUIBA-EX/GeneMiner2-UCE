@@ -11,7 +11,7 @@ A complete build requires:
 - a C/C++ compiler and [zlib](https://zlib.net/);
 - [Rust and Cargo](https://www.rust-lang.org/tools/install/);
 
-Rust/Cargo is required for the complete current build, including the primary read filter, secondary filter, assembler, population workflow, alignment cleanup, sequence merging, reference trimming, and UCE statistics. The Haxe source remains available only as a compatible implementation of the primary filter; it does not replace the complete Rust build.
+Rust/Cargo is required for the complete current build, including the primary read filter, secondary filter, assembler, population workflow, alignment cleanup, sequence merging, reference trimming, and UCE statistics.
 
 On Ubuntu, first install the system dependencies:
 
@@ -41,7 +41,7 @@ Population executables are located through `PATH` by default. Override them indi
 ```bash
 git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2-UCE.git
 cd GeneMiner2-UCE
-make
+cargo run -p xtask -- build
 ```
 
 The generated entry point is:
@@ -50,7 +50,7 @@ The generated entry point is:
 cli/geneminer2 -h
 ```
 
-Run `make` again after updating the source.
+Run the same Cargo command again after updating the source.
 
 ## 2. Input files
 

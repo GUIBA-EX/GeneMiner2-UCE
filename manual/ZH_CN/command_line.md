@@ -11,7 +11,7 @@ GeneMiner2-UCE 是面向 UCE 和其他系统发育标记的命令行流程。本
 - C/C++ 编译器和 [zlib](https://zlib.net/)；
 - [Rust 和 Cargo](https://www.rust-lang.org/tools/install/)；
 
-Rust/Cargo 是当前完整构建的必需依赖，用于编译主 reads 过滤器、二次过滤器、assembler、population 以及 alignment cleanup、sequence merge、reference trimming 和 UCE statistics 工具。Haxe 源码仅作为主过滤器的兼容实现保留，不能替代完整 Rust 构建。
+Rust/Cargo 是当前完整构建的必需依赖，用于编译主 reads 过滤器、二次过滤器、assembler、population 以及 alignment cleanup、sequence merge、reference trimming 和 UCE statistics 工具。
 
 Ubuntu 可先安装系统依赖：
 
@@ -41,7 +41,7 @@ population 外部程序默认从 `PATH` 查找，也可通过 `--population-mini
 ```bash
 git clone --depth 1 https://github.com/GUIBA-EX/GeneMiner2-UCE.git
 cd GeneMiner2-UCE
-make
+cargo run -p xtask -- build
 ```
 
 构建后的统一入口为：
@@ -50,7 +50,7 @@ make
 cli/geneminer2 -h
 ```
 
-源码更新后应重新运行 `make`。
+源码更新后应重新运行相同的 Cargo 命令。
 
 ## 2. 输入文件
 
