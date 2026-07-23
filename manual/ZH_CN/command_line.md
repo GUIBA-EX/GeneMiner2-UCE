@@ -1,6 +1,6 @@
-# GeneMiner2-UCE 命令行指南
+# TStools 命令行指南
 
-GeneMiner2-UCE 是面向 UCE 和其他系统发育标记的命令行流程。本仓库不包含 GUI、内置演示数据或旧版图形界面文档。
+TStools（原 GeneMiner2-UCE）是面向 UCE 和其他系统发育标记的命令行流程。本仓库不包含 GUI、内置演示数据或旧版图形界面文档。
 
 ## 1. 从源码构建
 

@@ -1,6 +1,6 @@
-# GeneMiner2-UCE Command-Line Guide
+# TStools Command-Line Guide
 
-GeneMiner2-UCE is a command-line workflow for UCEs and other phylogenetic markers. This repository does not include the former GUI, bundled demonstration data, or legacy graphical documentation.
+TStools (formerly GeneMiner2-UCE) is a command-line workflow for UCEs and other phylogenetic markers. This repository does not include the former GUI, bundled demonstration data, or legacy graphical documentation.
 
 ## 1. Building from source
 

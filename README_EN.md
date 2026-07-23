@@ -1,4 +1,4 @@
-# GeneMiner2-UCE
+# TStools (formerly GeneMiner2-UCE)
 
 [![CI](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml)
@@ -7,9 +7,20 @@
 
 **[中文](README.md)** · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues)
 
-GeneMiner2-UCE is a native Rust toolkit for short-read recovery: recruit reads with references, then assemble or quantify them for the selected task. It supports genome skimming, target capture, UCEs, RAD augmentation, and repeatome analysis without a Python runtime.
+TStools (formerly GeneMiner2-UCE) is an independently evolving, Rust-native short-read recovery toolkit, not a maintenance fork of GeneMiner2. It recruits reads with references and then assembles or quantifies them for genome skimming, target capture, UCEs, RAD augmentation, and repeatome analysis without a Python runtime. `cli/geneminer2`, legacy output names, the repository URL, and historical citation names are compatibility identifiers only.
 
-![GeneMiner2-UCE workflow](docs/images/summary_EN.png)
+![TStools workflow](docs/images/summary_EN.png)
+
+## Compared with GeneMiner2
+
+Upstream GeneMiner2 is the algorithmic provenance and compatibility baseline; TStools evolves its core paths, workflows, and validation independently.
+
+- **Filter:** canonical bidirectional 2-bit k-mers, content-validated reference caches, and bounded streaming I/O lower CPU, memory, and I/O cost while preserving recruitment semantics and output format.
+- **Assembler:** `ucefilter → uce-rust` combines recruitment, paired-fragment retention, orientation/exact-match evidence, and per-locus selection in one scan. Rescue accepts only read-supported extension and never reference-fills gaps.
+- **Scope:** alongside conventional markers, TStools provides mitochondrial, profiling, UCE population, gene-family, RAD, and repeatome workflows.
+- **Interpretation:** mitochondrial closure, RAD strict matrices, and population graph paths require explicit evidence and retain QC/audit output.
+
+See [Filter](docs/filter_EN.md), [Assembler](docs/assembler_EN.md), and [Population](docs/population_EN.md) for algorithms, measurements, and scope.
 
 ## Install and first run
 
@@ -95,9 +106,9 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 Please cite: Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. [doi:10.1111/1755-0998.70111](https://doi.org/10.1111/1755-0998.70111)
 
 ```bibtex
-@software{GeneMiner2_UCE,
+@software{TStools,
   author  = {XIA, Fei and TANG, Zizhen and XU, Yan},
-  title   = {GeneMiner2-UCE: Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
+  title   = {TStools (formerly GeneMiner2-UCE): Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
   year    = {2026},
   version = {1.5.6},
   url     = {https://github.com/GUIBA-EX/GeneMiner2-UCE},

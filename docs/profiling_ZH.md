@@ -7,7 +7,7 @@ Profiling 是从 WGS 或 metagenome reads 中免组装恢复任意扩增子 mark
 ## 流程
 
 ```text
-GeneMiner2 k-mer 招募 → Themisto 伪比对 → 参考序列级证据
+TStools k-mer 招募 → Themisto 伪比对 → 参考序列级证据
 ```
 
 不会运行 `refilter`、`assemble`、`combine` 或 `tree`。`--profile-kmer-size` 同时设定招募与 Themisto 的 k-mer，必须是 15–31 的奇数。
