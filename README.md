@@ -7,7 +7,7 @@
 
 **[English](README_EN.md)** · [更新记录](CHANGELOG.md) · [报告问题](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues)
 
-GeneMiner2-UCE 是一个 Rust 原生的短读长恢复工具：以参考序列招募 reads，再按任务组装或量化。它面向 genome skimming、target capture、UCE、RAD 补充和 repeatome 分析；不需要 Python 运行时。
+TStools 是一个 Rust 原生的短读长恢复工具：以参考序列招募 reads，再按任务组装或量化。它面向 genome skimming、target capture、UCE、RAD 补充和 repeatome 分析；不需要 Python 运行时。
 
 ![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
 
