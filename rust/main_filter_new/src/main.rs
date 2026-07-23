@@ -268,6 +268,10 @@ fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> {
 
 // dlopen 一个符号,类型对不上就当没找到,不瞎猜。
 #[cfg(unix)]
+/// # Safety
+///
+/// `handle` 必须是仍然有效的 `dlopen` 句柄，且 `F` 必须与 `symbol` 的
+/// 导出 ABI 和函数签名完全一致。调用方在使用返回的函数指针期间保持库已加载。
 unsafe fn dlsym_typed<F: Copy>(handle: *mut c_void, symbol: &str) -> Option<F> {
     let symbol = CString::new(symbol).ok()?;
     let pointer = libc::dlsym(handle, symbol.as_ptr());

@@ -1,7 +1,9 @@
 [package]
 name = "uce_filter"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "uce_filter"
@@ -9,4 +11,3 @@ path = "src/main.rs"
 
 [dependencies]
 uce_filter_core = { path = "../uce_filter_core" }
-

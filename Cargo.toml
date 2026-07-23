@@ -16,6 +16,11 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+edition = "2021"
+rust-version = "1.87"
+license = "GPL-3.0-or-later"
+
 [profile.release]
 codegen-units = 1
 lto = "fat"

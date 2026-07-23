@@ -2,6 +2,12 @@
 
 [![CI](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml)
+[![Fuzz smoke](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/fuzz-smoke.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/fuzz-smoke.yml)
+[![MSRV: 1.87](https://img.shields.io/badge/MSRV-1.87-orange)](rust-toolchain.toml)
+[![Rust edition: 2021](https://img.shields.io/badge/Rust%20edition-2021-orange)](Cargo.toml)
+[![Dependency policy: cargo-deny](https://img.shields.io/badge/dependency%20policy-cargo--deny-blue)](deny.toml)
+[![SBOM: SPDX 2.3](https://img.shields.io/badge/SBOM-SPDX%202.3-blueviolet)](rust/xtask/src/main.rs)
+[![Release integrity: SHA-256](https://img.shields.io/badge/release%20integrity-SHA--256-blueviolet)](rust/xtask/src/main.rs)
 [![Latest release](https://img.shields.io/github/v/release/GUIBA-EX/GeneMiner2-UCE?display_name=tag)](https://github.com/GUIBA-EX/GeneMiner2-UCE/releases/latest)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 
@@ -86,7 +92,7 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 - `mito` 只适用于常规单环动物线粒体。串联重复或超过 insert size 的完全重复不能由短 reads 可靠定拷贝数，结果会保留为 linear 或 ambiguous。
 - `profiling` 是参考相容性证据，不是物种鉴定或丰度估计。
 - RAD 中 R1/R2 是独立限制性位点 arm；WGS 恢复不直接证明 allele dropout。请以 `rad-validate` 的双 arm 检查为准。
-- `--cleanup-intermediates` 只在同次完整流程成功后删除可再生的过滤 reads；最终 contig、汇总、原始 reads 和参考始终保留。
+- `--cleanup-intermediates` 只在同次完整流程成功后删除可再生的过滤 reads；先加 `--cleanup-dry-run` 可生成 `cleanup_preview.tsv` 审核候选路径和字节数，且不会删除任何文件。最终 contig、汇总、原始 reads 和参考始终保留。
 
 ## 文档
 
@@ -100,6 +106,14 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 | 群体与 profiling | [Population](docs/population_ZH.md) · [Profiling](docs/profiling_ZH.md) |
 
 `--workflow-profile` 会写入仅记录时间与 I/O 的 `workflow_profile.tsv`，不会改变分析结果。
+
+每次标准工作流都会在输出根目录原子写入 `workflow_manifest.tsv`，记录 CLI 版本、命令、参考 SHA-256、样本表 SHA-256、关键参数以及输入 reads 的路径/大小/修改时间，用于复现和审计。
+
+`--resume` 是保守的整次工作流恢复：仅当现有 manifest 与本次输入/参数完全一致且 `workflow_status.tsv` 为成功时才作为无操作成功返回；任何失败或不匹配都会拒绝，且不会覆盖旧状态或跳过部分 stage。
+
+输出目录一旦创建，CLI 会在结束时原子写入 `workflow_status.tsv`；其中 `state` 为 `succeeded` 或 `failed`，失败时附带错误摘要，便于批处理系统识别部分输出不可消费。
+
+`cargo run -p xtask -- build` 会在 `cli/` 中生成 `SHA256SUMS` 与 `SBOM.spdx.json`，用于发布校验与二进制物料清单。FASTX fuzz 目标位于 `fuzz/`，仅由手动或每周的受限 CI smoke 任务运行（1,000 次输入、最多 60 秒）。
 
 ## 引用
 
