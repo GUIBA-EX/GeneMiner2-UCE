@@ -13,18 +13,25 @@
 
 **[中文](README.md)** · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues)
 
-TStools (formerly GeneMiner2-UCE) is an independently evolving, Rust-native short-read recovery toolkit, not a maintenance fork of GeneMiner2. It recruits reads with references and then assembles or quantifies them for genome skimming, target capture, UCEs, RAD augmentation, and repeatome analysis without a Python runtime. `cli/geneminer2`, legacy output names, the repository URL, and historical citation names are compatibility identifiers only.
+TStools (formerly GeneMiner2-UCE) is a reference-guided short-read recovery toolkit: it recruits reads with references, then assembles, quantifies evidence, or performs cohort analysis by workflow. It covers genome skimming, target capture, UCEs, mitochondria, nuclear gene families, RAD augmentation, and reference-free repeatomes. Production workflows are Rust-native and require no Python runtime.
+
+> **Relationship to GeneMiner2:** GeneMiner2 is this project's algorithmic provenance and result-compatibility baseline. TStools is not a maintenance fork: it is an independently evolving workflow toolkit. `cli/geneminer2`, some legacy output names, the repository URL, and historical citation names are compatibility identifiers; they do not mean that the two projects have identical features or implementations.
 
 ![TStools workflow](docs/images/summary_EN.png)
 
-## Compared with GeneMiner2
+## Main differences from GeneMiner2
 
-Upstream GeneMiner2 is the algorithmic provenance and compatibility baseline; TStools evolves its core paths, workflows, and validation independently.
+| Dimension | GeneMiner2 | Current TStools (v1.5.8) |
+| --- | --- | --- |
+| Positioning | Original algorithm and workflow for gene recovery from genome-skimming data | Independently evolving short-read recovery and analysis toolkit built on a compatibility baseline |
+| Production implementation | Upstream implementation | Rust-native production paths; no Python runtime required |
+| Read recruitment | Original recruitment semantics | Canonical bidirectional 2-bit k-mers, content-validated reference caches, and bounded streaming I/O preserve recruitment semantics and legacy output compatibility while reducing CPU, memory, and I/O cost |
+| Conventional assembly | Upstream algorithmic baseline | Deterministic `original-rust` by default; upstream `original` remains available for strict comparison and reproduction |
+| UCE assembly | General, non-specialized assembly route | `ucefilter → uce-rust` combines recruitment, paired-fragment retention, orientation/exact-match evidence, and per-locus selection in one FASTQ scan. Optional rescue accepts only read-supported extension and never reference-fills a gap |
+| Workflow scope | Conventional gene recovery | Also includes mitochondria, marker profiling, UCE population analysis, nuclear gene families, RAD matrix augmentation, and reference-free repeatomes |
+| Interpretation | Primarily recovered sequences | Mitochondrial closure, RAD strict matrices, and population graph paths require explicit evidence and retain QC, provenance, and audit output |
 
-- **Filter:** canonical bidirectional 2-bit k-mers, content-validated reference caches, and bounded streaming I/O lower CPU, memory, and I/O cost while preserving recruitment semantics and output format.
-- **Assembler:** `ucefilter → uce-rust` combines recruitment, paired-fragment retention, orientation/exact-match evidence, and per-locus selection in one scan. Rescue accepts only read-supported extension and never reference-fills gaps.
-- **Scope:** alongside conventional markers, TStools provides mitochondrial, profiling, UCE population, gene-family, RAD, and repeatome workflows.
-- **Interpretation:** mitochondrial closure, RAD strict matrices, and population graph paths require explicit evidence and retain QC/audit output.
+For an upstream-baseline comparison, select `original` explicitly and retain the complete inputs and parameters. For UCE, population, and extended workflows, interpret results using TStools-specific modes and QC rules rather than treating them as interchangeable with GeneMiner2 output.
 
 See [Filter](docs/filter_EN.md), [Assembler](docs/assembler_EN.md), and [Population](docs/population_EN.md) for algorithms, measurements, and scope.
 
@@ -92,7 +99,7 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 - `mito` targets ordinary single circular animal mitochondrial genomes. Short reads cannot reliably count identical tandem repeats beyond the insert size; the result remains linear or ambiguous.
 - `profiling` reports reference compatibility, not taxonomic identification or abundance.
 - RAD R1 and R2 are independent restriction-site arms. WGS recovery is not direct evidence of allele dropout; use the two-arm checks in `rad-validate`.
-- `--cleanup-intermediates` removes reproducible filtered reads only after a successful complete invocation; final contigs, summaries, raw reads, and references remain.
+- `--cleanup-intermediates` removes reproducible filtered reads only after a successful complete invocation; final contigs, summaries, raw reads, and references remain. Use `--cleanup-dry-run` first to write `cleanup_preview.tsv` for review without deleting files.
 
 ## Documentation
 
@@ -107,6 +114,14 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 
 `--workflow-profile` writes `workflow_profile.tsv` with timing and I/O only; it does not change results.
 
+Each standard workflow atomically writes `workflow_manifest.tsv` in its output root, recording the CLI version, command, reference and sample-sheet SHA-256 values, key options, and input-read paths/sizes/mtimes for reproduction and audit.
+
+`--resume` is conservative whole-workflow recovery: it returns a no-op success only when the existing manifest exactly matches the current inputs and options and `workflow_status.tsv` records success. It refuses failed or mismatched runs and never overwrites prior status or skips partial stages.
+
+Once an output directory exists, the CLI atomically writes `workflow_status.tsv` on completion. Its `state` is `succeeded` or `failed`; failures include an error summary so batch systems can identify incomplete outputs.
+
+`cargo run -p xtask -- build` also creates `SHA256SUMS` and `SBOM.spdx.json` in `cli/` for release integrity and the software bill of materials. FASTX fuzz targets live in `fuzz/` and run only in manually triggered or weekly, constrained CI smoke jobs (1,000 inputs, up to 60 seconds).
+
 ## Citation
 
 Please cite: Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. [doi:10.1111/1755-0998.70111](https://doi.org/10.1111/1755-0998.70111)
@@ -116,7 +131,7 @@ Please cite: Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. 
   author  = {XIA, Fei and TANG, Zizhen and XU, Yan},
   title   = {TStools (formerly GeneMiner2-UCE): Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
   year    = {2026},
-  version = {1.5.6},
+  version = {1.5.8},
   url     = {https://github.com/GUIBA-EX/GeneMiner2-UCE},
   publisher = {GitHub},
   note    = {GPL-3.0-or-later licensed software}
