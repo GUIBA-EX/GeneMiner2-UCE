@@ -1,0 +1,16 @@
+# Dependency policy enforced in CI by cargo-deny. Keep exceptions explicit so
+# security and supply-chain changes cannot be introduced silently.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

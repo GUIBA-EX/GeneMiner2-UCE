@@ -1,6 +1,7 @@
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -92,7 +93,81 @@ fn build(root: &Path) -> io::Result<()> {
     if entrypoint.exists() || entrypoint.is_symlink() {
         fs::remove_file(&entrypoint)?;
     }
-    make_entrypoint(Path::new("bin/geneminer2-rust"), &entrypoint)
+    make_entrypoint(Path::new("bin/geneminer2-rust"), &entrypoint)?;
+    write_release_metadata(root, &cli, &bin_dir)
+}
+
+fn sha256(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 65_536];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn release_version(root: &Path) -> io::Result<String> {
+    let manifest = fs::read_to_string(root.join("rust/geneminer2_cli/Cargo.toml"))?;
+    manifest
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            line.strip_prefix("version = ")
+                .and_then(|value| value.trim_matches('"').split_whitespace().next())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "CLI package version is missing"))
+}
+
+fn write_release_metadata(root: &Path, cli: &Path, bin_dir: &Path) -> io::Result<()> {
+    let mut files = fs::read_dir(bin_dir)?.collect::<Result<Vec<_>, _>>()?;
+    files.sort_by_key(|entry| entry.file_name());
+    let checksums = files
+        .iter()
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            Ok(format!("{}  bin/{name}", sha256(&entry.path())?))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    fs::write(
+        cli.join("SHA256SUMS"),
+        format!("{}\n", checksums.join("\n")),
+    )?;
+    let version = release_version(root)?;
+    let mut namespace_digest = Sha256::new();
+    namespace_digest.update(version.as_bytes());
+    namespace_digest.update(b"\n");
+    namespace_digest.update(checksums.join("\n").as_bytes());
+    let namespace_hash = format!("{:x}", namespace_digest.finalize());
+    let namespace = format!(
+        "https://github.com/GUIBA-EX/GeneMiner2-UCE/releases/binary-sbom/{version}/{}",
+        namespace_hash
+    );
+
+    // This is a deliberately small SPDX 2.3 document for the distributed
+    // binaries. Dependency license policy remains enforced by cargo-deny in
+    // CI; package-level dependency inventory can be added without changing
+    // the release artifact contract.
+    let file_entries = files
+        .iter()
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let checksum = sha256(&entry.path())?;
+            Ok(format!(
+                "{{\"SPDXID\":\"SPDXRef-File-{name}\",\"fileName\":\"bin/{name}\",\"checksums\":[{{\"algorithm\":\"SHA256\",\"checksumValue\":\"{checksum}\"}}],\"licenseConcluded\":\"GPL-3.0-or-later\",\"copyrightText\":\"NOASSERTION\"}}"
+            ))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let sbom = format!(
+        "{{\"spdxVersion\":\"SPDX-2.3\",\"dataLicense\":\"CC0-1.0\",\"SPDXID\":\"SPDXRef-DOCUMENT\",\"name\":\"TStools binaries\",\"documentNamespace\":\"{namespace}\",\"creationInfo\":{{\"creators\":[\"Tool: TStools xtask\"]}},\"documentDescribes\":[\"SPDXRef-Package-TStools\"],\"packages\":[{{\"SPDXID\":\"SPDXRef-Package-TStools\",\"name\":\"TStools\",\"versionInfo\":\"{version}\",\"downloadLocation\":\"NOASSERTION\",\"licenseConcluded\":\"GPL-3.0-or-later\",\"licenseDeclared\":\"GPL-3.0-or-later\",\"copyrightText\":\"NOASSERTION\"}}],\"files\":[{}]}}",
+        file_entries.join(",")
+    );
+    fs::write(cli.join("SBOM.spdx.json"), sbom)
 }
 
 fn clean(root: &Path) -> io::Result<()> {

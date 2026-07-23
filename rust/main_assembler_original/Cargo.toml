@@ -1,4 +1,6 @@
 [package]
 name = "main_assembler_original"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true

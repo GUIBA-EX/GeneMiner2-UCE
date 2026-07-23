@@ -22,7 +22,7 @@ FASTQ/FASTA + 每 locus 一个参考 FASTA
 
 ## 输入与参考
 
-- 样本表是 tab 分隔的 `sample<TAB>R1<TAB>R2`；单端样本可省略 R2。
+- 样本表是 tab 分隔的 `sample<TAB>R1<TAB>R2`；单端样本可省略 R2。每个非注释行必须恰为两列或三列，规范化后的样本名必须唯一，且列出的 reads 文件必须存在。
 - 输入可为 FASTA、FASTQ 或 gzip 压缩 FASTQ；同一次运行的输入格式必须一致。
 - `original` 和 `uce` 使用参考目录：每个 locus 一个 `.fa`/`.fasta`，文件主名就是 locus 名，不能重复。
 - profiling 使用单个 marker FASTA 库，而不是 locus 目录。

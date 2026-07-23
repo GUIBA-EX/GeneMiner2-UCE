@@ -2,6 +2,12 @@
 
 [![CI](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml)
+[![Fuzz smoke](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/fuzz-smoke.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/fuzz-smoke.yml)
+[![MSRV: 1.87](https://img.shields.io/badge/MSRV-1.87-orange)](rust-toolchain.toml)
+[![Rust edition: 2021](https://img.shields.io/badge/Rust%20edition-2021-orange)](Cargo.toml)
+[![Dependency policy: cargo-deny](https://img.shields.io/badge/dependency%20policy-cargo--deny-blue)](deny.toml)
+[![SBOM: SPDX 2.3](https://img.shields.io/badge/SBOM-SPDX%202.3-blueviolet)](rust/xtask/src/main.rs)
+[![Release integrity: SHA-256](https://img.shields.io/badge/release%20integrity-SHA--256-blueviolet)](rust/xtask/src/main.rs)
 [![Latest release](https://img.shields.io/github/v/release/GUIBA-EX/GeneMiner2-UCE?display_name=tag)](https://github.com/GUIBA-EX/GeneMiner2-UCE/releases/latest)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 

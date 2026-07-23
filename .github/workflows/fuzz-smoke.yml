@@ -1,0 +1,22 @@
+name: Fuzz smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 6"
+
+permissions:
+  contents: read
+
+jobs:
+  fastx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run bounded FASTX fuzz smoke test
+        working-directory: fuzz
+        run: cargo fuzz run fastx_parser -- -runs=1000 -max_total_time=60

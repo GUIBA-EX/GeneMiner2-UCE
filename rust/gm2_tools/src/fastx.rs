@@ -66,6 +66,13 @@ fn build_detected_zlib_ng_backend() -> Option<ZlibBackend> {
 }
 
 #[cfg(unix)]
+/// Resolves a dynamic zlib-ng symbol to a caller-supplied function-pointer type.
+///
+/// # Safety
+///
+/// `handle` must be a live handle returned by `dlopen`, and `F` must exactly
+/// match the ABI and signature exported for `symbol`. Callers keep the library
+/// loaded for at least as long as they use the returned pointer.
 unsafe fn dlsym_typed<F: Copy>(handle: *mut c_void, symbol: &str) -> Option<F> {
     let symbol = CString::new(symbol).ok()?;
     let pointer = libc::dlsym(handle, symbol.as_ptr());
@@ -381,5 +388,51 @@ mod tests {
         assert_eq!(reader.next_record().unwrap().unwrap().sequence, b"NN");
         assert!(reader.next_record().unwrap().is_none());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_truncated_and_malformed_fastx_without_panicking() {
+        let root = std::env::temp_dir().join(format!(
+            "gm2-fastx-invalid-{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for (name, format, contents, expected) in [
+            (
+                "truncated_sequence.fq",
+                FastxFormat::Fastq,
+                b"@read\n".as_slice(),
+                "truncated FASTQ sequence",
+            ),
+            (
+                "bad_plus.fq",
+                FastxFormat::Fastq,
+                b"@read\nAC\n-\n!!\n".as_slice(),
+                "malformed FASTQ plus line",
+            ),
+            (
+                "short_quality.fq",
+                FastxFormat::Fastq,
+                b"@read\nAC\n+\n!\n".as_slice(),
+                "FASTQ sequence and quality lengths differ",
+            ),
+            (
+                "missing_header.fa",
+                FastxFormat::Fasta,
+                b"ACGT\n".as_slice(),
+                "FASTA sequence encountered before a header",
+            ),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, contents).unwrap();
+            let mut reader = FastxReader::open(&path, format).unwrap();
+            let error = reader.next_record().unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

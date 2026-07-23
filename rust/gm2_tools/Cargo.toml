@@ -1,7 +1,9 @@
 [package]
 name = "gm2_tools"
 version = "0.7.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 csv = "1.3"

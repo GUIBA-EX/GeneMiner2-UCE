@@ -22,7 +22,7 @@ In `original`, gene, and `--legacy-uce-filter` routes, a hit in either mate reta
 
 ## Inputs and references
 
-- The sample table is tab-separated: `sample<TAB>R1<TAB>R2`; omit R2 for single-end data.
+- The sample table is tab-separated: `sample<TAB>R1<TAB>R2`; omit R2 for single-end data. Each non-comment row must have exactly two or three columns, normalized sample names must be unique, and every listed read file must exist.
 - Input may be FASTA, FASTQ, or gzipped FASTQ. Formats must be consistent within one run.
 - `original` and `uce` use a reference directory with one `.fa`/`.fasta` per locus. The file stem is the unique locus name.
 - Profiling instead accepts one marker-library FASTA file.

@@ -16,6 +16,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  msrv:
+    name: Minimum supported Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.87.0
+      - name: Check MSRV build
+        run: cargo check --locked --workspace
+
   rust:
     name: Rust workspace
     runs-on: ubuntu-latest
@@ -39,5 +48,18 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build distribution
         run: cargo run -p xtask -- build
+      - name: Verify release metadata
+        run: |
+          test -s cli/SHA256SUMS
+          test -s cli/SBOM.spdx.json
       - name: Check CLI entry point
         run: cli/geneminer2 -h
+
+  dependencies:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources

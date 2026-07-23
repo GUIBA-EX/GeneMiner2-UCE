@@ -8,7 +8,10 @@ use std::fs;
 use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Condvar, Mutex,
+};
 use std::thread;
 use std::time::Instant;
 
@@ -49,10 +52,12 @@ const FLAG_OPTIONS: &[&str] = &[
     "--no-trimal",
     "--profile-force-rebuild",
     "--cleanup-intermediates",
+    "--cleanup-dry-run",
     "--no-mito-adaptive-stop",
     "--reuse-reference-cache",
     "--legacy-uce-filter",
     "--workflow-profile",
+    "--resume",
     "--rad-denovo",
 ];
 const VALUE_OPTIONS: &[&str] = &[
@@ -60,6 +65,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "-r",
     "-o",
     "-p",
+    "--log-format",
     "--assembly-mode",
     "-kf",
     "-s",
@@ -262,13 +268,17 @@ struct Options {
     shadow_per_locus: String,
     shadow_band: String,
     shadow_terminal_window: String,
+    uce_memory_limit_mib: u64,
     rescue: bool,
     stats_count_input_reads: bool,
     stats_no_heatmap: bool,
     cleanup_intermediates: bool,
+    cleanup_dry_run: bool,
     reuse_reference_cache: bool,
     legacy_uce_filter: bool,
     workflow_profile: bool,
+    resume: bool,
+    log_format: String,
 }
 
 fn value(args: &[String], names: &[&str], default: &str) -> Result<String, String> {
@@ -343,6 +353,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if !matches!(assembly_mode.as_str(), "original" | "uce") {
         return Err("--assembly-mode must be original or uce".into());
     }
+    let log_format = value(args, &["--log-format"], "text")?;
+    if !matches!(log_format.as_str(), "text" | "json") {
+        return Err("--log-format must be text or json".into());
+    }
     if commands == ["gene"] {
         commands = vec![
             "filter".into(),
@@ -416,13 +430,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
         shadow_per_locus: value(args, &["--uce-shadow-per-locus"], "64")?,
         shadow_band: value(args, &["--uce-shadow-band"], "32")?,
         shadow_terminal_window: value(args, &["--uce-shadow-terminal-window"], "150")?,
+        uce_memory_limit_mib: 0,
         rescue: flag(args, "--uce-rescue-reads")?,
         stats_count_input_reads: flag(args, "--stats-count-input-reads")?,
         stats_no_heatmap: flag(args, "--stats-no-heatmap")?,
         cleanup_intermediates: flag(args, "--cleanup-intermediates")?,
+        cleanup_dry_run: flag(args, "--cleanup-dry-run")?,
         reuse_reference_cache: flag(args, "--reuse-reference-cache")?,
         legacy_uce_filter: flag(args, "--legacy-uce-filter")?,
         workflow_profile: flag(args, "--workflow-profile")?,
+        resume: flag(args, "--resume")?,
+        log_format,
     })
 }
 
@@ -446,39 +464,79 @@ fn sample_name(raw: &str) -> String {
 }
 
 fn read_samples(path: &str, output: &Path) -> Result<Vec<Sample>, String> {
+    read_samples_with_directory_creation(path, output, true)
+}
+
+fn read_samples_with_directory_creation(
+    path: &str,
+    output: &Path,
+    create_directories: bool,
+) -> Result<Vec<Sample>, String> {
     let file =
         fs::File::open(path).map_err(|e| format!("Unable to read sample list '{path}': {e}"))?;
-    let mut samples = Vec::new();
+    let mut rows = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
     for (index, line) in io::BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|e| e.to_string())?;
-        if line.trim().is_empty() {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
         let fields = line.split('\t').collect::<Vec<_>>();
-        if fields.len() < 2 {
-            return Err(format!("Sample '{}' has no data files", fields[0]));
+        if !matches!(fields.len(), 2 | 3) {
+            return Err(format!(
+                "Sample row {} must be sample<TAB>R1[<TAB>R2]",
+                index + 1
+            ));
         }
         let name = sample_name(fields[0]);
         if name.is_empty() {
-            return Err(format!("Invalid sample name '{}'", fields[0]));
+            return Err(format!(
+                "Invalid sample name on row {}: '{}'",
+                index + 1,
+                fields[0]
+            ));
         }
+        if !names.insert(name.clone()) {
+            return Err(format!("Duplicate sample name after normalization: {name}"));
+        }
+        if fields[1].is_empty() {
+            return Err(format!("Sample row {} has an empty R1 path", index + 1));
+        }
+        if fields.len() == 3 && fields[2].is_empty() {
+            return Err(format!("Sample row {} has an empty R2 path", index + 1));
+        }
+        for read in fields.iter().skip(1) {
+            if !Path::new(read).is_file() {
+                return Err(format!(
+                    "Sample row {} read file does not exist: {read}",
+                    index + 1
+                ));
+            }
+        }
+        rows.push((
+            index,
+            name,
+            fields[1].to_owned(),
+            fields.get(2).map(|read| (*read).to_owned()),
+        ));
+    }
+    if rows.is_empty() {
+        return Err("Sample list is empty or invalid".into());
+    }
+
+    let mut samples = Vec::with_capacity(rows.len());
+    for (index, name, read1, read2) in rows {
         let numbered = format!("{}_{}", index + 1, name);
-        fs::create_dir_all(output.join(&numbered)).map_err(|e| e.to_string())?;
+        if create_directories {
+            fs::create_dir_all(output.join(&numbered)).map_err(|e| e.to_string())?;
+        }
         // Keep the legacy two-column convention: a single supplied FASTX path is
         // deliberately used for both mates, rather than silently changing mode.
-        let read2 = fields
-            .get(2)
-            .filter(|value| !value.is_empty())
-            .map(|value| (*value).to_string())
-            .or_else(|| Some(fields[1].to_string()));
         samples.push(Sample {
             name: numbered,
-            read1: fields[1].to_string(),
-            read2,
+            read1: read1.clone(),
+            read2: read2.or(Some(read1)),
         });
-    }
-    if samples.is_empty() {
-        return Err("Sample list is empty or invalid".into());
     }
     Ok(samples)
 }
@@ -594,7 +652,7 @@ fn uce_filter_args_for_recruit(
         "--threads".into(),
         "1".into(),
         "--memory-limit-mib".into(),
-        "256".into(),
+        opt.uce_memory_limit_mib.to_string(),
         "--min-depth".into(),
         opt.low_depth.clone(),
         "--max-depth".into(),
@@ -629,11 +687,26 @@ fn uce_filter_args_for(
     uce_filter_args_for_recruit(opt, sample, sample_dir, reference, reference, role)
 }
 
-fn uce_filter_args(opt: &Options, sample: &Sample, sample_dir: &Path) -> Vec<String> {
-    uce_filter_args_for(opt, sample, sample_dir, Path::new(&opt.reference), "bait")
+fn uce_filter_args(
+    opt: &Options,
+    sample: &Sample,
+    sample_dir: &Path,
+    threads: usize,
+) -> Vec<String> {
+    let mut args = uce_filter_args_for(opt, sample, sample_dir, Path::new(&opt.reference), "bait");
+    let thread_index = args
+        .iter()
+        .position(|argument| argument == "--threads")
+        .expect("UCEFilter arguments include --threads");
+    args[thread_index + 1] = threads.to_string();
+    args
 }
 
-fn uce_assembler_args(opt: &Options, sample_dir: &Path) -> Result<Vec<String>, String> {
+fn uce_assembler_args(
+    opt: &Options,
+    sample_dir: &Path,
+    threads: usize,
+) -> Result<Vec<String>, String> {
     Ok(vec![
         "-r".into(),
         opt.reference.clone(),
@@ -654,7 +727,7 @@ fn uce_assembler_args(opt: &Options, sample_dir: &Path) -> Result<Vec<String>, S
         "-cov_min".into(),
         opt.min_coverage.clone(),
         "-p".into(),
-        "1".into(),
+        threads.to_string(),
         "--assembly-mode".into(),
         "uce".into(),
         "--uce-side-candidates".into(),
@@ -676,7 +749,10 @@ fn uce_assembler_args(opt: &Options, sample_dir: &Path) -> Result<Vec<String>, S
         "--assembler-read-chunk-size".into(),
         value(&opt.raw, &["--assembler-read-chunk-size"], "8192")?,
         "--assembler-kmer-count-threads".into(),
-        "1".into(),
+        // Zero delegates to the assembler's per-locus calculation.  Passing
+        // the sample budget here would create nested `threads × threads`
+        // k-mer workers on high-core hosts.
+        "0".into(),
         "--assembler-graph-format".into(),
         opt.graph_format.clone(),
     ])
@@ -982,7 +1058,7 @@ fn execute_uce_rescue(
             run(
                 bins,
                 "main_assembler-rust",
-                &uce_assembler_args(&rescue_opt, sample_dir)?,
+                &uce_assembler_args(&rescue_opt, sample_dir, 1)?,
             )?;
             let mut after = read_uce_summary(&sample_dir.join("uce_assembly_summary.csv"))?;
             for (locus, before_row) in &before.rows {
@@ -1177,10 +1253,12 @@ fn execute_uce(
     bins: &Path,
     sample: &Sample,
     profile: Option<&WorkflowProfile>,
+    filter_threads: usize,
+    assembler_threads: usize,
 ) -> Result<(), String> {
     let sample_dir = Path::new(&opt.output).join(&sample.name);
     if opt.commands.iter().any(|c| c == "filter") {
-        let args = uce_filter_args(opt, sample, &sample_dir);
+        let args = uce_filter_args(opt, sample, &sample_dir, filter_threads);
         run_profiled(
             profile,
             sample,
@@ -1193,7 +1271,7 @@ fn execute_uce(
         )?;
     }
     if opt.commands.iter().any(|c| c == "assemble") {
-        let args = uce_assembler_args(opt, &sample_dir)?;
+        let args = uce_assembler_args(opt, &sample_dir, assembler_threads)?;
         run_profiled(
             profile,
             sample,
@@ -1229,6 +1307,7 @@ fn execute_uce_legacy(
     sample: &Sample,
     dictionary: &Path,
     profile: Option<&WorkflowProfile>,
+    assembler_threads: usize,
 ) -> Result<(), String> {
     let sample_dir = Path::new(&opt.output).join(&sample.name);
     let candidates = sample_dir.join("filtered_pe");
@@ -1286,7 +1365,7 @@ fn execute_uce_legacy(
             "-kf".into(),
             opt.kf.clone(),
             "-p".into(),
-            "1".into(),
+            assembler_threads.to_string(),
             "--log-file".into(),
             sample_dir.join("log.txt").display().to_string(),
             "--min-depth".into(),
@@ -1310,7 +1389,7 @@ fn execute_uce_legacy(
         )?;
     }
     if opt.commands.iter().any(|command| command == "assemble") {
-        let args = uce_assembler_args(opt, &sample_dir)?;
+        let args = uce_assembler_args(opt, &sample_dir, assembler_threads)?;
         run_profiled(
             profile,
             sample,
@@ -1996,6 +2075,57 @@ fn file_sha256(path: &Path) -> Result<String, String> {
         digest.update(&buffer[..count]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn path_sha256(path: &Path) -> Result<String, String> {
+    if path.is_file() {
+        return file_sha256(path);
+    }
+    if !path.is_dir() {
+        return Err(format!("{} is not a file or directory", path.display()));
+    }
+    fn visit(root: &Path, directory: &Path, digest: &mut Sha256) -> Result<(), String> {
+        let mut entries = fs::read_dir(directory)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+            digest.update(relative.to_string_lossy().as_bytes());
+            if path.is_dir() {
+                digest.update(b"/\n");
+                visit(root, &path, digest)?;
+            } else if path.is_file() {
+                digest.update(b"\0");
+                digest.update(file_sha256(&path)?.as_bytes());
+                digest.update(b"\n");
+            }
+        }
+        Ok(())
+    }
+
+    let mut digest = Sha256::new();
+    visit(path, path, &mut digest)?;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn input_identity(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|time| format!("{}.{}", time.as_secs(), time.subsec_nanos()))
+        .unwrap_or_else(|| "unknown".into());
+    Ok(format!(
+        "{};bytes={};modified={modified}",
+        fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display(),
+        metadata.len()
+    ))
 }
 
 fn raw_number<T: std::str::FromStr>(
@@ -3185,9 +3315,14 @@ fn execute_profiling(opt: &Options, bins: &Path, samples: &[Sample]) -> Result<(
     let cache = Path::new(&cache_root).join(format!("profile_themisto_k{kmer}_{key}"));
     let failures = Arc::new(Mutex::new(Vec::new()));
     let queued_samples = samples.to_vec();
+    let concurrent_samples = opt.workers.min(samples.len()).max(1);
+    let profile_uce_memory_limit_mib = resolve_uce_memory_limit_mib(concurrent_samples);
+    eprintln!(
+        "Auto UCEFilter memory limit: {profile_uce_memory_limit_mib} MiB per sample ({concurrent_samples} concurrent profiling job(s))"
+    );
     let next = Arc::new(Mutex::new(queued_samples.into_iter()));
     let mut handles = Vec::new();
-    for _ in 0..opt.workers.min(samples.len()).max(1) {
+    for _ in 0..concurrent_samples {
         let failures = Arc::clone(&failures);
         let next = Arc::clone(&next);
         let reference_dir = reference_dir.clone();
@@ -3203,6 +3338,7 @@ fn execute_profiling(opt: &Options, bins: &Path, samples: &[Sample]) -> Result<(
         let depth_limit = opt.depth_limit.clone();
         let size_limit = opt.size_limit.clone();
         let max_reads = opt.max_reads.clone();
+        let uce_memory_limit_mib = profile_uce_memory_limit_mib;
         let bins = bins.to_path_buf();
         let force = flag(raw, "--profile-force-rebuild")?;
         handles.push(thread::spawn(move || {
@@ -3235,7 +3371,7 @@ fn execute_profiling(opt: &Options, bins: &Path, samples: &[Sample]) -> Result<(
                 "--threads".into(),
                 "1".into(),
                 "--memory-limit-mib".into(),
-                "256".into(),
+                uce_memory_limit_mib.to_string(),
                 "--min-depth".into(),
                 low_depth,
                 "--max-depth".into(),
@@ -4328,6 +4464,46 @@ fn execute_stats(opt: &Options, bins: &Path, samples: &[Sample]) -> Result<(), S
 }
 
 fn cleanup_native_intermediates(opt: &Options, samples: &[Sample]) -> Result<(), String> {
+    validate_cleanup_options(opt)?;
+    if !opt.cleanup_intermediates {
+        return Ok(());
+    }
+    let root = fs::canonicalize(&opt.output).map_err(|e| e.to_string())?;
+    let mut rows = String::from("path\tbytes\taction\treason\n");
+    for sample in samples {
+        let sample_dir = root.join(&sample.name);
+        for (name, reason) in [
+            ("filtered", "reproducible filtered reads"),
+            ("filtered_pe", "reproducible filter candidates"),
+        ] {
+            let path = sample_dir.join(name);
+            if path.is_dir() && !path.is_symlink() {
+                let bytes = directory_size(&path)?;
+                let action = if opt.cleanup_dry_run {
+                    "would_remove"
+                } else {
+                    fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+                    "removed"
+                };
+                rows.push_str(&format!(
+                    "{}\t{bytes}\t{action}\t{reason}\n",
+                    path.display()
+                ));
+            }
+        }
+    }
+    let manifest = if opt.cleanup_dry_run {
+        "cleanup_preview.tsv"
+    } else {
+        "cleanup_manifest.tsv"
+    };
+    fs::write(root.join(manifest), rows).map_err(|e| e.to_string())
+}
+
+fn validate_cleanup_options(opt: &Options) -> Result<(), String> {
+    if opt.cleanup_dry_run && !opt.cleanup_intermediates {
+        return Err("--cleanup-dry-run requires --cleanup-intermediates".into());
+    }
     if !opt.cleanup_intermediates {
         return Ok(());
     }
@@ -4338,23 +4514,7 @@ fn cleanup_native_intermediates(opt: &Options, samples: &[Sample]) -> Result<(),
             "--cleanup-intermediates requires filter and assemble in the same invocation".into(),
         );
     }
-    let root = fs::canonicalize(&opt.output).map_err(|e| e.to_string())?;
-    let mut rows = String::from("path\tbytes\treason\n");
-    for sample in samples {
-        let sample_dir = root.join(&sample.name);
-        for (name, reason) in [
-            ("filtered", "reproducible filtered reads"),
-            ("filtered_pe", "reproducible filter candidates"),
-        ] {
-            let path = sample_dir.join(name);
-            if path.is_dir() && !path.is_symlink() {
-                let bytes = directory_size(&path)?;
-                fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
-                rows.push_str(&format!("{}\t{bytes}\t{reason}\n", path.display()));
-            }
-        }
-    }
-    fs::write(root.join("cleanup_manifest.tsv"), rows).map_err(|e| e.to_string())
+    Ok(())
 }
 
 fn directory_size(path: &Path) -> Result<u64, String> {
@@ -4410,6 +4570,177 @@ fn write_native_workflow_profile(
     fs::rename(&temporary, path).map_err(|e| e.to_string())
 }
 
+fn manifest_value(value: impl std::fmt::Display) -> String {
+    value.to_string().replace(['\t', '\n', '\r'], " ")
+}
+
+fn manifest_arguments(raw: &[String]) -> String {
+    raw.iter()
+        // `--resume` changes control flow only; including it would make a
+        // completed non-resume invocation impossible to resume.
+        .filter(|argument| argument.as_str() != "--resume")
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn workflow_manifest_text(opt: &Options, samples: &[Sample]) -> Result<String, String> {
+    let reference = Path::new(&opt.reference);
+    let sample_list = Path::new(&opt.samples);
+    let mut rows = vec![
+        "field\tvalue".into(),
+        "schema_version\t1".into(),
+        format!("tool_version\t{}", env!("CARGO_PKG_VERSION")),
+        format!("commands\t{}", manifest_value(opt.commands.join(","))),
+        format!("assembly_mode\t{}", manifest_value(&opt.assembly_mode)),
+        format!("workers\t{}", opt.workers),
+        format!("reference_path\t{}", manifest_value(reference.display())),
+        format!("reference_sha256\t{}", path_sha256(reference)?),
+        format!(
+            "sample_list_path\t{}",
+            manifest_value(sample_list.display())
+        ),
+        format!("sample_list_sha256\t{}", file_sha256(sample_list)?),
+        format!("sample_count\t{}", samples.len()),
+        format!(
+            "raw_arguments\t{}",
+            manifest_value(manifest_arguments(&opt.raw))
+        ),
+    ];
+    for sample in samples {
+        rows.push(format!(
+            "sample.{}.read1\t{}",
+            manifest_value(&sample.name),
+            manifest_value(input_identity(Path::new(&sample.read1))?)
+        ));
+        if let Some(read2) = &sample.read2 {
+            rows.push(format!(
+                "sample.{}.read2\t{}",
+                manifest_value(&sample.name),
+                manifest_value(input_identity(Path::new(read2))?)
+            ));
+        }
+    }
+    Ok(format!("{}\n", rows.join("\n")))
+}
+
+fn write_workflow_manifest(opt: &Options, samples: &[Sample]) -> Result<(), String> {
+    let output = Path::new(&opt.output);
+    let text = workflow_manifest_text(opt, samples)?;
+    let path = output.join("workflow_manifest.tsv");
+    let temporary = output.join("workflow_manifest.tsv.tmp");
+    fs::write(&temporary, text).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+fn resume_completed_workflow(opt: &Options, samples: &[Sample]) -> Result<bool, String> {
+    if !opt.resume {
+        return Ok(false);
+    }
+    let output = Path::new(&opt.output);
+    let existing_manifest = fs::read_to_string(output.join("workflow_manifest.tsv"))
+        .map_err(|_| "--resume requires an existing workflow_manifest.tsv".to_string())?;
+    if existing_manifest != workflow_manifest_text(opt, samples)? {
+        return Err(
+            "--resume refused: current inputs or options do not match workflow_manifest.tsv".into(),
+        );
+    }
+    let status = fs::read_to_string(output.join("workflow_status.tsv"))
+        .map_err(|_| "--resume requires an existing successful workflow_status.tsv".to_string())?;
+    if !status.lines().any(|line| line == "state\tsucceeded") {
+        return Err("--resume refused: previous workflow did not complete successfully; rerun without --resume".into());
+    }
+    Ok(true)
+}
+
+fn error_kind(error: &str) -> &'static str {
+    if error.contains("Unable to run") || error.contains("exited with") {
+        "component"
+    } else if error.contains("does not exist")
+        || error.contains("must be")
+        || error.contains("requires")
+        || error.contains("Invalid")
+        || error.contains("invalid")
+    {
+        "input"
+    } else if error.contains("permission") || error.contains("No space") || error.contains("I/O") {
+        "io"
+    } else {
+        "workflow"
+    }
+}
+
+fn json_string(value: impl std::fmt::Display) -> String {
+    let mut escaped = String::new();
+    for character in value.to_string().chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", character as u32))
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn write_workflow_status(
+    output: &Path,
+    commands: &[String],
+    result: &Result<(), String>,
+) -> Result<(), String> {
+    let (state, kind, error) = match result {
+        Ok(()) => ("succeeded", "none", String::new()),
+        Err(error) => ("failed", error_kind(error), manifest_value(error)),
+    };
+    let text = format!(
+        "field\tvalue\nschema_version\t1\nstate\t{state}\nerror_kind\t{kind}\ncommands\t{}\nerror\t{error}\n",
+        manifest_value(commands.join(",")),
+    );
+    let path = output.join("workflow_status.tsv");
+    let temporary = output.join("workflow_status.tsv.tmp");
+    fs::write(&temporary, text).map_err(|write_error| write_error.to_string())?;
+    fs::rename(&temporary, path).map_err(|rename_error| rename_error.to_string())
+}
+
+fn execute_with_status(opt: Options) -> Result<(), String> {
+    let output = PathBuf::from(&opt.output);
+    let commands = opt.commands.clone();
+    let log_format = opt.log_format.clone();
+    let resume = opt.resume;
+    let result = execute_native(opt);
+    // Do not create a new directory merely to report an early validation
+    // failure. Once a workflow has created its output root, the status file is
+    // an atomic terminal record for users and batch schedulers.
+    if !resume && !output.as_os_str().is_empty() && output.is_dir() {
+        if let Err(status_error) = write_workflow_status(&output, &commands, &result) {
+            return match result {
+                Ok(()) => Err(format!("Unable to write workflow status: {status_error}")),
+                Err(error) => Err(format!(
+                    "{error}\nUnable to write workflow status: {status_error}"
+                )),
+            };
+        }
+    }
+    if log_format == "json" {
+        let (state, kind, error) = match &result {
+            Ok(()) => ("succeeded", "none", String::new()),
+            Err(error) => ("failed", error_kind(error), error.clone()),
+        };
+        eprintln!(
+            "{{\"event\":\"workflow_finished\",\"state\":\"{state}\",\"error_kind\":\"{kind}\",\"commands\":\"{}\",\"output\":\"{}\",\"error\":\"{}\"}}",
+            json_string(commands.join(",")),
+            json_string(output.display()),
+            json_string(error),
+        );
+    }
+    result
+}
+
 fn validate_parallelism(opt: &Options) -> Result<(), String> {
     let msa_threads = value(&opt.raw, &["--msa-threads"], "1")?
         .parse::<usize>()
@@ -4431,7 +4762,261 @@ fn validate_parallelism(opt: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn execute_native(opt: Options) -> Result<(), String> {
+fn available_memory_mib() -> Option<u64> {
+    let contents = fs::read_to_string("/proc/meminfo").ok()?;
+    contents.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        (fields.next()? == "MemAvailable:")
+            .then(|| fields.next()?.parse::<u64>().ok())??
+            .checked_div(1024)
+    })
+}
+
+fn read_memory_bytes(path: &Path) -> Option<u64> {
+    let value = fs::read_to_string(path).ok()?;
+    let bytes = value.trim().parse::<u64>().ok()?;
+    // cgroup v1 uses a very large sentinel for an unlimited controller.
+    (bytes < (1_u64 << 60)).then_some(bytes)
+}
+
+fn cgroup_relative_path(controller: Option<&str>) -> Option<PathBuf> {
+    let contents = fs::read_to_string("/proc/self/cgroup").ok()?;
+    contents.lines().find_map(|line| {
+        let mut fields = line.splitn(3, ':');
+        let _hierarchy = fields.next()?;
+        let controllers = fields.next()?;
+        let path = fields.next()?;
+        let matches = match controller {
+            None => controllers.is_empty(),
+            Some(controller) => controllers.split(',').any(|name| name == controller),
+        };
+        matches.then(|| PathBuf::from(path.trim_start_matches('/')))
+    })
+}
+
+fn cgroup_tree_available_memory_mib(
+    root: &Path,
+    relative: &Path,
+    limit_name: &str,
+    current_name: &str,
+) -> Option<u64> {
+    let mut directory = root.join(relative);
+    let mut available = None;
+    loop {
+        if let (Some(limit), Some(current)) = (
+            read_memory_bytes(&directory.join(limit_name)),
+            read_memory_bytes(&directory.join(current_name)),
+        ) {
+            let remaining = limit.saturating_sub(current) / 1024 / 1024;
+            available = Some(available.map_or(remaining, |prior: u64| prior.min(remaining)));
+        }
+        if directory == root || !directory.pop() {
+            break;
+        }
+    }
+    available
+}
+
+fn cgroup_available_memory_mib() -> Option<u64> {
+    // `/proc/self/cgroup` identifies the process's leaf cgroup.  Inspecting
+    // only the mount root misses systemd/Kubernetes parent limits; walk from
+    // the leaf back to the controller root and retain the tightest remaining
+    // allowance.
+    let v2 = cgroup_relative_path(None).and_then(|relative| {
+        cgroup_tree_available_memory_mib(
+            Path::new("/sys/fs/cgroup"),
+            &relative,
+            "memory.max",
+            "memory.current",
+        )
+    });
+    let v1 = cgroup_relative_path(Some("memory")).and_then(|relative| {
+        cgroup_tree_available_memory_mib(
+            Path::new("/sys/fs/cgroup/memory"),
+            &relative,
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+        )
+    });
+    match (v2, v1) {
+        (Some(v2), Some(v1)) => Some(v2.min(v1)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn effective_available_memory_mib() -> Option<u64> {
+    match (available_memory_mib(), cgroup_available_memory_mib()) {
+        (Some(host), Some(cgroup)) => Some(host.min(cgroup)),
+        (Some(host), None) => Some(host),
+        (None, Some(cgroup)) => Some(cgroup),
+        (None, None) => None,
+    }
+}
+
+fn resolve_uce_memory_limit_mib(concurrent_samples: usize) -> u64 {
+    // Reserve half of effective availability for the OS, filesystem cache,
+    // assemblers, and decode buffers.  Cap an individual bank at 4 GiB to
+    // keep a small cohort on a large host predictable.  If memory accounting
+    // is unavailable, retain the former conservative 512 MiB behavior.
+    resolve_uce_memory_limit_from_available(effective_available_memory_mib(), concurrent_samples)
+}
+
+fn resolve_uce_memory_limit_from_available(
+    available_memory_mib: Option<u64>,
+    concurrent_samples: usize,
+) -> u64 {
+    available_memory_mib
+        .map(|available| (available / 2 / concurrent_samples.max(1) as u64).clamp(1, 4096))
+        .unwrap_or(512)
+}
+
+/// Match the upstream GeneMiner2 scheduler: `-p` is a shared CPU budget, not
+/// simply a count of whole-sample workers.  Filter, refilter, and assembly
+/// jobs advance through separate queues as soon as their predecessor finishes.
+fn execute_uce_original_schedule(
+    opt: Arc<Options>,
+    bins: PathBuf,
+    samples: &[Sample],
+    dictionary: PathBuf,
+    profile: Option<WorkflowProfile>,
+) -> Vec<String> {
+    let has_filter = opt.commands.iter().any(|command| command == "filter");
+    let has_refilter = opt.commands.iter().any(|command| command == "refilter");
+    let has_assemble = opt.commands.iter().any(|command| command == "assemble");
+    let fused_filter = !opt.legacy_uce_filter;
+    let filter_threads = if opt.workers < 4 { 1 } else { 2 };
+    let assembler_threads = if opt.workers == 1 {
+        1
+    } else {
+        (opt.workers / 2).clamp(2, 6)
+    };
+    let mut available = opt.workers;
+    let mut filter_queue = Vec::new();
+    let mut refilter_queue = Vec::new();
+    let mut assemble_queue = Vec::new();
+    let mut failures = Vec::new();
+    let mut stop_launching = false;
+
+    // Reverse-and-pop preserves sample-list order, as in the original Python
+    // dispatcher, while still allowing completed samples to join the next
+    // stage immediately.
+    if has_filter {
+        filter_queue.extend(samples.iter().rev().cloned());
+    } else if has_refilter && opt.legacy_uce_filter {
+        refilter_queue.extend(samples.iter().rev().cloned());
+    } else if has_assemble {
+        assemble_queue.extend(samples.iter().rev().cloned());
+    }
+
+    let (sender, receiver) = mpsc::channel::<(Sample, &'static str, usize, Result<(), String>)>();
+    let mut running = 0usize;
+    while !filter_queue.is_empty()
+        || !refilter_queue.is_empty()
+        || !assemble_queue.is_empty()
+        || running > 0
+    {
+        let minimum_next = if !filter_queue.is_empty() {
+            filter_threads.min(assembler_threads)
+        } else {
+            assembler_threads
+        };
+        let task_threads = |available: usize| {
+            if available.saturating_sub(assembler_threads) < minimum_next {
+                available
+            } else {
+                assembler_threads
+            }
+        };
+        let launch = |sample: Sample, stage: &'static str, threads: usize| {
+            let sender = sender.clone();
+            let opt = Arc::clone(&opt);
+            let bins = bins.clone();
+            let dictionary = dictionary.clone();
+            let profile = profile.clone();
+            thread::spawn(move || {
+                let mut stage_opt = (*opt).clone();
+                stage_opt.commands = vec![stage.into()];
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if stage_opt.legacy_uce_filter {
+                        execute_uce_legacy(
+                            &stage_opt,
+                            &bins,
+                            &sample,
+                            &dictionary,
+                            profile.as_ref(),
+                            threads,
+                        )
+                    } else {
+                        execute_uce(
+                            &stage_opt,
+                            &bins,
+                            &sample,
+                            profile.as_ref(),
+                            filter_threads,
+                            threads,
+                        )
+                    }
+                }))
+                .unwrap_or_else(|_| Err("UCE workflow worker panicked".into()));
+                let _ = sender.send((sample, stage, threads, result));
+            });
+        };
+
+        // Upstream gives ready refilter jobs first choice, then assembly, then
+        // recruitment.  Fused UCE filtering advances directly to assembly.
+        while !stop_launching && !refilter_queue.is_empty() && available >= filter_threads {
+            let sample = refilter_queue.pop().expect("queue was checked");
+            let threads = task_threads(available);
+            available -= threads;
+            launch(sample, "refilter", threads);
+            running += 1;
+        }
+        while !stop_launching && !assemble_queue.is_empty() && available >= assembler_threads {
+            let sample = assemble_queue.pop().expect("queue was checked");
+            let threads = task_threads(available);
+            available -= threads;
+            launch(sample, "assemble", threads);
+            running += 1;
+        }
+        while !stop_launching && !filter_queue.is_empty() && available >= filter_threads {
+            let sample = filter_queue.pop().expect("queue was checked");
+            available -= filter_threads;
+            launch(sample, "filter", filter_threads);
+            running += 1;
+        }
+
+        if running == 0 {
+            break;
+        }
+        let (sample, stage, threads, result) = receiver.recv().expect("UCE worker channel closed");
+        running -= 1;
+        available += threads;
+        match result {
+            Ok(()) if !stop_launching && stage == "filter" && has_assemble => {
+                if fused_filter || !has_refilter {
+                    assemble_queue.push(sample);
+                } else {
+                    refilter_queue.push(sample);
+                }
+            }
+            Ok(()) if !stop_launching && stage == "refilter" && has_assemble => {
+                assemble_queue.push(sample)
+            }
+            Ok(()) => {}
+            Err(error) => {
+                failures.push(format!("{} {stage}: {error}", sample.name));
+                stop_launching = true;
+                filter_queue.clear();
+                refilter_queue.clear();
+                assemble_queue.clear();
+            }
+        }
+    }
+    failures
+}
+
+fn execute_native(mut opt: Options) -> Result<(), String> {
     let workflow_started = Instant::now();
     if opt.output.is_empty() {
         return Err("-o is required".into());
@@ -4439,6 +5024,7 @@ fn execute_native(opt: Options) -> Result<(), String> {
     if opt.workers == 0 {
         return Err("-p must be at least 1".into());
     }
+    validate_cleanup_options(&opt)?;
     validate_parallelism(&opt)?;
     let bins = components()?;
     let standalone = [
@@ -4507,8 +5093,19 @@ fn execute_native(opt: Options) -> Result<(), String> {
     if opt.reference.is_empty() {
         return Err("-r is required for this command".into());
     }
+    if opt.resume {
+        if !Path::new(&opt.output).is_dir() {
+            return Err("--resume requires an existing workflow output directory".into());
+        }
+        let samples =
+            read_samples_with_directory_creation(&opt.samples, Path::new(&opt.output), false)?;
+        if resume_completed_workflow(&opt, &samples)? {
+            return Ok(());
+        }
+    }
     fs::create_dir_all(&opt.output).map_err(|e| e.to_string())?;
     let samples = read_samples(&opt.samples, Path::new(&opt.output))?;
+    write_workflow_manifest(&opt, &samples)?;
     if opt.commands == ["stats"] {
         return execute_stats(&opt, &bins, &samples);
     }
@@ -4529,6 +5126,15 @@ fn execute_native(opt: Options) -> Result<(), String> {
         .map(|sample| sample.name.clone())
         .collect::<Vec<_>>();
     let is_uce = opt.assembly_mode == "uce";
+    if is_uce {
+        let filter_threads = if opt.workers < 4 { 1 } else { 2 };
+        let concurrent_samples = samples.len().min((opt.workers / filter_threads).max(1));
+        opt.uce_memory_limit_mib = resolve_uce_memory_limit_mib(concurrent_samples);
+        eprintln!(
+            "Auto UCEFilter memory limit: {} MiB per sample ({} concurrent filter job(s))",
+            opt.uce_memory_limit_mib, concurrent_samples
+        );
+    }
     if is_uce {
         let implementation = value(&opt.raw, &["--assembler-implementation"], "auto")?;
         if !matches!(implementation.as_str(), "auto" | "uce-rust") {
@@ -4604,38 +5210,49 @@ fn execute_native(opt: Options) -> Result<(), String> {
             }
         };
     }
-    let next = Arc::new(Mutex::new(samples.clone().into_iter()));
-    let mut handles = Vec::new();
-    for _ in 0..shared.workers {
-        let bins = bins.clone();
-        let opt = Arc::clone(&shared);
-        let next = Arc::clone(&next);
-        let failures = Arc::clone(&failures);
-        let dictionary = dictionary.clone();
-        let profiler = profiler.clone();
-        handles.push(thread::spawn(move || loop {
-            let Some(sample) = next.lock().expect("sample queue poisoned").next() else {
-                break;
-            };
-            let result = if opt.assembly_mode == "uce" {
-                if opt.legacy_uce_filter {
-                    execute_uce_legacy(&opt, &bins, &sample, &dictionary, profiler.as_ref())
-                } else {
-                    execute_uce(&opt, &bins, &sample, profiler.as_ref())
+    if is_uce {
+        failures
+            .lock()
+            .expect("failure list poisoned")
+            .extend(execute_uce_original_schedule(
+                Arc::clone(&shared),
+                bins.clone(),
+                &samples,
+                dictionary.clone(),
+                profiler.clone(),
+            ));
+    } else {
+        let next = Arc::new(Mutex::new(samples.clone().into_iter()));
+        let mut handles = Vec::new();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        for _ in 0..shared.workers {
+            let bins = bins.clone();
+            let opt = Arc::clone(&shared);
+            let next = Arc::clone(&next);
+            let failures = Arc::clone(&failures);
+            let cancelled = Arc::clone(&cancelled);
+            let dictionary = dictionary.clone();
+            let profiler = profiler.clone();
+            handles.push(thread::spawn(move || loop {
+                if cancelled.load(Ordering::Acquire) {
+                    break;
                 }
-            } else {
-                execute_gene(&opt, &bins, &sample, &dictionary, profiler.as_ref())
-            };
-            if let Err(error) = result {
-                failures
-                    .lock()
-                    .expect("failure list poisoned")
-                    .push(format!("{}: {error}", sample.name));
-            }
-        }));
-    }
-    for handle in handles {
-        handle.join().map_err(|_| "Rust workflow worker panicked")?;
+                let Some(sample) = next.lock().expect("sample queue poisoned").next() else {
+                    break;
+                };
+                let result = execute_gene(&opt, &bins, &sample, &dictionary, profiler.as_ref());
+                if let Err(error) = result {
+                    failures
+                        .lock()
+                        .expect("failure list poisoned")
+                        .push(format!("{}: {error}", sample.name));
+                    cancelled.store(true, Ordering::Release);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().map_err(|_| "Rust workflow worker panicked")?;
+        }
     }
     let failures = failures.lock().map_err(|_| "failure list poisoned")?;
     if !failures.is_empty() {
@@ -4778,7 +5395,7 @@ fn main() -> ExitCode {
         print_help();
         return ExitCode::SUCCESS;
     }
-    match parse(&args).and_then(execute_native) {
+    match parse(&args).and_then(execute_with_status) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -4811,6 +5428,229 @@ mod tests {
             "payload"
         );
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn uce_memory_limit_reserves_capacity_and_applies_bounds() {
+        assert_eq!(resolve_uce_memory_limit_from_available(None, 4), 512);
+        assert_eq!(resolve_uce_memory_limit_from_available(Some(8192), 2), 2048);
+        assert_eq!(resolve_uce_memory_limit_from_available(Some(1), 1), 1);
+        assert_eq!(
+            resolve_uce_memory_limit_from_available(Some(65536), 1),
+            4096
+        );
+        assert_eq!(resolve_uce_memory_limit_from_available(Some(8192), 0), 4096);
+    }
+
+    #[test]
+    fn sample_table_rejects_invalid_rows_before_creating_output_directories() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gm2_sample_table_validation_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let read = root.join("reads.fq");
+        fs::write(&read, b"@r\nAC\n+\n!!\n").unwrap();
+        for (name, contents, expected) in [
+            ("one_column", "sample\n", "must be sample<TAB>R1"),
+            (
+                "too_many_columns",
+                "sample\ta\tb\tc\n",
+                "must be sample<TAB>R1",
+            ),
+            ("empty_r1", "sample\t\n", "empty R1 path"),
+            ("empty_r2", "sample\ta\t\n", "empty R2 path"),
+            (
+                "missing_file",
+                "sample\tmissing.fq\n",
+                "read file does not exist",
+            ),
+            (
+                "duplicate_name",
+                &format!("a-b\t{}\na b\t{}\n", read.display(), read.display()),
+                "Duplicate sample name after normalization",
+            ),
+        ] {
+            let table = root.join(format!("{name}.tsv"));
+            fs::write(&table, contents).unwrap();
+            let output = root.join(format!("out_{name}"));
+            let error = read_samples(&table.display().to_string(), &output).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(!output.exists(), "invalid table created {output:?}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uce_two_sample_fixture_respects_budget_and_stops_after_a_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::OnceLock;
+
+        // Environment variables select workflow components, so serialize this
+        // end-to-end test with any future component-directory tests.
+        static COMPONENT_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = COMPONENT_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gm2_uce_schedule_fixture_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        let components = root.join("components");
+        fs::create_dir_all(&components).unwrap();
+        let capture = root.join("component_calls.tsv");
+        for component in ["uce_filter", "main_assembler-rust"] {
+            let path = components.join(component);
+            fs::write(
+                &path,
+                "#!/bin/sh\nprintf '%s\\t%s\\n' \"$(basename \"$0\")\" \"$*\" >> \"$GM2_CAPTURE\"\nif [ -n \"$GM2_FAIL_MATCH\" ]; then case \"$*\" in *\"$GM2_FAIL_MATCH\"*) exit 7;; esac; fi\nsleep 0.01\n",
+            )
+            .unwrap();
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+        let reference = root.join("reference.fasta");
+        let read1 = root.join("reads_1.fastq");
+        let read2 = root.join("reads_2.fastq");
+        fs::write(
+            &reference,
+            include_str!("../tests/fixtures/uce/reference.fasta"),
+        )
+        .unwrap();
+        fs::write(&read1, include_str!("../tests/fixtures/uce/reads.fastq")).unwrap();
+        fs::write(&read2, include_str!("../tests/fixtures/uce/reads.fastq")).unwrap();
+        let samples = root.join("samples.tsv");
+        fs::write(
+            &samples,
+            format!(
+                "one\t{}\t{}\ntwo\t{}\t{}\n",
+                read1.display(),
+                read2.display(),
+                read1.display(),
+                read2.display()
+            ),
+        )
+        .unwrap();
+        let prior_components = env::var_os("GM2_COMPONENT_DIR");
+        let prior_capture = env::var_os("GM2_CAPTURE");
+        let prior_failure = env::var_os("GM2_FAIL_MATCH");
+        env::set_var("GM2_COMPONENT_DIR", &components);
+        env::set_var("GM2_CAPTURE", &capture);
+        env::remove_var("GM2_FAIL_MATCH");
+        for (workers, expected_filter_threads, mut expected_assembler_threads) in [
+            (1, 1, vec![1, 1]),
+            (2, 1, vec![2, 2]),
+            (4, 2, vec![2, 2]),
+            // Once both filters release their 2-thread reservations, the
+            // first ready assembler may consume the six available threads;
+            // the remaining job receives the normal 4-thread share.
+            (8, 2, vec![4, 6]),
+        ] {
+            fs::write(&capture, "").unwrap();
+            let output = root.join(format!("output_p{workers}"));
+            let result = parse(&[
+                "filter".into(),
+                "assemble".into(),
+                "--assembly-mode".into(),
+                "uce".into(),
+                "-p".into(),
+                workers.to_string(),
+                "-f".into(),
+                samples.display().to_string(),
+                "-r".into(),
+                reference.display().to_string(),
+                "-o".into(),
+                output.display().to_string(),
+            ])
+            .and_then(execute_with_status);
+            result.unwrap();
+            let manifest = fs::read_to_string(output.join("workflow_manifest.tsv")).unwrap();
+            assert!(manifest.contains("schema_version\t1\n"));
+            assert!(manifest.contains("assembly_mode\tuce\n"));
+            assert!(manifest.contains("sample_count\t2\n"));
+            let status = fs::read_to_string(output.join("workflow_status.tsv")).unwrap();
+            assert!(status.contains("state\tsucceeded\n"));
+            let calls = fs::read_to_string(&capture).unwrap();
+            let filters = calls
+                .lines()
+                .filter(|line| line.starts_with("uce_filter\t"))
+                .collect::<Vec<_>>();
+            let assemblers = calls
+                .lines()
+                .filter(|line| line.starts_with("main_assembler-rust\t"))
+                .collect::<Vec<_>>();
+            assert_eq!(filters.len(), 2, "-p {workers}: {calls}");
+            assert!(filters
+                .iter()
+                .all(|line| { line.contains(&format!("--threads {expected_filter_threads}")) }));
+            assert_eq!(assemblers.len(), 2, "-p {workers}: {calls}");
+            let mut actual_assembler_threads = assemblers
+                .iter()
+                .map(|line| {
+                    line.split(" -p ")
+                        .nth(1)
+                        .and_then(|tail| tail.split_whitespace().next())
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .expect("assembler invocation includes a numeric -p value")
+                })
+                .collect::<Vec<_>>();
+            actual_assembler_threads.sort_unstable();
+            expected_assembler_threads.sort_unstable();
+            assert_eq!(
+                actual_assembler_threads, expected_assembler_threads,
+                "-p {workers}: {calls}"
+            );
+        }
+        fs::write(&capture, "").unwrap();
+        let failed_output = root.join("output_failure");
+        env::set_var("GM2_FAIL_MATCH", failed_output.join("1_One"));
+        let failure = parse(&[
+            "filter".into(),
+            "--assembly-mode".into(),
+            "uce".into(),
+            "-p".into(),
+            "1".into(),
+            "-f".into(),
+            samples.display().to_string(),
+            "-r".into(),
+            reference.display().to_string(),
+            "-o".into(),
+            failed_output.display().to_string(),
+        ])
+        .and_then(execute_with_status)
+        .unwrap_err();
+        assert!(failure.contains("1_One"), "{failure}");
+        let calls = fs::read_to_string(&capture).unwrap();
+        assert_eq!(calls.lines().count(), 1, "{calls}");
+        assert!(calls.contains("output_failure/1_One"), "{calls}");
+        let status = fs::read_to_string(failed_output.join("workflow_status.tsv")).unwrap();
+        assert!(status.contains("state\tfailed\n"));
+        match prior_components {
+            Some(value) => env::set_var("GM2_COMPONENT_DIR", value),
+            None => env::remove_var("GM2_COMPONENT_DIR"),
+        }
+        match prior_capture {
+            Some(value) => env::set_var("GM2_CAPTURE", value),
+            None => env::remove_var("GM2_CAPTURE"),
+        }
+        match prior_failure {
+            Some(value) => env::set_var("GM2_FAIL_MATCH", value),
+            None => env::remove_var("GM2_FAIL_MATCH"),
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -5055,6 +5895,100 @@ mod tests {
         assert!(parsed.reuse_reference_cache);
         assert!(parsed.legacy_uce_filter);
         assert!(parsed.workflow_profile);
+    }
+
+    #[test]
+    fn cleanup_dry_run_is_an_explicit_opt_in() {
+        let parsed = parse(&[
+            "filter".into(),
+            "assemble".into(),
+            "--cleanup-intermediates".into(),
+            "--cleanup-dry-run".into(),
+            "-f".into(),
+            "reads.tsv".into(),
+            "-r".into(),
+            "references".into(),
+            "-o".into(),
+            "out".into(),
+        ])
+        .unwrap();
+        assert!(parsed.cleanup_intermediates);
+        assert!(parsed.cleanup_dry_run);
+        assert!(validate_cleanup_options(&parsed).is_ok());
+
+        let invalid = parse(&[
+            "filter".into(),
+            "assemble".into(),
+            "--cleanup-dry-run".into(),
+            "-f".into(),
+            "reads.tsv".into(),
+            "-r".into(),
+            "references".into(),
+            "-o".into(),
+            "out".into(),
+        ])
+        .unwrap();
+        assert!(validate_cleanup_options(&invalid)
+            .unwrap_err()
+            .contains("requires --cleanup-intermediates"));
+    }
+
+    #[test]
+    fn resume_requires_an_exact_successful_workflow() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gm2_resume_fixture_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let reference = root.join("reference.fasta");
+        let reads = root.join("reads.fastq");
+        let table = root.join("samples.tsv");
+        let output = root.join("output");
+        fs::write(&reference, ">reference\nACGT\n").unwrap();
+        fs::write(&reads, "@read\nACGT\n+\n!!!!\n").unwrap();
+        fs::write(&table, format!("sample\t{}\n", reads.display())).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        let initial_options = parse(&[
+            "filter".into(),
+            "assemble".into(),
+            "-f".into(),
+            table.display().to_string(),
+            "-r".into(),
+            reference.display().to_string(),
+            "-o".into(),
+            output.display().to_string(),
+        ])
+        .unwrap();
+        let samples = read_samples(&initial_options.samples, &output).unwrap();
+        write_workflow_manifest(&initial_options, &samples).unwrap();
+        write_workflow_status(&output, &initial_options.commands, &Ok(())).unwrap();
+        let resume_options = parse(&[
+            "filter".into(),
+            "assemble".into(),
+            "--resume".into(),
+            "-f".into(),
+            table.display().to_string(),
+            "-r".into(),
+            reference.display().to_string(),
+            "-o".into(),
+            output.display().to_string(),
+        ])
+        .unwrap();
+        assert!(resume_completed_workflow(&resume_options, &samples).unwrap());
+        fs::write(
+            output.join("workflow_status.tsv"),
+            "field\tvalue\nstate\tfailed\n",
+        )
+        .unwrap();
+        assert!(resume_completed_workflow(&resume_options, &samples)
+            .unwrap_err()
+            .contains("did not complete successfully"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
