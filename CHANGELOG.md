@@ -1,4 +1,9 @@
 # Changelog
+
+## Unreleased
+
+- Renamed the public project to TStools (formerly GeneMiner2-UCE). Repository URLs, `cli/geneminer2`, legacy output identifiers, and scholarly citations remain unchanged for compatibility.
+
 ## v1.5.7 — UCE rescue I/O and PanRefV2.2 graph evidence
 
 - Avoided byte-for-byte sample-directory copies during UCE rescue. Rescue now stages work outside the sample directory and atomically moves the settled round back, preserving rollback and output layout while reducing slow-disk I/O.

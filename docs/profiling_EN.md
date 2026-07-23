@@ -7,7 +7,7 @@ Profiling is an assembly-free workflow for recovering reference-level evidence f
 ## Workflow
 
 ```text
-GeneMiner2 k-mer recruitment → Themisto pseudoalignment → reference-level support
+TStools k-mer recruitment → Themisto pseudoalignment → reference-level support
 ```
 
 It runs neither `refilter`, `assemble`, `combine`, nor `tree`. `--profile-kmer-size` sets the same odd k-mer size, from 15 to 31, for both recruitment and Themisto.

@@ -1,4 +1,4 @@
-# TStools (old GeneMiner2-UCE)
+# TStools（原 GeneMiner2-UCE）
 
 [![CI](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/GUIBA-EX/GeneMiner2-UCE/actions/workflows/codeql.yml)
@@ -7,9 +7,20 @@
 
 **[English](README_EN.md)** · [更新记录](CHANGELOG.md) · [报告问题](https://github.com/GUIBA-EX/GeneMiner2-UCE/issues)
 
-TStools 是一个 Rust 原生的短读长恢复工具：以参考序列招募 reads，再按任务组装或量化。它面向 genome skimming、target capture、UCE、RAD 补充和 repeatome 分析；不需要 Python 运行时。
+TStools（原 GeneMiner2-UCE）是独立演进、Rust 原生的短 reads 恢复工具，不再是 GeneMiner2 的维护型 fork。它以参考序列招募 reads，再按任务组装或量化，覆盖 genome skimming、target capture、UCE、RAD 补充和 repeatome 分析，无需 Python 运行时。`cli/geneminer2`、历史输出名、仓库地址和论文中的旧名称仅为兼容标识。
 
-![GeneMiner2-UCE 流程](docs/images/summary_ZH.png)
+![TStools 流程](docs/images/summary_ZH.png)
+
+## 相比 GeneMiner2
+
+上游 GeneMiner2 是算法来源和兼容基线；TStools 的核心路径、工作流和验证体系独立演进。
+
+- **Filter**：canonical 双链 2-bit k-mer、内容校验的参考缓存和有界流式 I/O，在保持招募语义与输出格式的同时降低 CPU、内存和 I/O 开销。
+- **Assembler**：`ucefilter → uce-rust` 将招募、成对 reads 保留、方向/精确匹配证据和逐 locus 选择合并为一次扫描；rescue 只接受有 reads 支持的延伸，绝不以参考补洞。
+- **任务范围**：除常规 marker 外，还提供线粒体、profiling、UCE 群体、核基因家族、RAD 和 repeatome 工作流。
+- **结果边界**：闭环、RAD 严格矩阵和群体图路径均要求明确证据，并保留相应 QC 与审计输出。
+
+算法、性能与适用边界见 [Filter](docs/filter_ZH.md)、[Assembler](docs/assembler_ZH.md) 和 [Population](docs/population_ZH.md)。
 
 ## 安装与最小示例
 
@@ -95,9 +106,9 @@ cli/geneminer2 te -f te_samples.tsv -o te_out -p 32
 请引用：Yu XY, Tang ZZ, Zhang Z, Song YX, He H, Shi Y, Hou JQ, Yu Y. 2026. **GeneMiner2**: Accurate and automated recovery of genes from genome-skimming data. *Molecular Ecology Resources* 26: e70111. [doi:10.1111/1755-0998.70111](https://doi.org/10.1111/1755-0998.70111)
 
 ```bibtex
-@software{GeneMiner2_UCE,
+@software{TStools,
   author  = {XIA, Fei and TANG, Zizhen and XU, Yan},
-  title   = {GeneMiner2-UCE: Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
+  title   = {TStools (formerly GeneMiner2-UCE): Reference-Guided Short-Read Recovery for UCE, Mitochondrial, Gene-Family, and RAD Workflows},
   year    = {2026},
   version = {1.5.6},
   url     = {https://github.com/GUIBA-EX/GeneMiner2-UCE},
